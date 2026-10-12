@@ -1,0 +1,45 @@
+import { Button, Palette } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+export component AboutWindow inherits Window {
+    title: "About Openbar5000";
+    preferred-width: 380px;
+    preferred-height: 220px;
+    background: Theme.bg-raised;
+
+    in property <bool> theme-is-dark: true;
+    init => {
+        Palette.color-scheme = root.theme-is-dark ? ColorScheme.dark : ColorScheme.light;
+    }
+    changed theme-is-dark => {
+        Palette.color-scheme = root.theme-is-dark ? ColorScheme.dark : ColorScheme.light;
+    }
+
+    callback close-clicked();
+
+    VerticalLayout {
+        padding: 18px;
+        spacing: 10px;
+
+        Text { text: "Openbar5000"; font-size: 20px; font-weight: 700; color: Theme.text-primary; }
+        Text {
+            text: "An open-source, cross-platform alternative to foobar2000.";
+            color: Theme.text-muted;
+            wrap: word-wrap;
+        }
+        Text { text: "Built with Rust and Slint."; color: Theme.text-muted; }
+        Text {
+            text: "UI powered by Slint (https://slint.dev), used under its Royalty-free license.";
+            color: Theme.text-muted;
+            font-size: 11px;
+            wrap: word-wrap;
+        }
+
+        Rectangle { vertical-stretch: 1; }
+
+        HorizontalLayout {
+            alignment: end;
+            Button { text: "Close"; clicked => { root.close-clicked(); } }
+        }
+    }
+}

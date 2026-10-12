@@ -1,0 +1,31 @@
+import { Theme } from "theme.slint";
+
+export component SpectrumView inherits Rectangle {
+    in property <[float]> bars: [];
+    /// Falling peak markers, one per bar; empty when peaks are disabled.
+    in property <[float]> peaks: [];
+
+    height: 56px;
+    background: Theme.bg-sunken;
+
+    HorizontalLayout {
+        padding: 2px;
+        spacing: 2px;
+        for bar[i] in root.bars: Rectangle {
+            horizontal-stretch: 1;
+            height: root.height - 4px;
+
+            Rectangle {
+                y: parent.height - self.height;
+                height: max(1px, min(bar, 1.0) * parent.height);
+                background: Theme.spectrum-bar;
+            }
+
+            if i < root.peaks.length: Rectangle {
+                height: 2px;
+                y: parent.height - min(root.peaks[i], 1.0) * parent.height - 2px;
+                background: Theme.text-primary;
+            }
+        }
+    }
+}

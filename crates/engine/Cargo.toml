@@ -1,0 +1,20 @@
+[package]
+name = "engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Openbar5000 playback engine: decode -> DSP -> output pipeline and playlist state"
+
+[dependencies]
+plugin-api.workspace = true
+symphonia.workspace = true
+lofty.workspace = true
+cpal.workspace = true
+ringbuf.workspace = true
+crossbeam-channel.workspace = true
+tracing.workspace = true
+rustfft.workspace = true
+
+[dev-dependencies]
+tracing-subscriber.workspace = true

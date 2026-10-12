@@ -1,0 +1,16 @@
+// Semantic color tokens every window/component reads instead of hardcoding
+// hex values, so switching themes (see Settings) just means the Rust side
+// writing new values into this global -- each top-level window instance has
+// its own copy, which `app::theme::apply_theme` keeps in sync across all of
+// them.
+export global Theme {
+    in-out property <color> bg-base: #1b1b1b;
+    in-out property <color> bg-raised: #202020;
+    in-out property <color> bg-sunken: #141414;
+    in-out property <color> text-primary: #e8e8e8;
+    in-out property <color> text-muted: #9a9a9a;
+    in-out property <color> accent: #c97a26;
+    in-out property <color> accent-text: #1b1b1b;
+    in-out property <color> waveform-unplayed: #4a4a4a;
+    in-out property <color> spectrum-bar: #3fb8e8;
+}

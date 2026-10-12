@@ -1,0 +1,90 @@
+import { ListView, LineEdit } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+export struct PlaylistRow {
+    is-header: bool,
+    cover-image: image,
+    group-title: string,
+    group-subtitle: string,
+    group-info: string,
+    track-number: string,
+    title: string,
+    duration: string,
+    track-index: int,
+    is-current: bool,
+}
+
+export component PlaylistView inherits Rectangle {
+    in property <[PlaylistRow]> rows: [];
+    callback row-clicked(int);
+    callback row-properties-clicked(int);
+    callback row-open-folder-clicked(int);
+    callback row-remove-clicked(int);
+    callback search-edited(string);
+
+    background: Theme.bg-base;
+
+    VerticalLayout {
+        Rectangle {
+            height: 36px;
+            background: Theme.bg-raised;
+            HorizontalLayout {
+                padding: 5px;
+                spacing: 8px;
+                Text { text: "Search:"; vertical-alignment: center; color: Theme.text-muted; font-size: 14px; }
+                LineEdit {
+                    placeholder-text: "Type a search query and press Enter";
+                    font-size: 14px;
+                    height: 26px;
+                    edited(text) => { root.search-edited(text); }
+                    accepted(text) => { root.search-edited(text); }
+                }
+            }
+        }
+        ListView {
+            vertical-stretch: 1;
+            for row[i] in root.rows: Rectangle {
+                height: row.is-header ? 64px : 22px;
+                background: row.is-current ? Theme.accent : transparent;
+
+                if row.is-header: HorizontalLayout {
+                    padding: 8px;
+                    spacing: 10px;
+                    Image {
+                        source: row.cover-image;
+                        width: 48px;
+                        height: 48px;
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 2px;
+                        Text { text: row.group-title; font-size: 15px; font-weight: 700; color: Theme.text-primary; overflow: elide; }
+                        Text { text: row.group-subtitle; font-size: 12px; color: Theme.accent; overflow: elide; }
+                        Text { text: row.group-info; font-size: 10px; color: Theme.text-muted; overflow: elide; }
+                    }
+                }
+
+                if !row.is-header: ContextMenuArea {
+                    Menu {
+                        MenuItem { title: "Play"; activated => { root.row-clicked(row.track-index); } }
+                        MenuItem { title: "Properties..."; activated => { root.row-properties-clicked(row.track-index); } }
+                        MenuItem { title: "Open Containing Folder"; activated => { root.row-open-folder-clicked(row.track-index); } }
+                        MenuSeparator {}
+                        MenuItem { title: "Remove"; activated => { root.row-remove-clicked(row.track-index); } }
+                    }
+                    TouchArea {
+                        clicked => { root.row-clicked(row.track-index); }
+                        HorizontalLayout {
+                            padding-left: 56px;
+                            padding-right: 4px;
+                            spacing: 4px;
+                            Text { text: row.track-number; width: 30px; vertical-alignment: center; color: row.is-current ? Theme.accent-text : Theme.text-primary; }
+                            Text { text: row.title; horizontal-stretch: 1; vertical-alignment: center; color: row.is-current ? Theme.accent-text : Theme.text-primary; overflow: elide; }
+                            Text { text: row.duration; width: 60px; vertical-alignment: center; color: row.is-current ? Theme.accent-text : Theme.text-primary; }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

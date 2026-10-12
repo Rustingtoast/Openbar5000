@@ -1,0 +1,154 @@
+import { Palette } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { PlaylistView, PlaylistRow } from "playlist_view.slint";
+import { TransportBar } from "transport_bar.slint";
+import { StatusBar } from "status_bar.slint";
+import { WaveformSeekbar } from "waveform_seekbar.slint";
+import { SpectrumView } from "spectrum_view.slint";
+import { PropertiesWindow } from "properties_window.slint";
+import { AboutWindow } from "about_window.slint";
+import { SettingsWindow, ThemeListEntry } from "settings_window.slint";
+import { ThemeEditorWindow } from "theme_editor_window.slint";
+
+export { PlaylistRow, PropertiesWindow, AboutWindow, SettingsWindow, ThemeListEntry, ThemeEditorWindow, Theme }
+
+export component MainWindow inherits Window {
+    title: "Openbar5000";
+    preferred-width: 1400px;
+    preferred-height: 700px;
+    min-width: 760px;
+    min-height: 500px;
+    // Slint's winit backend only makes a window resizable when its computed
+    // max size is strictly greater than its min size on at least one axis
+    // (see `window_is_resizable` in i-slint-backend-winit). Without an
+    // explicit `max-*` here, `min-width` above made max collapse to it and
+    // locked the window.
+    max-width: 100000px;
+    max-height: 100000px;
+    background: Theme.bg-base;
+
+    // Every window keeps std-widgets (Button/CheckBox/LineEdit/MenuBar/...)
+    // in the built-in style matching the active `Theme`, instead of
+    // following the OS's own light/dark setting -- otherwise default-styled
+    // widgets would fight the Theme-driven hardcoded colors everywhere else
+    // (e.g. default Text color turning white against a light theme panel).
+    // `app::theme::apply_theme` sets this whenever the theme changes.
+    in property <bool> theme-is-dark: true;
+    init => {
+        Palette.color-scheme = root.theme-is-dark ? ColorScheme.dark : ColorScheme.light;
+    }
+    changed theme-is-dark => {
+        Palette.color-scheme = root.theme-is-dark ? ColorScheme.dark : ColorScheme.light;
+    }
+
+    in property <[PlaylistRow]> playlist-rows: [];
+    in property <bool> is-playing: false;
+    in property <float> position-seconds: 0;
+    in property <float> duration-seconds: 0;
+    in property <string> position-text: "0:00";
+    in property <string> duration-text: "0:00";
+    in property <float> volume: 1.0;
+    in property <string> status-text: "Openbar5000 — an open-source foobar2000-alike";
+
+    in property <bool> show-waveform: true;
+    in property <bool> show-spectrum: true;
+    in property <[float]> waveform-peaks: [];
+    in property <int> waveform-played-bucket-index: 0;
+    in property <[float]> spectrum-bars: [];
+    in property <[float]> spectrum-peaks: [];
+
+    callback play-pause-clicked();
+    callback menu-play-clicked();
+    callback menu-pause-clicked();
+    callback stop-clicked();
+    callback next-clicked();
+    callback previous-clicked();
+    callback seek-requested(float);
+    callback volume-changed(float);
+    callback row-clicked(int);
+    callback row-properties-clicked(int);
+    callback row-open-folder-clicked(int);
+    callback row-remove-clicked(int);
+    callback search-edited(string);
+    callback open-files-clicked();
+    callback open-folder-clicked();
+    callback properties-clicked();
+    callback clear-playlist-clicked();
+    callback about-clicked();
+    callback settings-clicked();
+    callback exit-clicked();
+
+    MenuBar {
+        Menu {
+            title: "File";
+            MenuItem { title: "Open Files..."; activated => { root.open-files-clicked(); } }
+            MenuItem { title: "Open Folder..."; activated => { root.open-folder-clicked(); } }
+            MenuSeparator {}
+            MenuItem { title: "Preferences..."; activated => { root.settings-clicked(); } }
+            MenuSeparator {}
+            MenuItem { title: "Exit"; activated => { root.exit-clicked(); } }
+        }
+        Menu {
+            title: "Edit";
+            MenuItem { title: "Properties..."; activated => { root.properties-clicked(); } }
+            MenuSeparator {}
+            MenuItem { title: "Clear Playlist"; activated => { root.clear-playlist-clicked(); } }
+        }
+        Menu {
+            title: "Playback";
+            MenuItem { title: "Play"; activated => { root.menu-play-clicked(); } }
+            MenuItem { title: "Pause"; activated => { root.menu-pause-clicked(); } }
+            MenuItem { title: "Stop"; activated => { root.stop-clicked(); } }
+            MenuSeparator {}
+            MenuItem { title: "Previous"; activated => { root.previous-clicked(); } }
+            MenuItem { title: "Next"; activated => { root.next-clicked(); } }
+        }
+        Menu {
+            title: "View";
+            MenuItem { title: "Preferences..."; activated => { root.settings-clicked(); } }
+        }
+        Menu {
+            title: "Help";
+            MenuItem { title: "About Openbar5000..."; activated => { root.about-clicked(); } }
+        }
+    }
+
+    VerticalLayout {
+        PlaylistView {
+            vertical-stretch: 1;
+            rows: root.playlist-rows;
+            row-clicked(i) => { root.row-clicked(i); }
+            row-properties-clicked(i) => { root.row-properties-clicked(i); }
+            row-open-folder-clicked(i) => { root.row-open-folder-clicked(i); }
+            row-remove-clicked(i) => { root.row-remove-clicked(i); }
+            search-edited(text) => { root.search-edited(text); }
+        }
+        if root.show-waveform: WaveformSeekbar {
+            peaks: root.waveform-peaks;
+            played-bucket-index: root.waveform-played-bucket-index;
+            duration-seconds: root.duration-seconds;
+            seek-requested(pos) => { root.seek-requested(pos); }
+        }
+        if root.show-spectrum: SpectrumView {
+            bars: root.spectrum-bars;
+            peaks: root.spectrum-peaks;
+        }
+        TransportBar {
+            is-playing: root.is-playing;
+            position-seconds: root.position-seconds;
+            duration-seconds: root.duration-seconds;
+            position-text: root.position-text;
+            duration-text: root.duration-text;
+            volume: root.volume;
+            play-pause-clicked => { root.play-pause-clicked(); }
+            stop-clicked => { root.stop-clicked(); }
+            next-clicked => { root.next-clicked(); }
+            previous-clicked => { root.previous-clicked(); }
+            seek-requested(pos) => { root.seek-requested(pos); }
+            volume-changed(v) => { root.volume-changed(v); }
+        }
+        StatusBar {
+            text: root.status-text;
+        }
+    }
+}

@@ -1,0 +1,103 @@
+import { Button, LineEdit, Palette } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+component ColorRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <color> swatch;
+    in property <string> field-value;
+    callback edited(string);
+
+    spacing: 8px;
+    height: 26px;
+
+    Text { text: root.label; width: 140px; vertical-alignment: center; color: Theme.text-primary; font-size: 12px; }
+    Rectangle {
+        width: 20px;
+        height: 20px;
+        border-radius: 3px;
+        background: root.swatch;
+        border-width: 1px;
+        border-color: Theme.text-muted;
+    }
+    LineEdit {
+        text: root.field-value;
+        width: 90px;
+        font-size: 12px;
+        edited(text) => { root.edited(text); }
+    }
+}
+
+export component ThemeEditorWindow inherits Window {
+    title: "New Theme";
+    preferred-width: 400px;
+    preferred-height: 520px;
+    background: Theme.bg-raised;
+
+    in property <bool> theme-is-dark: true;
+    init => {
+        Palette.color-scheme = root.theme-is-dark ? ColorScheme.dark : ColorScheme.light;
+    }
+    changed theme-is-dark => {
+        Palette.color-scheme = root.theme-is-dark ? ColorScheme.dark : ColorScheme.light;
+    }
+
+    in property <string> theme-name: "";
+    in property <color> swatch-bg-base;
+    in property <color> swatch-bg-raised;
+    in property <color> swatch-bg-sunken;
+    in property <color> swatch-text-primary;
+    in property <color> swatch-text-muted;
+    in property <color> swatch-accent;
+    in property <color> swatch-accent-text;
+    in property <color> swatch-waveform-unplayed;
+    in property <color> swatch-spectrum-bar;
+
+    in property <string> value-bg-base;
+    in property <string> value-bg-raised;
+    in property <string> value-bg-sunken;
+    in property <string> value-text-primary;
+    in property <string> value-text-muted;
+    in property <string> value-accent;
+    in property <string> value-accent-text;
+    in property <string> value-waveform-unplayed;
+    in property <string> value-spectrum-bar;
+
+    callback name-edited(string);
+    callback field-edited(string, string);
+    callback save-clicked();
+    callback cancel-clicked();
+
+    VerticalLayout {
+        padding: 14px;
+        spacing: 6px;
+
+        Text { text: "Theme name"; color: Theme.text-primary; font-size: 12px; }
+        LineEdit {
+            text: root.theme-name;
+            edited(text) => { root.name-edited(text); }
+        }
+
+        Rectangle { height: 6px; }
+
+        ColorRow { label: "Background"; swatch: root.swatch-bg-base; field-value: root.value-bg-base; edited(v) => { root.field-edited("bg_base", v); } }
+        ColorRow { label: "Panel background"; swatch: root.swatch-bg-raised; field-value: root.value-bg-raised; edited(v) => { root.field-edited("bg_raised", v); } }
+        ColorRow { label: "Sunken background"; swatch: root.swatch-bg-sunken; field-value: root.value-bg-sunken; edited(v) => { root.field-edited("bg_sunken", v); } }
+        ColorRow { label: "Text"; swatch: root.swatch-text-primary; field-value: root.value-text-primary; edited(v) => { root.field-edited("text_primary", v); } }
+        ColorRow { label: "Muted text"; swatch: root.swatch-text-muted; field-value: root.value-text-muted; edited(v) => { root.field-edited("text_muted", v); } }
+        ColorRow { label: "Accent"; swatch: root.swatch-accent; field-value: root.value-accent; edited(v) => { root.field-edited("accent", v); } }
+        ColorRow { label: "Accent text"; swatch: root.swatch-accent-text; field-value: root.value-accent-text; edited(v) => { root.field-edited("accent_text", v); } }
+        ColorRow { label: "Waveform (unplayed)"; swatch: root.swatch-waveform-unplayed; field-value: root.value-waveform-unplayed; edited(v) => { root.field-edited("waveform_unplayed", v); } }
+        ColorRow { label: "Spectrum bar"; swatch: root.swatch-spectrum-bar; field-value: root.value-spectrum-bar; edited(v) => { root.field-edited("spectrum_bar", v); } }
+
+        Rectangle { vertical-stretch: 1; }
+
+        Text { text: "Colors are hex, e.g. #c97a26"; color: Theme.text-muted; font-size: 10px; }
+
+        HorizontalLayout {
+            alignment: end;
+            spacing: 8px;
+            Button { text: "Cancel"; clicked => { root.cancel-clicked(); } }
+            Button { text: "Save Theme"; clicked => { root.save-clicked(); } }
+        }
+    }
+}

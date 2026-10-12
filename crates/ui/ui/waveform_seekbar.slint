@@ -1,0 +1,27 @@
+import { Theme } from "theme.slint";
+
+export component WaveformSeekbar inherits Rectangle {
+    in property <[float]> peaks: [];
+    in property <int> played-bucket-index: 0;
+    in property <float> duration-seconds: 1;
+    callback seek-requested(float);
+
+    height: 48px;
+    background: Theme.bg-sunken;
+
+    HorizontalLayout {
+        padding: 1px;
+        for peak[i] in root.peaks: Rectangle {
+            horizontal-stretch: 1;
+            y: (root.height - self.height) / 2;
+            height: max(2px, peak * (root.height - 4px));
+            background: i <= root.played-bucket-index ? Theme.accent : Theme.waveform-unplayed;
+        }
+    }
+
+    TouchArea {
+        clicked => {
+            root.seek-requested((self.mouse-x / self.width) * root.duration-seconds);
+        }
+    }
+}

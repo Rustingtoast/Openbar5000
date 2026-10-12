@@ -1,0 +1,15 @@
+[package]
+name = "ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Slint front-end for Openbar5000"
+build = "build.rs"
+
+[dependencies]
+slint.workspace = true
+image.workspace = true
+
+[build-dependencies]
+slint-build.workspace = true
