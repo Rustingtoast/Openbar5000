@@ -1,0 +1,55 @@
+import { Button, Slider } from "std-widgets.slint";
+
+export component TransportBar inherits Rectangle {
+    in property <bool> is-playing: false;
+    in property <float> position-seconds: 0;
+    in property <float> duration-seconds: 0;
+    in property <float> volume: 1.0;
+    in property <string> position-text: "0:00";
+    in property <string> duration-text: "0:00";
+
+    callback play-pause-clicked();
+    callback stop-clicked();
+    callback next-clicked();
+    callback previous-clicked();
+    callback seek-requested(float);
+    callback volume-changed(float);
+
+    height: 64px;
+    background: #e8e8e8;
+
+    VerticalLayout {
+        HorizontalLayout {
+            height: 30px;
+            spacing: 6px;
+            padding: 4px;
+            Button { text: "|<"; clicked => { root.previous-clicked(); } }
+            Button { text: root.is-playing ? "Pause" : "Play"; clicked => { root.play-pause-clicked(); } }
+            Button { text: "Stop"; clicked => { root.stop-clicked(); } }
+            Button { text: ">|"; clicked => { root.next-clicked(); } }
+            Rectangle { horizontal-stretch: 1; }
+            Text { text: "Vol"; vertical-alignment: center; }
+            Slider {
+                width: 100px;
+                minimum: 0;
+                maximum: 1;
+                value: root.volume;
+                changed(v) => { root.volume-changed(v); }
+            }
+        }
+        HorizontalLayout {
+            height: 26px;
+            padding: 4px;
+            spacing: 6px;
+            Text { text: root.position-text; vertical-alignment: center; }
+            Slider {
+                horizontal-stretch: 1;
+                minimum: 0;
+                maximum: root.duration-seconds > 0 ? root.duration-seconds : 1;
+                value: root.position-seconds;
+                changed(v) => { root.seek-requested(v); }
+            }
+            Text { text: root.duration-text; vertical-alignment: center; }
+        }
+    }
+}

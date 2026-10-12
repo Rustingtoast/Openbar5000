@@ -1,0 +1,60 @@
+import { Button } from "std-widgets.slint";
+
+component PropertyRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> value;
+    spacing: 8px;
+    Text {
+        text: root.label + ":";
+        width: 120px;
+        font-weight: 600;
+        color: black;
+    }
+    Text {
+        text: root.value;
+        horizontal-stretch: 1;
+        color: black;
+        overflow: elide;
+    }
+}
+
+export component PropertiesWindow inherits Window {
+    title: "Properties";
+    preferred-width: 440px;
+    preferred-height: 380px;
+    background: white;
+
+    in property <string> file-path: "";
+    in property <string> prop-title: "";
+    in property <string> prop-artist: "";
+    in property <string> prop-album: "";
+    in property <string> prop-track-number: "";
+    in property <string> prop-duration: "";
+    in property <string> prop-sample-rate: "";
+    in property <string> prop-channels: "";
+    in property <string> prop-bits-per-sample: "";
+
+    callback close-clicked();
+
+    VerticalLayout {
+        padding: 14px;
+        spacing: 8px;
+
+        PropertyRow { label: "File"; value: root.file-path; }
+        PropertyRow { label: "Title"; value: root.prop-title; }
+        PropertyRow { label: "Artist"; value: root.prop-artist; }
+        PropertyRow { label: "Album"; value: root.prop-album; }
+        PropertyRow { label: "Track #"; value: root.prop-track-number; }
+        PropertyRow { label: "Duration"; value: root.prop-duration; }
+        PropertyRow { label: "Sample rate"; value: root.prop-sample-rate; }
+        PropertyRow { label: "Channels"; value: root.prop-channels; }
+        PropertyRow { label: "Bits per sample"; value: root.prop-bits-per-sample; }
+
+        Rectangle { vertical-stretch: 1; }
+
+        HorizontalLayout {
+            alignment: end;
+            Button { text: "Close"; clicked => { root.close-clicked(); } }
+        }
+    }
+}

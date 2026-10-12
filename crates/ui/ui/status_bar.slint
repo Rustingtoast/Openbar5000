@@ -1,0 +1,9 @@
+export component StatusBar inherits Rectangle {
+    in property <string> text: "";
+    height: 22px;
+    background: #d0d0d0;
+    HorizontalLayout {
+        padding: 4px;
+        Text { text: root.text; vertical-alignment: center; font-size: 11px; }
+    }
+}

@@ -1,0 +1,101 @@
+import { Palette } from "std-widgets.slint";
+import { PlaylistView, PlaylistRow } from "playlist_view.slint";
+import { TransportBar } from "transport_bar.slint";
+import { StatusBar } from "status_bar.slint";
+import { PropertiesWindow } from "properties_window.slint";
+
+export { PlaylistRow, PropertiesWindow }
+
+component MenuLabel inherits TouchArea {
+    in property <string> text;
+    Text { text: root.text; vertical-alignment: center; color: black; }
+}
+
+component MenuBarRow inherits Rectangle {
+    callback open-files-clicked();
+    callback open-folder-clicked();
+    callback properties-clicked();
+
+    height: 26px;
+    background: #f0f0f0;
+
+    HorizontalLayout {
+        padding: 6px;
+        spacing: 16px;
+        MenuLabel { text: "Open Files"; clicked => { root.open-files-clicked(); } }
+        MenuLabel { text: "Open Folder"; clicked => { root.open-folder-clicked(); } }
+        MenuLabel { text: "Properties"; clicked => { root.properties-clicked(); } }
+        Text { text: "Library"; vertical-alignment: center; color: black; }
+        Text { text: "View"; vertical-alignment: center; color: black; }
+        Text { text: "Help"; vertical-alignment: center; color: black; }
+    }
+}
+
+export component MainWindow inherits Window {
+    title: "Openbar5000";
+    preferred-width: 900px;
+    preferred-height: 600px;
+
+    // The whole UI (including std-widgets like Button/Slider/ListView) is
+    // laid out with hardcoded light colors to match foobar2000's classic
+    // look. Without this, the OS's dark-mode foreground/widget styling
+    // fights those hardcoded backgrounds (e.g. default Text color turns
+    // white against a light-gray panel), which is what "blown out" dark
+    // mode rendering actually is. Pinning the palette keeps it consistent
+    // regardless of the system theme.
+    init => {
+        Palette.color-scheme = ColorScheme.light;
+    }
+
+    in property <[PlaylistRow]> playlist-rows: [];
+    in property <int> current-track-index: -1;
+    in property <bool> is-playing: false;
+    in property <float> position-seconds: 0;
+    in property <float> duration-seconds: 0;
+    in property <string> position-text: "0:00";
+    in property <string> duration-text: "0:00";
+    in property <float> volume: 1.0;
+    in property <string> status-text: "Openbar5000 — an open-source foobar2000-alike";
+
+    callback play-pause-clicked();
+    callback stop-clicked();
+    callback next-clicked();
+    callback previous-clicked();
+    callback seek-requested(float);
+    callback volume-changed(float);
+    callback row-clicked(int);
+    callback open-files-clicked();
+    callback open-folder-clicked();
+    callback properties-clicked();
+
+    VerticalLayout {
+        MenuBarRow {
+            open-files-clicked => { root.open-files-clicked(); }
+            open-folder-clicked => { root.open-folder-clicked(); }
+            properties-clicked => { root.properties-clicked(); }
+        }
+        PlaylistView {
+            vertical-stretch: 1;
+            rows: root.playlist-rows;
+            current-index: root.current-track-index;
+            row-clicked(i) => { root.row-clicked(i); }
+        }
+        TransportBar {
+            is-playing: root.is-playing;
+            position-seconds: root.position-seconds;
+            duration-seconds: root.duration-seconds;
+            position-text: root.position-text;
+            duration-text: root.duration-text;
+            volume: root.volume;
+            play-pause-clicked => { root.play-pause-clicked(); }
+            stop-clicked => { root.stop-clicked(); }
+            next-clicked => { root.next-clicked(); }
+            previous-clicked => { root.previous-clicked(); }
+            seek-requested(pos) => { root.seek-requested(pos); }
+            volume-changed(v) => { root.volume-changed(v); }
+        }
+        StatusBar {
+            text: root.status-text;
+        }
+    }
+}
