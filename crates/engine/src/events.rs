@@ -30,10 +30,12 @@ pub enum EngineEvent {
         index: usize,
         peaks: Vec<f32>,
     },
-    /// Live spectrum bars for the audio currently being written to the
-    /// output device, sent roughly once per decoded chunk while enabled.
+    /// Live spectrum bars (and, if enabled, their falling peak markers) for
+    /// the audio currently being written to the output device, sent at the
+    /// configured interval while enabled.
     SpectrumUpdate {
         bars: Vec<f32>,
+        peaks: Vec<f32>,
     },
 }
 

@@ -1,4 +1,5 @@
 import { ListView, LineEdit } from "std-widgets.slint";
+import { Theme } from "theme.slint";
 
 export struct PlaylistRow {
     is-header: bool,
@@ -21,19 +22,20 @@ export component PlaylistView inherits Rectangle {
     callback row-remove-clicked(int);
     callback search-edited(string);
 
-    background: #1b1b1b;
+    background: Theme.bg-base;
 
     VerticalLayout {
         Rectangle {
-            height: 28px;
-            background: #202020;
+            height: 36px;
+            background: Theme.bg-raised;
             HorizontalLayout {
-                padding: 3px;
-                spacing: 6px;
-                Text { text: "Search:"; vertical-alignment: center; color: #9a9a9a; font-size: 13px; }
+                padding: 5px;
+                spacing: 8px;
+                Text { text: "Search:"; vertical-alignment: center; color: Theme.text-muted; font-size: 14px; }
                 LineEdit {
                     placeholder-text: "Type a search query and press Enter";
-                    font-size: 13px;
+                    font-size: 14px;
+                    height: 26px;
                     edited(text) => { root.search-edited(text); }
                     accepted(text) => { root.search-edited(text); }
                 }
@@ -43,7 +45,7 @@ export component PlaylistView inherits Rectangle {
             vertical-stretch: 1;
             for row[i] in root.rows: Rectangle {
                 height: row.is-header ? 64px : 22px;
-                background: row.is-current ? #c97a26 : transparent;
+                background: row.is-current ? Theme.accent : transparent;
 
                 if row.is-header: HorizontalLayout {
                     padding: 8px;
@@ -56,9 +58,9 @@ export component PlaylistView inherits Rectangle {
                     VerticalLayout {
                         alignment: center;
                         spacing: 2px;
-                        Text { text: row.group-title; font-size: 15px; font-weight: 700; color: white; overflow: elide; }
-                        Text { text: row.group-subtitle; font-size: 12px; color: #d9a35a; overflow: elide; }
-                        Text { text: row.group-info; font-size: 10px; color: #9a9a9a; overflow: elide; }
+                        Text { text: row.group-title; font-size: 15px; font-weight: 700; color: Theme.text-primary; overflow: elide; }
+                        Text { text: row.group-subtitle; font-size: 12px; color: Theme.accent; overflow: elide; }
+                        Text { text: row.group-info; font-size: 10px; color: Theme.text-muted; overflow: elide; }
                     }
                 }
 
@@ -76,9 +78,9 @@ export component PlaylistView inherits Rectangle {
                             padding-left: 56px;
                             padding-right: 4px;
                             spacing: 4px;
-                            Text { text: row.track-number; width: 30px; vertical-alignment: center; color: row.is-current ? #1b1b1b : #d8d8d8; }
-                            Text { text: row.title; horizontal-stretch: 1; vertical-alignment: center; color: row.is-current ? #1b1b1b : #d8d8d8; overflow: elide; }
-                            Text { text: row.duration; width: 60px; vertical-alignment: center; color: row.is-current ? #1b1b1b : #d8d8d8; }
+                            Text { text: row.track-number; width: 30px; vertical-alignment: center; color: row.is-current ? Theme.accent-text : Theme.text-primary; }
+                            Text { text: row.title; horizontal-stretch: 1; vertical-alignment: center; color: row.is-current ? Theme.accent-text : Theme.text-primary; overflow: elide; }
+                            Text { text: row.duration; width: 60px; vertical-alignment: center; color: row.is-current ? Theme.accent-text : Theme.text-primary; }
                         }
                     }
                 }

@@ -1,40 +1,231 @@
-import { Button, CheckBox } from "std-widgets.slint";
+import { Button, CheckBox, ComboBox, Palette, ScrollView, SpinBox } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+export struct ThemeListEntry {
+    id: string,
+    label: string,
+    swatch: color,
+    is-current: bool,
+    is-custom: bool,
+}
+
+component ThemeRow inherits Rectangle {
+    in property <ThemeListEntry> entry;
+    callback clicked();
+
+    height: 30px;
+    border-radius: 4px;
+    background: entry.is-current ? Theme.accent : transparent;
+
+    TouchArea {
+        clicked => { root.clicked(); }
+        HorizontalLayout {
+            padding: 6px;
+            spacing: 8px;
+            Rectangle {
+                width: 16px;
+                height: 16px;
+                border-radius: 3px;
+                background: root.entry.swatch;
+                border-width: 1px;
+                border-color: Theme.text-muted;
+            }
+            Text {
+                text: root.entry.label + (root.entry.is-custom ? " (custom)" : "");
+                vertical-alignment: center;
+                color: root.entry.is-current ? Theme.accent-text : Theme.text-primary;
+                font-size: 12px;
+            }
+        }
+    }
+}
+
+component SectionHeading inherits Text {
+    font-size: 16px;
+    font-weight: 700;
+    color: Theme.text-primary;
+}
+
+component LabeledRow inherits HorizontalLayout {
+    in property <string> label;
+    spacing: 8px;
+    height: 24px;
+    Text { text: root.label; width: 120px; vertical-alignment: center; color: Theme.text-primary; font-size: 12px; }
+    @children
+}
 
 export component SettingsWindow inherits Window {
     title: "Preferences";
-    preferred-width: 360px;
-    preferred-height: 220px;
-    background: #202020;
+    preferred-width: 420px;
+    preferred-height: 640px;
+    background: Theme.bg-raised;
+
+    in property <bool> theme-is-dark: true;
+    init => {
+        Palette.color-scheme = root.theme-is-dark ? ColorScheme.dark : ColorScheme.light;
+    }
+    changed theme-is-dark => {
+        Palette.color-scheme = root.theme-is-dark ? ColorScheme.dark : ColorScheme.light;
+    }
 
     in property <bool> show-waveform: true;
     in property <bool> show-spectrum: true;
+    in property <[ThemeListEntry]> themes: [];
+    in property <bool> current-theme-is-custom: false;
+
+    in property <string> spectrum-channels: "All Channels";
+    in property <int> spectrum-min-db: -80;
+    in property <int> spectrum-max-db: 0;
+    in property <string> spectrum-fft-size: "2048";
+    in property <bool> spectrum-peaks-enabled: true;
+    in property <int> spectrum-peak-hold-ms: 250;
+    in property <int> spectrum-gravity: 50;
+    in property <int> spectrum-interval-ms: 10;
 
     callback waveform-toggled(bool);
     callback spectrum-toggled(bool);
+    callback theme-row-clicked(string);
+    callback new-theme-clicked();
+    callback delete-theme-clicked();
     callback close-clicked();
 
-    VerticalLayout {
-        padding: 18px;
-        spacing: 14px;
+    callback spectrum-channels-changed(string);
+    callback spectrum-min-db-changed(int);
+    callback spectrum-max-db-changed(int);
+    callback spectrum-fft-size-changed(string);
+    callback spectrum-peaks-toggled(bool);
+    callback spectrum-peak-hold-changed(int);
+    callback spectrum-gravity-changed(int);
+    callback spectrum-interval-changed(int);
 
-        Text { text: "Visualizations"; font-size: 16px; font-weight: 700; color: white; }
+    ScrollView {
+        VerticalLayout {
+            padding: 18px;
+            spacing: 10px;
 
-        CheckBox {
-            text: "Show waveform seekbar";
-            checked: root.show-waveform;
-            toggled => { root.waveform-toggled(self.checked); }
-        }
-        CheckBox {
-            text: "Show spectrum analyzer";
-            checked: root.show-spectrum;
-            toggled => { root.spectrum-toggled(self.checked); }
-        }
+            SectionHeading { text: "Theme"; }
 
-        Rectangle { vertical-stretch: 1; }
+            ScrollView {
+                height: 160px;
+                VerticalLayout {
+                    spacing: 2px;
+                    for entry in root.themes: ThemeRow {
+                        entry: entry;
+                        clicked => { root.theme-row-clicked(entry.id); }
+                    }
+                }
+            }
 
-        HorizontalLayout {
-            alignment: end;
-            Button { text: "Close"; clicked => { root.close-clicked(); } }
+            HorizontalLayout {
+                spacing: 8px;
+                Button { text: "New Theme..."; clicked => { root.new-theme-clicked(); } }
+                Button {
+                    text: "Delete Theme";
+                    enabled: root.current-theme-is-custom;
+                    clicked => { root.delete-theme-clicked(); }
+                }
+            }
+
+            Rectangle { height: 1px; background: Theme.text-muted; }
+
+            SectionHeading { text: "Visualizations"; }
+            CheckBox {
+                text: "Show waveform seekbar";
+                checked: root.show-waveform;
+                toggled => { root.waveform-toggled(self.checked); }
+            }
+            CheckBox {
+                text: "Show spectrum analyzer";
+                checked: root.show-spectrum;
+                toggled => { root.spectrum-toggled(self.checked); }
+            }
+
+            Rectangle { height: 1px; background: Theme.text-muted; }
+
+            SectionHeading { text: "Spectrum Analyzer"; }
+
+            LabeledRow {
+                label: "Channels:";
+                ComboBox {
+                    model: ["All Channels", "Left", "Right"];
+                    current-value: root.spectrum-channels;
+                    selected(value) => { root.spectrum-channels-changed(value); }
+                }
+            }
+            LabeledRow {
+                label: "Amplitude:";
+                SpinBox {
+                    minimum: -120;
+                    maximum: root.spectrum-max-db - 1;
+                    value: root.spectrum-min-db;
+                    edited(v) => { root.spectrum-min-db-changed(v); }
+                }
+                Text { text: "to"; vertical-alignment: center; color: Theme.text-muted; font-size: 12px; }
+                SpinBox {
+                    minimum: root.spectrum-min-db + 1;
+                    maximum: 20;
+                    value: root.spectrum-max-db;
+                    edited(v) => { root.spectrum-max-db-changed(v); }
+                }
+                Text { text: "dB"; vertical-alignment: center; color: Theme.text-muted; font-size: 12px; }
+            }
+            LabeledRow {
+                label: "FFT size:";
+                ComboBox {
+                    model: ["1024", "2048", "4096", "8192", "16384"];
+                    current-value: root.spectrum-fft-size;
+                    selected(value) => { root.spectrum-fft-size-changed(value); }
+                }
+                Text { text: "samples"; vertical-alignment: center; color: Theme.text-muted; font-size: 12px; }
+            }
+            LabeledRow {
+                label: "Interval:";
+                SpinBox {
+                    minimum: 10;
+                    maximum: 1000;
+                    step-size: 10;
+                    value: root.spectrum-interval-ms;
+                    edited(v) => { root.spectrum-interval-changed(v); }
+                }
+                Text { text: "ms"; vertical-alignment: center; color: Theme.text-muted; font-size: 12px; }
+            }
+
+            CheckBox {
+                text: "Show peak markers";
+                checked: root.spectrum-peaks-enabled;
+                toggled => { root.spectrum-peaks-toggled(self.checked); }
+            }
+            LabeledRow {
+                label: "Hold time:";
+                SpinBox {
+                    minimum: 0;
+                    maximum: 5000;
+                    step-size: 50;
+                    value: root.spectrum-peak-hold-ms;
+                    enabled: root.spectrum-peaks-enabled;
+                    edited(v) => { root.spectrum-peak-hold-changed(v); }
+                }
+                Text { text: "ms"; vertical-alignment: center; color: Theme.text-muted; font-size: 12px; }
+            }
+            LabeledRow {
+                label: "Gravity:";
+                SpinBox {
+                    minimum: 0;
+                    maximum: 500;
+                    step-size: 10;
+                    value: root.spectrum-gravity;
+                    enabled: root.spectrum-peaks-enabled;
+                    edited(v) => { root.spectrum-gravity-changed(v); }
+                }
+                Text { text: "dB/s\u{00b2}"; vertical-alignment: center; color: Theme.text-muted; font-size: 12px; }
+            }
+
+            Rectangle { vertical-stretch: 1; min-height: 8px; }
+
+            HorizontalLayout {
+                alignment: end;
+                Button { text: "Close"; clicked => { root.close-clicked(); } }
+            }
         }
     }
 }

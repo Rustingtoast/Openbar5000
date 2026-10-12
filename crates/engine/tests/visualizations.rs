@@ -29,8 +29,9 @@ fn waveform_and_spectrum_events_fire_during_playback() {
                 assert!(!peaks.is_empty());
                 got_waveform = true;
             }
-            Some(EngineEvent::SpectrumUpdate { bars }) => {
+            Some(EngineEvent::SpectrumUpdate { bars, peaks }) => {
                 assert!(!bars.is_empty());
+                assert!(!peaks.is_empty(), "peaks default to enabled");
                 got_spectrum = true;
             }
             Some(EngineEvent::Error(e)) => panic!("engine error: {e}"),

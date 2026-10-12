@@ -1,12 +1,16 @@
 use crate::platform;
 use crate::playlist_rows::build_grouped_rows;
 use crate::settings::Settings;
+use crate::theme::{self, ThemeColors, ThemeRegistry};
 use engine::{AudioInfo, EngineCommand, EngineEvent, PlaybackEngine, PlaybackState, Track};
 use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
-use ui::{format_duration, AboutWindow, MainWindow, PlaylistRow, PropertiesWindow, SettingsWindow};
+use ui::{
+    format_duration, AboutWindow, MainWindow, PlaylistRow, PropertiesWindow, SettingsWindow,
+    ThemeEditorWindow, ThemeListEntry,
+};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(150);
 
@@ -20,6 +24,7 @@ pub struct UiHandles {
     pub properties_window: PropertiesWindow,
     pub about_window: AboutWindow,
     pub settings_window: SettingsWindow,
+    pub theme_editor_window: ThemeEditorWindow,
 }
 
 /// Shared UI-thread state kept in sync with the engine's playlist, so any
@@ -77,7 +82,47 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>) -> UiHandles {
         });
     }
 
+    let settings_window = SettingsWindow::new().expect("failed to create settings window");
+    let theme_editor_window =
+        ThemeEditorWindow::new().expect("failed to create theme editor window");
+
+    // --- Theme setup -----------------------------------------------------
     let settings = Rc::new(RefCell::new(Settings::load()));
+    let theme_registry = Rc::new(RefCell::new(ThemeRegistry::load()));
+    // The theme being built in the (initially hidden) editor window, reset
+    // each time "New Theme..." is clicked.
+    let draft_colors: Rc<RefCell<ThemeColors>> = Rc::new(RefCell::new(
+        theme_registry
+            .borrow()
+            .find("dark")
+            .expect("dark builtin theme must exist")
+            .colors,
+    ));
+    let draft_name: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
+
+    let initial_theme_id = settings.borrow().theme_id.clone();
+    let initial_colors = {
+        let registry = theme_registry.borrow();
+        registry
+            .find(&initial_theme_id)
+            .or_else(|| registry.find("dark"))
+            .map(|entry| entry.colors)
+            .expect("dark builtin theme must exist")
+    };
+    theme::apply_theme(
+        window,
+        &properties_window,
+        &about_window,
+        &settings_window,
+        &theme_editor_window,
+        &initial_colors,
+    );
+    refresh_theme_list(
+        &settings_window,
+        &theme_registry.borrow(),
+        &initial_theme_id,
+    );
+
     window.set_show_waveform(settings.borrow().show_waveform);
     window.set_show_spectrum(settings.borrow().show_spectrum);
     engine.send(EngineCommand::SetWaveformEnabled(
@@ -86,10 +131,22 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>) -> UiHandles {
     engine.send(EngineCommand::SetSpectrumEnabled(
         settings.borrow().show_spectrum,
     ));
-
-    let settings_window = SettingsWindow::new().expect("failed to create settings window");
     settings_window.set_show_waveform(settings.borrow().show_waveform);
     settings_window.set_show_spectrum(settings.borrow().show_spectrum);
+
+    engine.send(EngineCommand::SetSpectrumConfig(settings.borrow().spectrum));
+    {
+        let spectrum = settings.borrow().spectrum;
+        settings_window.set_spectrum_channels(spectrum_channel_label(spectrum.channel_mode).into());
+        settings_window.set_spectrum_min_db(spectrum.min_db as i32);
+        settings_window.set_spectrum_max_db(spectrum.max_db as i32);
+        settings_window.set_spectrum_fft_size(spectrum.fft_size.to_string().into());
+        settings_window.set_spectrum_peaks_enabled(spectrum.peaks_enabled);
+        settings_window.set_spectrum_peak_hold_ms(spectrum.peak_hold_ms as i32);
+        settings_window.set_spectrum_gravity(spectrum.gravity_db_per_s2 as i32);
+        settings_window.set_spectrum_interval_ms(spectrum.interval_ms as i32);
+    }
+
     {
         let settings_window_weak = settings_window.as_weak();
         settings_window.on_close_clicked(move || {
@@ -130,6 +187,288 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>) -> UiHandles {
                 window.set_show_spectrum(enabled);
             }
             engine.send(EngineCommand::SetSpectrumEnabled(enabled));
+        });
+    }
+
+    {
+        let settings = settings.clone();
+        let engine = engine.clone();
+        settings_window.on_spectrum_channels_changed(move |value| {
+            settings.borrow_mut().spectrum.channel_mode = spectrum_channel_from_label(&value);
+            settings.borrow().save();
+            engine.send(EngineCommand::SetSpectrumConfig(settings.borrow().spectrum));
+        });
+    }
+    {
+        let settings = settings.clone();
+        let engine = engine.clone();
+        settings_window.on_spectrum_min_db_changed(move |v| {
+            settings.borrow_mut().spectrum.min_db = v as f32;
+            settings.borrow().save();
+            engine.send(EngineCommand::SetSpectrumConfig(settings.borrow().spectrum));
+        });
+    }
+    {
+        let settings = settings.clone();
+        let engine = engine.clone();
+        settings_window.on_spectrum_max_db_changed(move |v| {
+            settings.borrow_mut().spectrum.max_db = v as f32;
+            settings.borrow().save();
+            engine.send(EngineCommand::SetSpectrumConfig(settings.borrow().spectrum));
+        });
+    }
+    {
+        let settings = settings.clone();
+        let engine = engine.clone();
+        settings_window.on_spectrum_fft_size_changed(move |value| {
+            let Ok(size) = value.parse::<usize>() else {
+                return;
+            };
+            settings.borrow_mut().spectrum.fft_size = size;
+            settings.borrow().save();
+            engine.send(EngineCommand::SetSpectrumConfig(settings.borrow().spectrum));
+        });
+    }
+    {
+        let settings = settings.clone();
+        let settings_window_weak = settings_window.as_weak();
+        let engine = engine.clone();
+        settings_window.on_spectrum_peaks_toggled(move |enabled| {
+            settings.borrow_mut().spectrum.peaks_enabled = enabled;
+            settings.borrow().save();
+            if let Some(window) = settings_window_weak.upgrade() {
+                window.set_spectrum_peaks_enabled(enabled);
+            }
+            engine.send(EngineCommand::SetSpectrumConfig(settings.borrow().spectrum));
+        });
+    }
+    {
+        let settings = settings.clone();
+        let engine = engine.clone();
+        settings_window.on_spectrum_peak_hold_changed(move |v| {
+            settings.borrow_mut().spectrum.peak_hold_ms = v as f32;
+            settings.borrow().save();
+            engine.send(EngineCommand::SetSpectrumConfig(settings.borrow().spectrum));
+        });
+    }
+    {
+        let settings = settings.clone();
+        let engine = engine.clone();
+        settings_window.on_spectrum_gravity_changed(move |v| {
+            settings.borrow_mut().spectrum.gravity_db_per_s2 = v as f32;
+            settings.borrow().save();
+            engine.send(EngineCommand::SetSpectrumConfig(settings.borrow().spectrum));
+        });
+    }
+    {
+        let settings = settings.clone();
+        let engine = engine.clone();
+        settings_window.on_spectrum_interval_changed(move |v| {
+            settings.borrow_mut().spectrum.interval_ms = v as u32;
+            settings.borrow().save();
+            engine.send(EngineCommand::SetSpectrumConfig(settings.borrow().spectrum));
+        });
+    }
+
+    {
+        let theme_registry = theme_registry.clone();
+        let settings = settings.clone();
+        let window_weak = window.as_weak();
+        let properties_window_weak = properties_window.as_weak();
+        let about_window_weak = about_window.as_weak();
+        let settings_window_weak = settings_window.as_weak();
+        let theme_editor_window_weak = theme_editor_window.as_weak();
+        settings_window.on_theme_row_clicked(move |id| {
+            let id = id.to_string();
+            let Some(colors) = theme_registry.borrow().find(&id).map(|e| e.colors) else {
+                return;
+            };
+            settings.borrow_mut().theme_id = id.clone();
+            settings.borrow().save();
+
+            let (
+                Some(window),
+                Some(properties_window),
+                Some(about_window),
+                Some(settings_window),
+                Some(editor),
+            ) = (
+                window_weak.upgrade(),
+                properties_window_weak.upgrade(),
+                about_window_weak.upgrade(),
+                settings_window_weak.upgrade(),
+                theme_editor_window_weak.upgrade(),
+            )
+            else {
+                return;
+            };
+            theme::apply_theme(
+                &window,
+                &properties_window,
+                &about_window,
+                &settings_window,
+                &editor,
+                &colors,
+            );
+            refresh_theme_list(&settings_window, &theme_registry.borrow(), &id);
+        });
+    }
+    {
+        let theme_registry = theme_registry.clone();
+        let settings = settings.clone();
+        let draft_colors = draft_colors.clone();
+        let draft_name = draft_name.clone();
+        let theme_editor_window_weak = theme_editor_window.as_weak();
+        settings_window.on_new_theme_clicked(move || {
+            let current_id = settings.borrow().theme_id.clone();
+            let colors = {
+                let registry = theme_registry.borrow();
+                registry
+                    .find(&current_id)
+                    .or_else(|| registry.find("dark"))
+                    .map(|entry| entry.colors)
+                    .expect("dark builtin theme must exist")
+            };
+            *draft_colors.borrow_mut() = colors;
+            *draft_name.borrow_mut() = String::new();
+
+            let Some(editor) = theme_editor_window_weak.upgrade() else {
+                return;
+            };
+            editor.set_theme_name("".into());
+            set_editor_fields(&editor, &colors);
+            editor.show().expect("failed to show theme editor window");
+        });
+    }
+    {
+        let draft_name = draft_name.clone();
+        theme_editor_window.on_name_edited(move |value| {
+            *draft_name.borrow_mut() = value.to_string();
+        });
+    }
+    {
+        let draft_colors = draft_colors.clone();
+        let theme_editor_window_weak = theme_editor_window.as_weak();
+        theme_editor_window.on_field_edited(move |key, value| {
+            let Some(color) = theme::parse_hex_color(&value) else {
+                return;
+            };
+            draft_colors.borrow_mut().set(&key, color);
+            if let Some(editor) = theme_editor_window_weak.upgrade() {
+                set_editor_swatch(&editor, &key, color);
+            }
+        });
+    }
+    {
+        let theme_editor_window_weak = theme_editor_window.as_weak();
+        theme_editor_window.on_cancel_clicked(move || {
+            if let Some(editor) = theme_editor_window_weak.upgrade() {
+                editor.hide().expect("failed to hide theme editor window");
+            }
+        });
+    }
+    {
+        let theme_registry = theme_registry.clone();
+        let settings = settings.clone();
+        let draft_colors = draft_colors.clone();
+        let draft_name = draft_name.clone();
+        let window_weak = window.as_weak();
+        let properties_window_weak = properties_window.as_weak();
+        let about_window_weak = about_window.as_weak();
+        let settings_window_weak = settings_window.as_weak();
+        let theme_editor_window_weak = theme_editor_window.as_weak();
+        theme_editor_window.on_save_clicked(move || {
+            let name = draft_name.borrow().trim().to_string();
+            if name.is_empty() {
+                return;
+            }
+            let colors = *draft_colors.borrow();
+            let new_id = theme_registry.borrow_mut().add_custom(&name, colors);
+            settings.borrow_mut().theme_id = new_id.clone();
+            settings.borrow().save();
+
+            let (
+                Some(window),
+                Some(properties_window),
+                Some(about_window),
+                Some(settings_window),
+                Some(editor),
+            ) = (
+                window_weak.upgrade(),
+                properties_window_weak.upgrade(),
+                about_window_weak.upgrade(),
+                settings_window_weak.upgrade(),
+                theme_editor_window_weak.upgrade(),
+            )
+            else {
+                return;
+            };
+            theme::apply_theme(
+                &window,
+                &properties_window,
+                &about_window,
+                &settings_window,
+                &editor,
+                &colors,
+            );
+            refresh_theme_list(&settings_window, &theme_registry.borrow(), &new_id);
+            editor.hide().expect("failed to hide theme editor window");
+        });
+    }
+    {
+        let theme_registry = theme_registry.clone();
+        let settings = settings.clone();
+        let window_weak = window.as_weak();
+        let properties_window_weak = properties_window.as_weak();
+        let about_window_weak = about_window.as_weak();
+        let settings_window_weak = settings_window.as_weak();
+        let theme_editor_window_weak = theme_editor_window.as_weak();
+        settings_window.on_delete_theme_clicked(move || {
+            let current_id = settings.borrow().theme_id.clone();
+            let is_custom = theme_registry
+                .borrow()
+                .find(&current_id)
+                .map(|e| e.is_custom)
+                .unwrap_or(false);
+            if !is_custom {
+                return;
+            }
+            theme_registry.borrow_mut().remove_custom(&current_id);
+
+            let fallback_id = "dark".to_string();
+            let colors = theme_registry
+                .borrow()
+                .find(&fallback_id)
+                .map(|entry| entry.colors)
+                .expect("dark builtin theme must exist");
+            settings.borrow_mut().theme_id = fallback_id.clone();
+            settings.borrow().save();
+
+            let (
+                Some(window),
+                Some(properties_window),
+                Some(about_window),
+                Some(settings_window),
+                Some(editor),
+            ) = (
+                window_weak.upgrade(),
+                properties_window_weak.upgrade(),
+                about_window_weak.upgrade(),
+                settings_window_weak.upgrade(),
+                theme_editor_window_weak.upgrade(),
+            )
+            else {
+                return;
+            };
+            theme::apply_theme(
+                &window,
+                &properties_window,
+                &about_window,
+                &settings_window,
+                &editor,
+                &colors,
+            );
+            refresh_theme_list(&settings_window, &theme_registry.borrow(), &fallback_id);
         });
     }
 
@@ -314,6 +653,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>) -> UiHandles {
         properties_window,
         about_window,
         settings_window,
+        theme_editor_window,
     }
 }
 
@@ -324,6 +664,69 @@ fn refresh_playlist_rows(
     let state = playlist_view_state.borrow();
     let rows = build_grouped_rows(&state.tracks, state.current_index, &state.search_query);
     playlist_model.set_vec(rows);
+}
+
+fn refresh_theme_list(
+    settings_window: &SettingsWindow,
+    registry: &ThemeRegistry,
+    current_id: &str,
+) {
+    let entries: Vec<ThemeListEntry> = registry
+        .entries
+        .iter()
+        .map(|entry| ThemeListEntry {
+            id: entry.id.clone().into(),
+            label: entry.label.clone().into(),
+            swatch: entry.colors.accent,
+            is_current: entry.id == current_id,
+            is_custom: entry.is_custom,
+        })
+        .collect();
+    settings_window.set_themes(ModelRc::from(Rc::new(VecModel::from(entries))));
+    settings_window.set_current_theme_is_custom(
+        registry
+            .find(current_id)
+            .map(|e| e.is_custom)
+            .unwrap_or(false),
+    );
+}
+
+fn set_editor_fields(editor: &ThemeEditorWindow, colors: &ThemeColors) {
+    for (key, _) in ThemeColors::FIELDS {
+        let color = colors.get(key).expect("field key must be valid");
+        set_editor_swatch(editor, key, color);
+        set_editor_value(editor, key, theme::color_to_hex(color));
+    }
+}
+
+fn set_editor_swatch(editor: &ThemeEditorWindow, key: &str, color: slint::Color) {
+    match key {
+        "bg_base" => editor.set_swatch_bg_base(color),
+        "bg_raised" => editor.set_swatch_bg_raised(color),
+        "bg_sunken" => editor.set_swatch_bg_sunken(color),
+        "text_primary" => editor.set_swatch_text_primary(color),
+        "text_muted" => editor.set_swatch_text_muted(color),
+        "accent" => editor.set_swatch_accent(color),
+        "accent_text" => editor.set_swatch_accent_text(color),
+        "waveform_unplayed" => editor.set_swatch_waveform_unplayed(color),
+        "spectrum_bar" => editor.set_swatch_spectrum_bar(color),
+        _ => {}
+    }
+}
+
+fn set_editor_value(editor: &ThemeEditorWindow, key: &str, value: String) {
+    match key {
+        "bg_base" => editor.set_value_bg_base(value.into()),
+        "bg_raised" => editor.set_value_bg_raised(value.into()),
+        "bg_sunken" => editor.set_value_bg_sunken(value.into()),
+        "text_primary" => editor.set_value_text_primary(value.into()),
+        "text_muted" => editor.set_value_text_muted(value.into()),
+        "accent" => editor.set_value_accent(value.into()),
+        "accent_text" => editor.set_value_accent_text(value.into()),
+        "waveform_unplayed" => editor.set_value_waveform_unplayed(value.into()),
+        "spectrum_bar" => editor.set_value_spectrum_bar(value.into()),
+        _ => {}
+    }
 }
 
 fn apply_event(
@@ -393,9 +796,26 @@ fn apply_event(
                 window.set_waveform_played_bucket_index(0);
             }
         }
-        EngineEvent::SpectrumUpdate { bars } => {
+        EngineEvent::SpectrumUpdate { bars, peaks } => {
             window.set_spectrum_bars(ModelRc::from(Rc::new(VecModel::from(bars))));
+            window.set_spectrum_peaks(ModelRc::from(Rc::new(VecModel::from(peaks))));
         }
+    }
+}
+
+fn spectrum_channel_label(mode: engine::SpectrumChannelMode) -> &'static str {
+    match mode {
+        engine::SpectrumChannelMode::All => "All Channels",
+        engine::SpectrumChannelMode::Left => "Left",
+        engine::SpectrumChannelMode::Right => "Right",
+    }
+}
+
+fn spectrum_channel_from_label(label: &str) -> engine::SpectrumChannelMode {
+    match label {
+        "Left" => engine::SpectrumChannelMode::Left,
+        "Right" => engine::SpectrumChannelMode::Right,
+        _ => engine::SpectrumChannelMode::All,
     }
 }
 

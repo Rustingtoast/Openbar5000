@@ -1,6 +1,7 @@
 mod platform;
 mod playlist_rows;
 mod settings;
+mod theme;
 mod wiring;
 
 use engine::PlaybackEngine;

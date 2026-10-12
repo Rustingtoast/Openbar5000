@@ -1,4 +1,5 @@
 import { Palette } from "std-widgets.slint";
+import { Theme } from "theme.slint";
 import { PlaylistView, PlaylistRow } from "playlist_view.slint";
 import { TransportBar } from "transport_bar.slint";
 import { StatusBar } from "status_bar.slint";
@@ -6,9 +7,10 @@ import { WaveformSeekbar } from "waveform_seekbar.slint";
 import { SpectrumView } from "spectrum_view.slint";
 import { PropertiesWindow } from "properties_window.slint";
 import { AboutWindow } from "about_window.slint";
-import { SettingsWindow } from "settings_window.slint";
+import { SettingsWindow, ThemeListEntry } from "settings_window.slint";
+import { ThemeEditorWindow } from "theme_editor_window.slint";
 
-export { PlaylistRow, PropertiesWindow, AboutWindow, SettingsWindow }
+export { PlaylistRow, PropertiesWindow, AboutWindow, SettingsWindow, ThemeListEntry, ThemeEditorWindow, Theme }
 
 export component MainWindow inherits Window {
     title: "Openbar5000";
@@ -23,16 +25,20 @@ export component MainWindow inherits Window {
     // locked the window.
     max-width: 100000px;
     max-height: 100000px;
-    background: #1b1b1b;
+    background: Theme.bg-base;
 
-    // The whole UI (including std-widgets like Button/Slider/ListView/MenuBar)
-    // is laid out with hardcoded dark colors matching foobar2000's own dark
-    // skin. Without this, the OS's light/dark foreground and widget styling
-    // fights those hardcoded backgrounds (e.g. default Text color turns
-    // white against a light panel, or vice versa). Pinning the palette keeps
-    // it consistent regardless of the system theme.
+    // Every window keeps std-widgets (Button/CheckBox/LineEdit/MenuBar/...)
+    // in the built-in style matching the active `Theme`, instead of
+    // following the OS's own light/dark setting -- otherwise default-styled
+    // widgets would fight the Theme-driven hardcoded colors everywhere else
+    // (e.g. default Text color turning white against a light theme panel).
+    // `app::theme::apply_theme` sets this whenever the theme changes.
+    in property <bool> theme-is-dark: true;
     init => {
-        Palette.color-scheme = ColorScheme.dark;
+        Palette.color-scheme = root.theme-is-dark ? ColorScheme.dark : ColorScheme.light;
+    }
+    changed theme-is-dark => {
+        Palette.color-scheme = root.theme-is-dark ? ColorScheme.dark : ColorScheme.light;
     }
 
     in property <[PlaylistRow]> playlist-rows: [];
@@ -49,6 +55,7 @@ export component MainWindow inherits Window {
     in property <[float]> waveform-peaks: [];
     in property <int> waveform-played-bucket-index: 0;
     in property <[float]> spectrum-bars: [];
+    in property <[float]> spectrum-peaks: [];
 
     callback play-pause-clicked();
     callback menu-play-clicked();
@@ -124,6 +131,7 @@ export component MainWindow inherits Window {
         }
         if root.show-spectrum: SpectrumView {
             bars: root.spectrum-bars;
+            peaks: root.spectrum-peaks;
         }
         TransportBar {
             is-playing: root.is-playing;

@@ -18,6 +18,7 @@ pub use library::{scan_audio_files, AUDIO_EXTENSIONS};
 pub use metadata::load_metadata;
 pub use playback_engine::PlaybackEngine;
 pub use playlist::{Playlist, Track, TrackMetadata};
+pub use spectrum::{SpectrumChannelMode, SpectrumConfig};
 pub use waveform::compute_peaks;
 
 pub use plugin_api::{AudioInfo, DecodeError, Decoder, Dsp, OutputError, OutputSink};

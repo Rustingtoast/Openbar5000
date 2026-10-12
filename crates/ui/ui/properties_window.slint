@@ -1,4 +1,5 @@
-import { Button } from "std-widgets.slint";
+import { Button, Palette } from "std-widgets.slint";
+import { Theme } from "theme.slint";
 
 component PropertyRow inherits HorizontalLayout {
     in property <string> label;
@@ -8,12 +9,12 @@ component PropertyRow inherits HorizontalLayout {
         text: root.label + ":";
         width: 120px;
         font-weight: 600;
-        color: #9a9a9a;
+        color: Theme.text-muted;
     }
     Text {
         text: root.value;
         horizontal-stretch: 1;
-        color: white;
+        color: Theme.text-primary;
         overflow: elide;
     }
 }
@@ -22,7 +23,18 @@ export component PropertiesWindow inherits Window {
     title: "Properties";
     preferred-width: 440px;
     preferred-height: 380px;
-    background: #202020;
+    background: Theme.bg-raised;
+
+    // See MainWindow for why each top-level window syncs this itself --
+    // every window is a separate Slint component instance with its own
+    // Palette/Theme global state.
+    in property <bool> theme-is-dark: true;
+    init => {
+        Palette.color-scheme = root.theme-is-dark ? ColorScheme.dark : ColorScheme.light;
+    }
+    changed theme-is-dark => {
+        Palette.color-scheme = root.theme-is-dark ? ColorScheme.dark : ColorScheme.light;
+    }
 
     in property <string> file-path: "";
     in property <string> prop-title: "";

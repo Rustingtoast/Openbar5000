@@ -1,11 +1,9 @@
 use crate::dsp::GainDsp;
-use crate::spectrum::SpectrumAnalyzer;
+use crate::spectrum::{SpectrumAnalyzer, SpectrumConfig};
 use plugin_api::{AudioInfo, DecodeError, Decoder, Dsp, OutputError, OutputSink};
 use std::fmt;
 
 const CHUNK_SAMPLES: usize = 4096;
-const SPECTRUM_FFT_SIZE: usize = 2048;
-const SPECTRUM_BAR_COUNT: usize = 32;
 
 #[derive(Debug)]
 pub enum PipelineError {
@@ -49,7 +47,7 @@ pub struct Pipeline {
     buffer: Vec<f32>,
     spectrum: SpectrumAnalyzer,
     spectrum_enabled: bool,
-    latest_spectrum: Option<Vec<f32>>,
+    latest_spectrum: Option<(Vec<f32>, Vec<f32>)>,
 }
 
 impl Pipeline {
@@ -61,7 +59,7 @@ impl Pipeline {
             sink,
             channels: 2,
             buffer: vec![0.0; CHUNK_SAMPLES],
-            spectrum: SpectrumAnalyzer::new(SPECTRUM_FFT_SIZE, SPECTRUM_BAR_COUNT),
+            spectrum: SpectrumAnalyzer::new(SpectrumConfig::default()),
             spectrum_enabled: false,
             latest_spectrum: None,
         }
@@ -75,9 +73,14 @@ impl Pipeline {
         self.spectrum_enabled = enabled;
     }
 
-    /// Takes the spectrum computed by the most recent `process_chunk` call,
-    /// if any -- `None` when disabled or no chunk has been processed yet.
-    pub fn take_spectrum(&mut self) -> Option<Vec<f32>> {
+    pub fn set_spectrum_config(&mut self, config: SpectrumConfig) {
+        self.spectrum.set_config(config);
+    }
+
+    /// Takes the `(bars, peaks)` computed by the most recent `process_chunk`
+    /// call, if any -- `None` when disabled, throttled by the configured
+    /// interval, or no chunk has been processed yet.
+    pub fn take_spectrum(&mut self) -> Option<(Vec<f32>, Vec<f32>)> {
         self.latest_spectrum.take()
     }
 
@@ -139,7 +142,7 @@ impl Pipeline {
         }
         self.gain.process(chunk, self.channels);
 
-        if self.spectrum_enabled {
+        if self.spectrum_enabled && self.spectrum.due() {
             self.latest_spectrum = Some(self.spectrum.analyze(chunk, self.channels as usize));
         }
 

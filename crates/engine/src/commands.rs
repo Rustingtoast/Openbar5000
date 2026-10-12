@@ -1,3 +1,4 @@
+use crate::spectrum::SpectrumConfig;
 use std::time::Duration;
 
 /// Sent from the UI thread to the playback thread. See
@@ -26,4 +27,7 @@ pub enum EngineCommand {
     /// Gates whether loading a track spawns a background waveform-peak
     /// computation.
     SetWaveformEnabled(bool),
+    /// Channels/amplitude-range/FFT-size/peak-physics settings for the
+    /// spectrum analyzer.
+    SetSpectrumConfig(SpectrumConfig),
 }

@@ -112,8 +112,8 @@ fn run(command_rx: Receiver<EngineCommand>, event_tx: Sender<EngineEvent>) {
             Ok(0) => advance_to_next_track(&mut state, &event_tx),
             Ok(written) => {
                 state.samples_played += written as u64;
-                if let Some(bars) = state.pipeline.take_spectrum() {
-                    let _ = event_tx.send(EngineEvent::SpectrumUpdate { bars });
+                if let Some((bars, peaks)) = state.pipeline.take_spectrum() {
+                    let _ = event_tx.send(EngineEvent::SpectrumUpdate { bars, peaks });
                 }
                 if last_position_sent.elapsed() >= POSITION_UPDATE_INTERVAL {
                     send_position_update(&state, &event_tx);
@@ -210,6 +210,9 @@ fn handle_command(
         }
         EngineCommand::SetWaveformEnabled(enabled) => {
             state.waveform_enabled = enabled;
+        }
+        EngineCommand::SetSpectrumConfig(config) => {
+            state.pipeline.set_spectrum_config(config);
         }
     }
     true
