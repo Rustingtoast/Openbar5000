@@ -16,19 +16,43 @@ export component TransportBar inherits Rectangle {
     callback volume-changed(float);
 
     height: 64px;
-    background: #e8e8e8;
+    background: #202020;
 
     VerticalLayout {
         HorizontalLayout {
             height: 30px;
             spacing: 6px;
             padding: 4px;
-            Button { text: "|<"; clicked => { root.previous-clicked(); } }
-            Button { text: root.is-playing ? "Pause" : "Play"; clicked => { root.play-pause-clicked(); } }
-            Button { text: "Stop"; clicked => { root.stop-clicked(); } }
-            Button { text: ">|"; clicked => { root.next-clicked(); } }
+            Button {
+                icon: @image-url("assets/icons/skip-back.svg");
+                icon-size: 16px;
+                colorize-icon: true;
+                width: 36px;
+                clicked => { root.previous-clicked(); }
+            }
+            Button {
+                icon: root.is-playing ? @image-url("assets/icons/pause.svg") : @image-url("assets/icons/play.svg");
+                icon-size: 16px;
+                colorize-icon: true;
+                width: 36px;
+                clicked => { root.play-pause-clicked(); }
+            }
+            Button {
+                icon: @image-url("assets/icons/stop.svg");
+                icon-size: 16px;
+                colorize-icon: true;
+                width: 36px;
+                clicked => { root.stop-clicked(); }
+            }
+            Button {
+                icon: @image-url("assets/icons/skip-forward.svg");
+                icon-size: 16px;
+                colorize-icon: true;
+                width: 36px;
+                clicked => { root.next-clicked(); }
+            }
             Rectangle { horizontal-stretch: 1; }
-            Text { text: "Vol"; vertical-alignment: center; }
+            Text { text: "Vol"; vertical-alignment: center; color: #cfcfcf; }
             Slider {
                 width: 100px;
                 minimum: 0;
@@ -41,7 +65,7 @@ export component TransportBar inherits Rectangle {
             height: 26px;
             padding: 4px;
             spacing: 6px;
-            Text { text: root.position-text; vertical-alignment: center; }
+            Text { text: root.position-text; vertical-alignment: center; color: #cfcfcf; }
             Slider {
                 horizontal-stretch: 1;
                 minimum: 0;
@@ -49,7 +73,7 @@ export component TransportBar inherits Rectangle {
                 value: root.position-seconds;
                 changed(v) => { root.seek-requested(v); }
             }
-            Text { text: root.duration-text; vertical-alignment: center; }
+            Text { text: root.duration-text; vertical-alignment: center; color: #cfcfcf; }
         }
     }
 }

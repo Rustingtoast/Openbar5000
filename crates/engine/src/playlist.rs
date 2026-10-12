@@ -8,6 +8,14 @@ pub struct TrackMetadata {
     pub album: String,
     pub track_number: Option<u32>,
     pub duration: Duration,
+    /// Raw embedded cover art bytes (still JPEG/PNG-encoded), if the file
+    /// has any. Decoding to pixels is a UI-layer concern.
+    pub cover_art: Option<Vec<u8>>,
+    /// Short codec label for display, e.g. "FLAC", "MP3".
+    pub format_label: String,
+    pub bitrate_kbps: Option<u32>,
+    pub sample_rate: Option<u32>,
+    pub bit_depth: Option<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -78,5 +86,26 @@ impl Playlist {
             Some(i) if i > 0 => self.set_current_index(i - 1),
             _ => None,
         }
+    }
+
+    /// Removes the track at `index`, if any, adjusting `current_index` so it
+    /// still points at the same track (or `None` if that track was the one
+    /// removed -- the caller is responsible for stopping playback in that
+    /// case).
+    pub fn remove(&mut self, index: usize) {
+        if index >= self.tracks.len() {
+            return;
+        }
+        self.tracks.remove(index);
+        self.current_index = match self.current_index {
+            Some(current) if current == index => None,
+            Some(current) if current > index => Some(current - 1),
+            other => other,
+        };
+    }
+
+    pub fn clear(&mut self) {
+        self.tracks.clear();
+        self.current_index = None;
     }
 }

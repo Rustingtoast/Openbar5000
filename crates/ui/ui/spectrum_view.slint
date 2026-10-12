@@ -1,0 +1,17 @@
+export component SpectrumView inherits Rectangle {
+    in property <[float]> bars: [];
+
+    height: 56px;
+    background: #141414;
+
+    HorizontalLayout {
+        padding: 2px;
+        spacing: 2px;
+        for bar[i] in root.bars: Rectangle {
+            horizontal-stretch: 1;
+            y: root.height - self.height - 2px;
+            height: max(1px, min(bar, 1.0) * (root.height - 4px));
+            background: #3fb8e8;
+        }
+    }
+}

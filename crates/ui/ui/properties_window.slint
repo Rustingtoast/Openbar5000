@@ -8,12 +8,12 @@ component PropertyRow inherits HorizontalLayout {
         text: root.label + ":";
         width: 120px;
         font-weight: 600;
-        color: black;
+        color: #9a9a9a;
     }
     Text {
         text: root.value;
         horizontal-stretch: 1;
-        color: black;
+        color: white;
         overflow: elide;
     }
 }
@@ -22,7 +22,7 @@ export component PropertiesWindow inherits Window {
     title: "Properties";
     preferred-width: 440px;
     preferred-height: 380px;
-    background: white;
+    background: #202020;
 
     in property <string> file-path: "";
     in property <string> prop-title: "";

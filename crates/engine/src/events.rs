@@ -17,8 +17,23 @@ pub enum EngineEvent {
     PlaybackStateChanged(PlaybackState),
     Error(String),
     Underrun,
-    PlaylistLoaded {
+    /// Sent on a fresh load and again whenever the playlist's contents
+    /// change (track removed, playlist cleared). `current_index` reflects
+    /// what's still playing/loaded after the change, if anything.
+    PlaylistUpdated {
         tracks: Vec<Track>,
+        current_index: Option<usize>,
+    },
+    /// Peak amplitudes for the whole track, computed on a background thread
+    /// after `TrackChanged`; drives the waveform seekbar.
+    WaveformReady {
+        index: usize,
+        peaks: Vec<f32>,
+    },
+    /// Live spectrum bars for the audio currently being written to the
+    /// output device, sent roughly once per decoded chunk while enabled.
+    SpectrumUpdate {
+        bars: Vec<f32>,
     },
 }
 

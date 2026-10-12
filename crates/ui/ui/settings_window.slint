@@ -1,0 +1,40 @@
+import { Button, CheckBox } from "std-widgets.slint";
+
+export component SettingsWindow inherits Window {
+    title: "Preferences";
+    preferred-width: 360px;
+    preferred-height: 220px;
+    background: #202020;
+
+    in property <bool> show-waveform: true;
+    in property <bool> show-spectrum: true;
+
+    callback waveform-toggled(bool);
+    callback spectrum-toggled(bool);
+    callback close-clicked();
+
+    VerticalLayout {
+        padding: 18px;
+        spacing: 14px;
+
+        Text { text: "Visualizations"; font-size: 16px; font-weight: 700; color: white; }
+
+        CheckBox {
+            text: "Show waveform seekbar";
+            checked: root.show-waveform;
+            toggled => { root.waveform-toggled(self.checked); }
+        }
+        CheckBox {
+            text: "Show spectrum analyzer";
+            checked: root.show-spectrum;
+            toggled => { root.spectrum-toggled(self.checked); }
+        }
+
+        Rectangle { vertical-stretch: 1; }
+
+        HorizontalLayout {
+            alignment: end;
+            Button { text: "Close"; clicked => { root.close-clicked(); } }
+        }
+    }
+}

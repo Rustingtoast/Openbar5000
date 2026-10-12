@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 const POSITION_UPDATE_INTERVAL: Duration = Duration::from_millis(200);
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const WAVEFORM_BUCKET_COUNT: usize = 400;
 
 /// Owns the dedicated playback thread. The UI never touches decoding, DSP,
 /// or output directly -- it only sends [`EngineCommand`]s and drains
@@ -61,6 +62,7 @@ struct EngineState {
     channels: u16,
     samples_played: u64,
     volume: f32,
+    waveform_enabled: bool,
 }
 
 fn run(command_rx: Receiver<EngineCommand>, event_tx: Sender<EngineEvent>) {
@@ -80,6 +82,7 @@ fn run(command_rx: Receiver<EngineCommand>, event_tx: Sender<EngineEvent>) {
         channels: 2,
         samples_played: 0,
         volume: 1.0,
+        waveform_enabled: false,
     };
 
     let mut last_position_sent = Instant::now();
@@ -109,6 +112,9 @@ fn run(command_rx: Receiver<EngineCommand>, event_tx: Sender<EngineEvent>) {
             Ok(0) => advance_to_next_track(&mut state, &event_tx),
             Ok(written) => {
                 state.samples_played += written as u64;
+                if let Some(bars) = state.pipeline.take_spectrum() {
+                    let _ = event_tx.send(EngineEvent::SpectrumUpdate { bars });
+                }
                 if last_position_sent.elapsed() >= POSITION_UPDATE_INTERVAL {
                     send_position_update(&state, &event_tx);
                     last_position_sent = Instant::now();
@@ -176,16 +182,44 @@ fn handle_command(
                     Track { path, metadata }
                 })
                 .collect();
-            state.playlist = Playlist::from_tracks(tracks.clone());
+            state.playlist = Playlist::from_tracks(tracks);
             state.samples_played = 0;
-            let _ = event_tx.send(EngineEvent::PlaylistLoaded { tracks });
+            send_playlist_update(state, event_tx);
         }
         EngineCommand::PlayIndex(index) => {
             load_track(state, index, event_tx);
             set_playback_state(state, PlaybackState::Playing, event_tx);
         }
+        EngineCommand::RemoveIndex(index) => {
+            let removed_current = state.playlist.current_index() == Some(index);
+            state.playlist.remove(index);
+            if removed_current {
+                set_playback_state(state, PlaybackState::Stopped, event_tx);
+                state.samples_played = 0;
+            }
+            send_playlist_update(state, event_tx);
+        }
+        EngineCommand::ClearPlaylist => {
+            state.playlist.clear();
+            set_playback_state(state, PlaybackState::Stopped, event_tx);
+            state.samples_played = 0;
+            send_playlist_update(state, event_tx);
+        }
+        EngineCommand::SetSpectrumEnabled(enabled) => {
+            state.pipeline.set_spectrum_enabled(enabled);
+        }
+        EngineCommand::SetWaveformEnabled(enabled) => {
+            state.waveform_enabled = enabled;
+        }
     }
     true
+}
+
+fn send_playlist_update(state: &EngineState, event_tx: &Sender<EngineEvent>) {
+    let _ = event_tx.send(EngineEvent::PlaylistUpdated {
+        tracks: state.playlist.tracks().to_vec(),
+        current_index: state.playlist.current_index(),
+    });
 }
 
 fn load_track(state: &mut EngineState, index: usize, event_tx: &Sender<EngineEvent>) {
@@ -200,6 +234,9 @@ fn load_track(state: &mut EngineState, index: usize, event_tx: &Sender<EngineEve
             state.sample_rate = info.sample_rate;
             state.channels = info.channels;
             state.samples_played = 0;
+            if state.waveform_enabled {
+                spawn_waveform_computation(track.path.clone(), index, event_tx.clone());
+            }
             let _ = event_tx.send(EngineEvent::TrackChanged { index, track });
         }
         Err(e) => {
@@ -207,6 +244,25 @@ fn load_track(state: &mut EngineState, index: usize, event_tx: &Sender<EngineEve
             set_playback_state(state, PlaybackState::Stopped, event_tx);
         }
     }
+}
+
+/// Computes waveform peaks on a dedicated, short-lived thread with its own
+/// decoder/file handle, so a multi-minute track doesn't stall playback (the
+/// playback thread is busy decoding the *same* file for output at the same
+/// time).
+fn spawn_waveform_computation(
+    path: std::path::PathBuf,
+    index: usize,
+    event_tx: Sender<EngineEvent>,
+) {
+    std::thread::Builder::new()
+        .name("openbar5000-waveform".into())
+        .spawn(move || {
+            if let Ok(peaks) = crate::waveform::compute_peaks(&path, WAVEFORM_BUCKET_COUNT) {
+                let _ = event_tx.send(EngineEvent::WaveformReady { index, peaks });
+            }
+        })
+        .expect("failed to spawn waveform thread");
 }
 
 fn advance_to_next_track(state: &mut EngineState, event_tx: &Sender<EngineEvent>) {

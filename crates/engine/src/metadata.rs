@@ -1,8 +1,28 @@
 use crate::playlist::TrackMetadata;
-use lofty::file::TaggedFileExt;
+use lofty::file::{FileType, TaggedFileExt};
 use lofty::prelude::{Accessor, AudioFile};
 use std::path::Path;
 use std::time::Duration;
+
+fn format_label(file_type: FileType) -> String {
+    match file_type {
+        FileType::Aac => "AAC",
+        FileType::Aiff => "AIFF",
+        FileType::Ape => "APE",
+        FileType::Flac => "FLAC",
+        FileType::Mpeg => "MP3",
+        FileType::Mp4 => "MP4",
+        FileType::Mpc => "MPC",
+        FileType::Opus => "Opus",
+        FileType::Vorbis => "Vorbis",
+        FileType::Speex => "Speex",
+        FileType::Wav => "WAV",
+        FileType::WavPack => "WavPack",
+        FileType::Custom(name) => name,
+        _ => "",
+    }
+    .to_string()
+}
 
 /// Reads tag + duration metadata for the playlist grid. Best-effort: a file
 /// lofty can't parse still gets a `TrackMetadata` falling back to its file
@@ -20,12 +40,18 @@ pub fn load_metadata(path: &Path) -> TrackMetadata {
         };
     };
 
-    let duration = tagged_file.properties().duration();
+    let properties = tagged_file.properties();
+    let duration = Duration::from_secs_f64(properties.duration().as_secs_f64());
+    let bitrate_kbps = properties.audio_bitrate();
+    let sample_rate = properties.sample_rate();
+    let bit_depth = properties.bit_depth();
+    let format_label = format_label(tagged_file.file_type());
+
     let tag = tagged_file
         .primary_tag()
         .or_else(|| tagged_file.first_tag());
 
-    let (title, artist, album, track_number) = match tag {
+    let (title, artist, album, track_number, cover_art) = match tag {
         Some(tag) => (
             tag.title()
                 .map(|s| s.into_owned())
@@ -33,8 +59,9 @@ pub fn load_metadata(path: &Path) -> TrackMetadata {
             tag.artist().map(|s| s.into_owned()).unwrap_or_default(),
             tag.album().map(|s| s.into_owned()).unwrap_or_default(),
             tag.track(),
+            tag.pictures().first().map(|pic| pic.data().to_vec()),
         ),
-        None => (fallback_title, String::new(), String::new(), None),
+        None => (fallback_title, String::new(), String::new(), None, None),
     };
 
     TrackMetadata {
@@ -42,6 +69,11 @@ pub fn load_metadata(path: &Path) -> TrackMetadata {
         artist,
         album,
         track_number,
-        duration: Duration::from_secs_f64(duration.as_secs_f64()),
+        duration,
+        cover_art,
+        format_label,
+        bitrate_kbps,
+        sample_rate,
+        bit_depth,
     }
 }

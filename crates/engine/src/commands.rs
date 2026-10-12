@@ -16,4 +16,14 @@ pub enum EngineCommand {
     LoadPlaylist(Vec<std::path::PathBuf>),
     /// Jump to a specific index in the current playlist and play it.
     PlayIndex(usize),
+    /// Removes a single track from the playlist by index.
+    RemoveIndex(usize),
+    ClearPlaylist,
+    /// Gates the (otherwise per-chunk) live FFT work in the pipeline --
+    /// disabled by default so playback never pays for it unless the
+    /// spectrum view is actually visible.
+    SetSpectrumEnabled(bool),
+    /// Gates whether loading a track spawns a background waveform-peak
+    /// computation.
+    SetWaveformEnabled(bool),
 }

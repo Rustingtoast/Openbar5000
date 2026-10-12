@@ -9,6 +9,7 @@ build = "build.rs"
 
 [dependencies]
 slint.workspace = true
+image.workspace = true
 
 [build-dependencies]
 slint-build.workspace = true

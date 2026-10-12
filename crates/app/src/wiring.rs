@@ -1,20 +1,35 @@
+use crate::platform;
+use crate::playlist_rows::build_grouped_rows;
+use crate::settings::Settings;
 use engine::{AudioInfo, EngineCommand, EngineEvent, PlaybackEngine, PlaybackState, Track};
-use slint::{ComponentHandle, ModelRc, Timer, TimerMode, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
-use ui::{format_duration, playlist_row, MainWindow, PlaylistRow, PropertiesWindow};
+use ui::{format_duration, AboutWindow, MainWindow, PlaylistRow, PropertiesWindow, SettingsWindow};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(150);
 
 /// Resources the caller must keep alive for as long as the window's event
 /// loop runs: the timer that drains [`EngineEvent`]s, and the (initially
-/// hidden) properties dialog it may show on request. Neither field is read
-/// again after `wire()` returns -- they only need to not be dropped.
+/// hidden) secondary dialogs it may show on request. None of these fields
+/// are read again after `wire()` returns -- they only need to not be dropped.
 #[allow(dead_code)]
 pub struct UiHandles {
     pub event_poll_timer: Timer,
     pub properties_window: PropertiesWindow,
+    pub about_window: AboutWindow,
+    pub settings_window: SettingsWindow,
+}
+
+/// Shared UI-thread state kept in sync with the engine's playlist, so any
+/// row-targeted action (play/properties/remove/open-folder/search) or
+/// re-render (after a search edit) can work from the full, current track
+/// list without round-tripping through the engine.
+struct PlaylistViewState {
+    tracks: Vec<Track>,
+    current_index: Option<usize>,
+    search_query: String,
 }
 
 /// Wires every UI callback to an [`EngineCommand`] and starts the timer that
@@ -24,8 +39,14 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>) -> UiHandles {
     let playlist_model = Rc::new(VecModel::<PlaylistRow>::default());
     window.set_playlist_rows(ModelRc::from(playlist_model.clone()));
 
-    // Tracks the currently loaded track so "Properties" can look up its path
-    // and tags on demand, independent of playback state.
+    let playlist_view_state = Rc::new(RefCell::new(PlaylistViewState {
+        tracks: Vec::new(),
+        current_index: None,
+        search_query: String::new(),
+    }));
+    // The currently loaded track, if any -- used by the top-menu
+    // "Properties" item, which (unlike the playlist's right-click one) isn't
+    // tied to a specific row.
     let current_track: Rc<RefCell<Option<Track>>> = Rc::new(RefCell::new(None));
 
     let properties_window = PropertiesWindow::new().expect("failed to create properties window");
@@ -37,6 +58,84 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>) -> UiHandles {
             }
         });
     }
+
+    let about_window = AboutWindow::new().expect("failed to create about window");
+    {
+        let about_window_weak = about_window.as_weak();
+        about_window.on_close_clicked(move || {
+            if let Some(window) = about_window_weak.upgrade() {
+                window.hide().expect("failed to hide about window");
+            }
+        });
+    }
+    {
+        let about_window_weak = about_window.as_weak();
+        window.on_about_clicked(move || {
+            if let Some(window) = about_window_weak.upgrade() {
+                window.show().expect("failed to show about window");
+            }
+        });
+    }
+
+    let settings = Rc::new(RefCell::new(Settings::load()));
+    window.set_show_waveform(settings.borrow().show_waveform);
+    window.set_show_spectrum(settings.borrow().show_spectrum);
+    engine.send(EngineCommand::SetWaveformEnabled(
+        settings.borrow().show_waveform,
+    ));
+    engine.send(EngineCommand::SetSpectrumEnabled(
+        settings.borrow().show_spectrum,
+    ));
+
+    let settings_window = SettingsWindow::new().expect("failed to create settings window");
+    settings_window.set_show_waveform(settings.borrow().show_waveform);
+    settings_window.set_show_spectrum(settings.borrow().show_spectrum);
+    {
+        let settings_window_weak = settings_window.as_weak();
+        settings_window.on_close_clicked(move || {
+            if let Some(window) = settings_window_weak.upgrade() {
+                window.hide().expect("failed to hide settings window");
+            }
+        });
+    }
+    {
+        let settings_window_weak = settings_window.as_weak();
+        window.on_settings_clicked(move || {
+            if let Some(window) = settings_window_weak.upgrade() {
+                window.show().expect("failed to show settings window");
+            }
+        });
+    }
+    {
+        let settings = settings.clone();
+        let window_weak = window.as_weak();
+        let engine = engine.clone();
+        settings_window.on_waveform_toggled(move |enabled| {
+            settings.borrow_mut().show_waveform = enabled;
+            settings.borrow().save();
+            if let Some(window) = window_weak.upgrade() {
+                window.set_show_waveform(enabled);
+            }
+            engine.send(EngineCommand::SetWaveformEnabled(enabled));
+        });
+    }
+    {
+        let settings = settings.clone();
+        let window_weak = window.as_weak();
+        let engine = engine.clone();
+        settings_window.on_spectrum_toggled(move |enabled| {
+            settings.borrow_mut().show_spectrum = enabled;
+            settings.borrow().save();
+            if let Some(window) = window_weak.upgrade() {
+                window.set_show_spectrum(enabled);
+            }
+            engine.send(EngineCommand::SetSpectrumEnabled(enabled));
+        });
+    }
+
+    window.on_exit_clicked(|| {
+        slint::quit_event_loop().expect("failed to quit event loop");
+    });
 
     {
         let window_weak = window.as_weak();
@@ -79,6 +178,11 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>) -> UiHandles {
     }
 
     {
+        let engine = engine.clone();
+        window.on_clear_playlist_clicked(move || engine.send(EngineCommand::ClearPlaylist));
+    }
+
+    {
         let current_track = current_track.clone();
         let properties_window_weak = properties_window.as_weak();
         window.on_properties_clicked(move || {
@@ -89,6 +193,50 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>) -> UiHandles {
                 return;
             };
             show_properties(&properties_window, &track);
+        });
+    }
+
+    {
+        let playlist_view_state = playlist_view_state.clone();
+        let properties_window_weak = properties_window.as_weak();
+        window.on_row_properties_clicked(move |index| {
+            let Some(track) = playlist_view_state
+                .borrow()
+                .tracks
+                .get(index as usize)
+                .cloned()
+            else {
+                return;
+            };
+            let Some(properties_window) = properties_window_weak.upgrade() else {
+                return;
+            };
+            show_properties(&properties_window, &track);
+        });
+    }
+
+    {
+        let playlist_view_state = playlist_view_state.clone();
+        window.on_row_open_folder_clicked(move |index| {
+            if let Some(track) = playlist_view_state.borrow().tracks.get(index as usize) {
+                platform::reveal_in_file_manager(&track.path);
+            }
+        });
+    }
+
+    {
+        let engine = engine.clone();
+        window.on_row_remove_clicked(move |index| {
+            engine.send(EngineCommand::RemoveIndex(index as usize));
+        });
+    }
+
+    {
+        let playlist_model = playlist_model.clone();
+        let playlist_view_state = playlist_view_state.clone();
+        window.on_search_edited(move |query| {
+            playlist_view_state.borrow_mut().search_query = query.to_string();
+            refresh_playlist_rows(&playlist_model, &playlist_view_state);
         });
     }
 
@@ -107,6 +255,14 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>) -> UiHandles {
         });
     }
 
+    {
+        let engine = engine.clone();
+        window.on_menu_play_clicked(move || engine.send(EngineCommand::Play));
+    }
+    {
+        let engine = engine.clone();
+        window.on_menu_pause_clicked(move || engine.send(EngineCommand::Pause));
+    }
     {
         let engine = engine.clone();
         window.on_stop_clicked(move || engine.send(EngineCommand::Stop));
@@ -143,25 +299,42 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>) -> UiHandles {
             return;
         };
         while let Some(event) = engine.try_recv_event() {
-            apply_event(&window, &playlist_model, &current_track, event);
+            apply_event(
+                &window,
+                &playlist_model,
+                &playlist_view_state,
+                &current_track,
+                event,
+            );
         }
     });
 
     UiHandles {
         event_poll_timer,
         properties_window,
+        about_window,
+        settings_window,
     }
+}
+
+fn refresh_playlist_rows(
+    playlist_model: &Rc<VecModel<PlaylistRow>>,
+    playlist_view_state: &Rc<RefCell<PlaylistViewState>>,
+) {
+    let state = playlist_view_state.borrow();
+    let rows = build_grouped_rows(&state.tracks, state.current_index, &state.search_query);
+    playlist_model.set_vec(rows);
 }
 
 fn apply_event(
     window: &MainWindow,
     playlist_model: &Rc<VecModel<PlaylistRow>>,
+    playlist_view_state: &Rc<RefCell<PlaylistViewState>>,
     current_track: &Rc<RefCell<Option<Track>>>,
     event: EngineEvent,
 ) {
     match event {
         EngineEvent::TrackChanged { index, track } => {
-            window.set_current_track_index(index as i32);
             window.set_duration_seconds(track.metadata.duration.as_secs_f32());
             window.set_duration_text(format_duration(track.metadata.duration).into());
             window.set_status_text(
@@ -171,7 +344,11 @@ fn apply_event(
                 )
                 .into(),
             );
+            window.set_waveform_peaks(ModelRc::from(Rc::new(VecModel::<f32>::default())));
+            window.set_waveform_played_bucket_index(0);
             *current_track.borrow_mut() = Some(track);
+            playlist_view_state.borrow_mut().current_index = Some(index);
+            refresh_playlist_rows(playlist_model, playlist_view_state);
         }
         EngineEvent::PositionUpdate { position, duration } => {
             window.set_position_seconds(position.as_secs_f32());
@@ -179,6 +356,12 @@ fn apply_event(
             if duration.as_secs_f32() > 0.0 {
                 window.set_duration_seconds(duration.as_secs_f32());
                 window.set_duration_text(format_duration(duration).into());
+            }
+            let peak_count = window.get_waveform_peaks().row_count() as i32;
+            if peak_count > 0 && duration.as_secs_f32() > 0.0 {
+                let fraction = position.as_secs_f32() / duration.as_secs_f32();
+                let played = ((fraction * peak_count as f32) as i32).clamp(0, peak_count - 1);
+                window.set_waveform_played_bucket_index(played);
             }
         }
         EngineEvent::PlaybackStateChanged(state) => {
@@ -190,30 +373,28 @@ fn apply_event(
         EngineEvent::Underrun => {
             tracing::warn!("audio output underrun");
         }
-        EngineEvent::PlaylistLoaded { tracks } => {
-            let rows: Vec<PlaylistRow> = tracks
-                .iter()
-                .enumerate()
-                .map(|(i, track)| {
-                    let track_number = track
-                        .metadata
-                        .track_number
-                        .map(|n| n.to_string())
-                        .unwrap_or_else(|| (i + 1).to_string());
-                    playlist_row(
-                        &track_number,
-                        &track.metadata.artist,
-                        &track.metadata.title,
-                        &track.metadata.album,
-                        track.metadata.duration,
-                    )
-                })
-                .collect();
+        EngineEvent::PlaylistUpdated {
+            tracks,
+            current_index,
+        } => {
             let track_count = tracks.len();
-            playlist_model.set_vec(rows);
-            window.set_current_track_index(-1);
-            *current_track.borrow_mut() = None;
+            *current_track.borrow_mut() = current_index.and_then(|i| tracks.get(i).cloned());
+            {
+                let mut state = playlist_view_state.borrow_mut();
+                state.tracks = tracks;
+                state.current_index = current_index;
+            }
+            refresh_playlist_rows(playlist_model, playlist_view_state);
             window.set_status_text(format!("{track_count} track(s) loaded").into());
+        }
+        EngineEvent::WaveformReady { index, peaks } => {
+            if playlist_view_state.borrow().current_index == Some(index) {
+                window.set_waveform_peaks(ModelRc::from(Rc::new(VecModel::from(peaks))));
+                window.set_waveform_played_bucket_index(0);
+            }
+        }
+        EngineEvent::SpectrumUpdate { bars } => {
+            window.set_spectrum_bars(ModelRc::from(Rc::new(VecModel::from(bars))));
         }
     }
 }

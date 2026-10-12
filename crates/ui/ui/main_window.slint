@@ -2,53 +2,40 @@ import { Palette } from "std-widgets.slint";
 import { PlaylistView, PlaylistRow } from "playlist_view.slint";
 import { TransportBar } from "transport_bar.slint";
 import { StatusBar } from "status_bar.slint";
+import { WaveformSeekbar } from "waveform_seekbar.slint";
+import { SpectrumView } from "spectrum_view.slint";
 import { PropertiesWindow } from "properties_window.slint";
+import { AboutWindow } from "about_window.slint";
+import { SettingsWindow } from "settings_window.slint";
 
-export { PlaylistRow, PropertiesWindow }
-
-component MenuLabel inherits TouchArea {
-    in property <string> text;
-    Text { text: root.text; vertical-alignment: center; color: black; }
-}
-
-component MenuBarRow inherits Rectangle {
-    callback open-files-clicked();
-    callback open-folder-clicked();
-    callback properties-clicked();
-
-    height: 26px;
-    background: #f0f0f0;
-
-    HorizontalLayout {
-        padding: 6px;
-        spacing: 16px;
-        MenuLabel { text: "Open Files"; clicked => { root.open-files-clicked(); } }
-        MenuLabel { text: "Open Folder"; clicked => { root.open-folder-clicked(); } }
-        MenuLabel { text: "Properties"; clicked => { root.properties-clicked(); } }
-        Text { text: "Library"; vertical-alignment: center; color: black; }
-        Text { text: "View"; vertical-alignment: center; color: black; }
-        Text { text: "Help"; vertical-alignment: center; color: black; }
-    }
-}
+export { PlaylistRow, PropertiesWindow, AboutWindow, SettingsWindow }
 
 export component MainWindow inherits Window {
     title: "Openbar5000";
-    preferred-width: 900px;
-    preferred-height: 600px;
+    preferred-width: 1400px;
+    preferred-height: 700px;
+    min-width: 760px;
+    min-height: 500px;
+    // Slint's winit backend only makes a window resizable when its computed
+    // max size is strictly greater than its min size on at least one axis
+    // (see `window_is_resizable` in i-slint-backend-winit). Without an
+    // explicit `max-*` here, `min-width` above made max collapse to it and
+    // locked the window.
+    max-width: 100000px;
+    max-height: 100000px;
+    background: #1b1b1b;
 
-    // The whole UI (including std-widgets like Button/Slider/ListView) is
-    // laid out with hardcoded light colors to match foobar2000's classic
-    // look. Without this, the OS's dark-mode foreground/widget styling
+    // The whole UI (including std-widgets like Button/Slider/ListView/MenuBar)
+    // is laid out with hardcoded dark colors matching foobar2000's own dark
+    // skin. Without this, the OS's light/dark foreground and widget styling
     // fights those hardcoded backgrounds (e.g. default Text color turns
-    // white against a light-gray panel), which is what "blown out" dark
-    // mode rendering actually is. Pinning the palette keeps it consistent
-    // regardless of the system theme.
+    // white against a light panel, or vice versa). Pinning the palette keeps
+    // it consistent regardless of the system theme.
     init => {
-        Palette.color-scheme = ColorScheme.light;
+        Palette.color-scheme = ColorScheme.dark;
     }
 
     in property <[PlaylistRow]> playlist-rows: [];
-    in property <int> current-track-index: -1;
     in property <bool> is-playing: false;
     in property <float> position-seconds: 0;
     in property <float> duration-seconds: 0;
@@ -57,28 +44,86 @@ export component MainWindow inherits Window {
     in property <float> volume: 1.0;
     in property <string> status-text: "Openbar5000 — an open-source foobar2000-alike";
 
+    in property <bool> show-waveform: true;
+    in property <bool> show-spectrum: true;
+    in property <[float]> waveform-peaks: [];
+    in property <int> waveform-played-bucket-index: 0;
+    in property <[float]> spectrum-bars: [];
+
     callback play-pause-clicked();
+    callback menu-play-clicked();
+    callback menu-pause-clicked();
     callback stop-clicked();
     callback next-clicked();
     callback previous-clicked();
     callback seek-requested(float);
     callback volume-changed(float);
     callback row-clicked(int);
+    callback row-properties-clicked(int);
+    callback row-open-folder-clicked(int);
+    callback row-remove-clicked(int);
+    callback search-edited(string);
     callback open-files-clicked();
     callback open-folder-clicked();
     callback properties-clicked();
+    callback clear-playlist-clicked();
+    callback about-clicked();
+    callback settings-clicked();
+    callback exit-clicked();
+
+    MenuBar {
+        Menu {
+            title: "File";
+            MenuItem { title: "Open Files..."; activated => { root.open-files-clicked(); } }
+            MenuItem { title: "Open Folder..."; activated => { root.open-folder-clicked(); } }
+            MenuSeparator {}
+            MenuItem { title: "Preferences..."; activated => { root.settings-clicked(); } }
+            MenuSeparator {}
+            MenuItem { title: "Exit"; activated => { root.exit-clicked(); } }
+        }
+        Menu {
+            title: "Edit";
+            MenuItem { title: "Properties..."; activated => { root.properties-clicked(); } }
+            MenuSeparator {}
+            MenuItem { title: "Clear Playlist"; activated => { root.clear-playlist-clicked(); } }
+        }
+        Menu {
+            title: "Playback";
+            MenuItem { title: "Play"; activated => { root.menu-play-clicked(); } }
+            MenuItem { title: "Pause"; activated => { root.menu-pause-clicked(); } }
+            MenuItem { title: "Stop"; activated => { root.stop-clicked(); } }
+            MenuSeparator {}
+            MenuItem { title: "Previous"; activated => { root.previous-clicked(); } }
+            MenuItem { title: "Next"; activated => { root.next-clicked(); } }
+        }
+        Menu {
+            title: "View";
+            MenuItem { title: "Preferences..."; activated => { root.settings-clicked(); } }
+        }
+        Menu {
+            title: "Help";
+            MenuItem { title: "About Openbar5000..."; activated => { root.about-clicked(); } }
+        }
+    }
 
     VerticalLayout {
-        MenuBarRow {
-            open-files-clicked => { root.open-files-clicked(); }
-            open-folder-clicked => { root.open-folder-clicked(); }
-            properties-clicked => { root.properties-clicked(); }
-        }
         PlaylistView {
             vertical-stretch: 1;
             rows: root.playlist-rows;
-            current-index: root.current-track-index;
             row-clicked(i) => { root.row-clicked(i); }
+            row-properties-clicked(i) => { root.row-properties-clicked(i); }
+            row-open-folder-clicked(i) => { root.row-open-folder-clicked(i); }
+            row-remove-clicked(i) => { root.row-remove-clicked(i); }
+            search-edited(text) => { root.search-edited(text); }
+        }
+        if root.show-waveform: WaveformSeekbar {
+            peaks: root.waveform-peaks;
+            played-bucket-index: root.waveform-played-bucket-index;
+            duration-seconds: root.duration-seconds;
+            seek-requested(pos) => { root.seek-requested(pos); }
+        }
+        if root.show-spectrum: SpectrumView {
+            bars: root.spectrum-bars;
         }
         TransportBar {
             is-playing: root.is-playing;

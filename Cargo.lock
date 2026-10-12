@@ -1186,6 +1186,7 @@ dependencies = [
  "lofty",
  "plugin-api",
  "ringbuf",
+ "rustfft",
  "symphonia",
  "tracing",
  "tracing-subscriber",
@@ -5240,6 +5241,7 @@ dependencies = [
 name = "ui"
 version = "0.1.0"
 dependencies = [
+ "image",
  "slint",
  "slint-build",
 ]

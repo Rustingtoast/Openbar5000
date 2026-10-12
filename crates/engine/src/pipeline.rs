@@ -1,8 +1,11 @@
 use crate::dsp::GainDsp;
+use crate::spectrum::SpectrumAnalyzer;
 use plugin_api::{AudioInfo, DecodeError, Decoder, Dsp, OutputError, OutputSink};
 use std::fmt;
 
 const CHUNK_SAMPLES: usize = 4096;
+const SPECTRUM_FFT_SIZE: usize = 2048;
+const SPECTRUM_BAR_COUNT: usize = 32;
 
 #[derive(Debug)]
 pub enum PipelineError {
@@ -44,6 +47,9 @@ pub struct Pipeline {
     sink: Box<dyn OutputSink>,
     channels: u16,
     buffer: Vec<f32>,
+    spectrum: SpectrumAnalyzer,
+    spectrum_enabled: bool,
+    latest_spectrum: Option<Vec<f32>>,
 }
 
 impl Pipeline {
@@ -55,11 +61,24 @@ impl Pipeline {
             sink,
             channels: 2,
             buffer: vec![0.0; CHUNK_SAMPLES],
+            spectrum: SpectrumAnalyzer::new(SPECTRUM_FFT_SIZE, SPECTRUM_BAR_COUNT),
+            spectrum_enabled: false,
+            latest_spectrum: None,
         }
     }
 
     pub fn set_volume(&mut self, volume: f32) {
         self.gain.set_volume(volume);
+    }
+
+    pub fn set_spectrum_enabled(&mut self, enabled: bool) {
+        self.spectrum_enabled = enabled;
+    }
+
+    /// Takes the spectrum computed by the most recent `process_chunk` call,
+    /// if any -- `None` when disabled or no chunk has been processed yet.
+    pub fn take_spectrum(&mut self) -> Option<Vec<f32>> {
+        self.latest_spectrum.take()
     }
 
     /// Inserts a plugin-provided effect ahead of the fixed volume stage.
@@ -119,6 +138,10 @@ impl Pipeline {
             dsp.process(chunk, self.channels);
         }
         self.gain.process(chunk, self.channels);
+
+        if self.spectrum_enabled {
+            self.latest_spectrum = Some(self.spectrum.analyze(chunk, self.channels as usize));
+        }
 
         self.sink.write(chunk)?;
         Ok(written)

@@ -32,3 +32,5 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 slint = "1.17"
 slint-build = "1.17"
+rustfft = "6.4"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
