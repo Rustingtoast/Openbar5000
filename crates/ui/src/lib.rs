@@ -2,4 +2,4 @@ slint::include_modules!();
 
 mod model;
 
-pub use model::{decode_cover_image, format_duration};
+pub use model::{cover_image_from_rgba, format_duration, placeholder_cover_image};

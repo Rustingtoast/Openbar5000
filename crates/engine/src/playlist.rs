@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Default)]
@@ -12,14 +13,25 @@ pub struct TrackMetadata {
     /// "2025", sometimes a full "2019-11-15") -- empty if untagged.
     pub date: String,
     pub duration: Duration,
-    /// Raw embedded cover art bytes (still JPEG/PNG-encoded), if the file
-    /// has any. Decoding to pixels is a UI-layer concern.
-    pub cover_art: Option<Vec<u8>>,
+    /// Embedded cover art, already decoded and shrunk to playlist-thumbnail
+    /// size at load time (off the UI thread). Full-size art is deliberately
+    /// not kept: a 3000px cover is ~36 MB of pixels, and a large playlist
+    /// holds hundreds of them. `Arc` so the playlist clones sent to the UI
+    /// stay cheap.
+    pub cover_thumbnail: Option<Arc<CoverThumbnail>>,
     /// Short codec label for display, e.g. "FLAC", "MP3".
     pub format_label: String,
     pub bitrate_kbps: Option<u32>,
     pub sample_rate: Option<u32>,
     pub bit_depth: Option<u8>,
+}
+
+/// Straight (non-premultiplied) RGBA8 pixels, row-major.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoverThumbnail {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -128,11 +140,15 @@ impl Playlist {
         true
     }
 
-    /// Re-reads tag metadata for every track via `load`, keeping order and
-    /// `current_index` untouched.
-    pub fn refresh_metadata(&mut self, load: impl Fn(&std::path::Path) -> TrackMetadata) {
-        for track in &mut self.tracks {
-            track.metadata = load(&track.path);
+    /// Replaces every track's metadata (one entry per track, in order),
+    /// keeping order and `current_index` untouched. Ignored on a length
+    /// mismatch.
+    pub fn replace_metadata(&mut self, metadata: Vec<TrackMetadata>) {
+        if metadata.len() != self.tracks.len() {
+            return;
+        }
+        for (track, metadata) in self.tracks.iter_mut().zip(metadata) {
+            track.metadata = metadata;
         }
     }
 

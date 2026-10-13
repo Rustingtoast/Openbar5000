@@ -1,6 +1,7 @@
 use crate::decoders::SymphoniaDecoder;
 use crate::events::PlaybackState;
-use crate::metadata::load_metadata;
+use crate::library::scan_audio_files;
+use crate::metadata::load_metadata_parallel;
 use crate::output::CpalSink;
 use crate::pipeline::Pipeline;
 use crate::playlist::{Playlist, Track};
@@ -12,6 +13,7 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 const POSITION_UPDATE_INTERVAL: Duration = Duration::from_millis(200);
+const LOAD_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const WAVEFORM_BUCKET_COUNT: usize = 400;
 
@@ -153,9 +155,11 @@ fn handle_command(
                 // Respect shuffle's own (already-randomized) starting pick
                 // instead of always starting a cold play at track 0.
                 let start_index = match state.playback_mode {
-                    PlaybackMode::Shuffle => {
-                        state.shuffle.as_ref().and_then(ShuffleOrder::current).unwrap_or(0)
-                    }
+                    PlaybackMode::Shuffle => state
+                        .shuffle
+                        .as_ref()
+                        .and_then(ShuffleOrder::current)
+                        .unwrap_or(0),
                     PlaybackMode::Normal | PlaybackMode::RepeatAll | PlaybackMode::RepeatOne => 0,
                 };
                 load_track(state, start_index, event_tx);
@@ -214,19 +218,17 @@ fn handle_command(
             state.volume = volume.clamp(0.0, 1.0);
             state.pipeline.set_volume(state.volume);
         }
-        EngineCommand::LoadPlaylist(paths) => {
-            let tracks: Vec<Track> = paths
-                .into_iter()
-                .map(|path| {
-                    let metadata = load_metadata(&path);
-                    Track { path, metadata }
-                })
-                .collect();
-            state.playlist = Playlist::from_tracks(tracks);
-            state.samples_played = 0;
-            state.queue.clear();
-            rebuild_shuffle_order(state, None);
-            send_playlist_update(state, event_tx);
+        EngineCommand::LoadPlaylist(paths) => load_playlist(state, paths, event_tx),
+        EngineCommand::LoadFolder(dir) => {
+            let paths = scan_audio_files(&dir);
+            if paths.is_empty() {
+                let _ = event_tx.send(EngineEvent::Error(format!(
+                    "No audio files found in {}",
+                    dir.display()
+                )));
+            } else {
+                load_playlist(state, paths, event_tx);
+            }
         }
         EngineCommand::PlayIndex(index) => {
             load_track(state, index, event_tx);
@@ -272,7 +274,14 @@ fn handle_command(
             }
         }
         EngineCommand::RefreshMetadata => {
-            state.playlist.refresh_metadata(load_metadata);
+            let paths: Vec<_> = state
+                .playlist
+                .tracks()
+                .iter()
+                .map(|t| t.path.clone())
+                .collect();
+            let metadata = load_metadata_with_progress(&paths, event_tx);
+            state.playlist.replace_metadata(metadata);
             send_playlist_update(state, event_tx);
         }
         EngineCommand::EnqueueIndex(index) => {
@@ -299,6 +308,40 @@ fn handle_command(
         }
     }
     true
+}
+
+fn load_playlist(
+    state: &mut EngineState,
+    paths: Vec<std::path::PathBuf>,
+    event_tx: &Sender<EngineEvent>,
+) {
+    let metadata = load_metadata_with_progress(&paths, event_tx);
+    let tracks: Vec<Track> = paths
+        .into_iter()
+        .zip(metadata)
+        .map(|(path, metadata)| Track { path, metadata })
+        .collect();
+    state.playlist = Playlist::from_tracks(tracks);
+    state.samples_played = 0;
+    state.queue.clear();
+    rebuild_shuffle_order(state, None);
+    send_playlist_update(state, event_tx);
+}
+
+/// `load_metadata_parallel`, reporting `LoadProgress` at most every
+/// `LOAD_PROGRESS_INTERVAL` (plus once at the end) so a big load doesn't
+/// flood the UI's event queue.
+fn load_metadata_with_progress(
+    paths: &[std::path::PathBuf],
+    event_tx: &Sender<EngineEvent>,
+) -> Vec<crate::TrackMetadata> {
+    let mut last_sent = Instant::now();
+    load_metadata_parallel(paths, |done, total| {
+        if done == total || last_sent.elapsed() >= LOAD_PROGRESS_INTERVAL {
+            let _ = event_tx.send(EngineEvent::LoadProgress { done, total });
+            last_sent = Instant::now();
+        }
+    })
 }
 
 /// Rebuilds the shuffle cycle for the playlist's current length -- a no-op

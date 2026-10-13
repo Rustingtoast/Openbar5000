@@ -24,6 +24,13 @@ pub enum EngineEvent {
         tracks: Vec<Track>,
         current_index: Option<usize>,
     },
+    /// Sent periodically while a `LoadPlaylist`/`LoadFolder`/
+    /// `RefreshMetadata` reads tags, so the UI can show progress; the load
+    /// finishes with `PlaylistUpdated`.
+    LoadProgress {
+        done: usize,
+        total: usize,
+    },
     /// Peak amplitudes for the whole track, computed on a background thread
     /// after `TrackChanged`; drives the waveform seekbar.
     WaveformReady {

@@ -64,7 +64,11 @@ fn next_track_changed(engine: &PlaybackEngine) -> usize {
 fn reorder_keeps_the_current_track_and_rejects_stale_orders() {
     let engine = PlaybackEngine::spawn();
 
-    engine.send(EngineCommand::LoadPlaylist(vec![fixture(), fixture(), fixture()]));
+    engine.send(EngineCommand::LoadPlaylist(vec![
+        fixture(),
+        fixture(),
+        fixture(),
+    ]));
     next_playlist_update(&engine);
     engine.send(EngineCommand::PlayIndex(0));
     assert_eq!(next_track_changed(&engine), 0);
@@ -85,7 +89,11 @@ fn reorder_keeps_the_current_track_and_rejects_stale_orders() {
 fn queued_tracks_play_before_the_normal_order() {
     let engine = PlaybackEngine::spawn();
 
-    engine.send(EngineCommand::LoadPlaylist(vec![fixture(), fixture(), fixture()]));
+    engine.send(EngineCommand::LoadPlaylist(vec![
+        fixture(),
+        fixture(),
+        fixture(),
+    ]));
     next_playlist_update(&engine);
     engine.send(EngineCommand::EnqueueIndex(2));
     engine.send(EngineCommand::PlayIndex(0));

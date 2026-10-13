@@ -17,28 +17,22 @@ pub fn format_duration(duration: Duration) -> String {
 const PLACEHOLDER_COVER_SIZE: u32 = 48;
 const PLACEHOLDER_COVER_COLOR: [u8; 3] = [0x3a, 0x3a, 0x3a];
 
-/// Decodes embedded cover-art bytes (JPEG/PNG, as read from the file's tags)
-/// into a displayable [`slint::Image`]. Falls back to a plain dark square
-/// when there's no art, or it fails to decode, so the playlist's group
-/// headers always have a consistent-sized thumbnail slot.
-pub fn decode_cover_image(bytes: Option<&[u8]>) -> slint::Image {
-    let Some(bytes) = bytes else {
+/// Wraps already-decoded RGBA8 cover pixels (the engine decodes and shrinks
+/// art at load time, off the UI thread) in a displayable [`slint::Image`].
+/// Falls back to [`placeholder_cover_image`] if the buffer doesn't match
+/// the dimensions.
+pub fn cover_image_from_rgba(width: u32, height: u32, rgba: &[u8]) -> slint::Image {
+    if rgba.len() != (width as usize) * (height as usize) * 4 {
         return placeholder_cover_image();
-    };
-    let Ok(decoded) = image::load_from_memory(bytes) else {
-        return placeholder_cover_image();
-    };
-
-    let rgba = decoded.to_rgba8();
-    let (width, height) = rgba.dimensions();
-    let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(width, height);
-    for (dst, src) in buffer.make_mut_slice().iter_mut().zip(rgba.pixels()) {
-        *dst = Rgba8Pixel::new(src[0], src[1], src[2], src[3]);
     }
-    slint::Image::from_rgba8(buffer)
+    slint::Image::from_rgba8(SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
+        rgba, width, height,
+    ))
 }
 
-fn placeholder_cover_image() -> slint::Image {
+/// A plain dark square, so the playlist's group headers always have a
+/// consistent-sized thumbnail slot when a track has no art.
+pub fn placeholder_cover_image() -> slint::Image {
     let mut buffer =
         SharedPixelBuffer::<Rgba8Pixel>::new(PLACEHOLDER_COVER_SIZE, PLACEHOLDER_COVER_SIZE);
     let [r, g, b] = PLACEHOLDER_COVER_COLOR;

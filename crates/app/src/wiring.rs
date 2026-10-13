@@ -3,7 +3,8 @@ use crate::discord_presence::{
 };
 use crate::platform;
 use crate::playlist_rows::{
-    all_group_keys, build_grouped_rows, group_key_of, sort_order, PlaylistGrouping, PlaylistSort,
+    all_group_keys, build_grouped_rows, group_key_of, sort_order, CoverCache, PlaylistGrouping,
+    PlaylistSort,
 };
 use crate::settings::Settings;
 use crate::store::Store;
@@ -48,6 +49,7 @@ struct PlaylistViewState {
     /// Group keys (see `PlaylistGrouping`) the user collapsed; reset when
     /// the grouping changes, since the keys mean something else then.
     collapsed: HashSet<String>,
+    covers: CoverCache,
 }
 
 /// Wires every UI callback to an [`EngineCommand`] and starts the timer that
@@ -63,6 +65,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         search_query: String::new(),
         grouping: PlaylistGrouping::default(),
         collapsed: HashSet::new(),
+        covers: CoverCache::default(),
     }));
     // The currently loaded track, if any -- used by the top-menu
     // "Properties" item, which (unlike the playlist's right-click one) isn't
@@ -476,7 +479,9 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                 return;
             }
             let colors = *draft_colors.borrow();
-            let new_id = theme_registry.borrow_mut().add_custom(&store, &name, colors);
+            let new_id = theme_registry
+                .borrow_mut()
+                .add_custom(&store, &name, colors);
             settings.borrow_mut().theme_id = new_id.clone();
             settings.borrow().save(&store);
 
@@ -527,7 +532,9 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             if !is_custom {
                 return;
             }
-            theme_registry.borrow_mut().remove_custom(&store, &current_id);
+            theme_registry
+                .borrow_mut()
+                .remove_custom(&store, &current_id);
 
             let fallback_id = "dark".to_string();
             let colors = theme_registry
@@ -594,16 +601,9 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             let Some(dir) = rfd::FileDialog::new().pick_folder() else {
                 return;
             };
-            let paths = engine::scan_audio_files(&dir);
-            if paths.is_empty() {
-                if let Some(window) = window_weak.upgrade() {
-                    window.set_status_text(
-                        format!("No audio files found in {}", dir.display()).into(),
-                    );
-                }
-                return;
-            }
-            engine.send(EngineCommand::LoadPlaylist(paths));
+            // Scanned on the engine thread: a big (or network) folder would
+            // otherwise freeze the window while it's walked.
+            engine.send(EngineCommand::LoadFolder(dir));
             if let Some(window) = window_weak.upgrade() {
                 window.set_status_text("Loading playlist\u{2026}".into());
             }
@@ -962,13 +962,15 @@ fn refresh_playlist_rows(
     playlist_model: &Rc<VecModel<PlaylistRow>>,
     playlist_view_state: &Rc<RefCell<PlaylistViewState>>,
 ) {
-    let state = playlist_view_state.borrow();
+    let mut state = playlist_view_state.borrow_mut();
+    let state = &mut *state;
     let rows = build_grouped_rows(
         &state.tracks,
         state.current_index,
         &state.search_query,
         state.grouping,
         &state.collapsed,
+        &mut state.covers,
     );
     playlist_model.set_vec(rows);
 }
@@ -998,7 +1000,10 @@ fn copy_to_clipboard(clipboard: &RefCell<Option<arboard::Clipboard>>, text: Stri
             }
         }
     }
-    let result = clipboard.as_mut().expect("initialized above").set_text(text);
+    let result = clipboard
+        .as_mut()
+        .expect("initialized above")
+        .set_text(text);
     if let Err(e) = &result {
         tracing::warn!("failed to copy to clipboard: {e}");
     }
@@ -1152,9 +1157,14 @@ fn apply_event(
                 let mut state = playlist_view_state.borrow_mut();
                 state.tracks = tracks;
                 state.current_index = current_index;
+                // Covers may have changed (new playlist, Refresh playlist).
+                state.covers.clear();
             }
             refresh_playlist_rows(playlist_model, playlist_view_state);
             window.set_status_text(format!("{track_count} track(s) loaded").into());
+        }
+        EngineEvent::LoadProgress { done, total } => {
+            window.set_status_text(format!("Loading playlist\u{2026} {done}/{total}").into());
         }
         EngineEvent::WaveformReady { index, peaks } => {
             if playlist_view_state.borrow().current_index == Some(index) {

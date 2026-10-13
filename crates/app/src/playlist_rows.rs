@@ -1,9 +1,9 @@
 use engine::Track;
 use rand::seq::SliceRandom;
-use std::collections::HashSet;
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
-use ui::{decode_cover_image, format_duration, PlaylistRow};
+use ui::{cover_image_from_rgba, format_duration, placeholder_cover_image, PlaylistRow};
 
 /// How contiguous runs of tracks are bundled under a header row -- the
 /// playlist context menu's Grouping submenu.
@@ -57,6 +57,39 @@ impl PlaylistGrouping {
     }
 }
 
+/// Group-header cover images, kept across row rebuilds (which happen on
+/// every track change, search keystroke, collapse...) so each thumbnail is
+/// turned into a `slint::Image` once -- and the renderer sees the same
+/// image, rather than a fresh texture, every time. Clear it whenever the
+/// tracks' metadata may have changed.
+#[derive(Default)]
+pub struct CoverCache {
+    by_path: HashMap<PathBuf, slint::Image>,
+    placeholder: Option<slint::Image>,
+}
+
+impl CoverCache {
+    pub fn clear(&mut self) {
+        self.by_path.clear();
+    }
+
+    fn placeholder(&mut self) -> slint::Image {
+        self.placeholder
+            .get_or_insert_with(placeholder_cover_image)
+            .clone()
+    }
+
+    fn cover(&mut self, track: &Track) -> slint::Image {
+        let Some(thumb) = track.metadata.cover_thumbnail.as_deref() else {
+            return self.placeholder();
+        };
+        self.by_path
+            .entry(track.path.clone())
+            .or_insert_with(|| cover_image_from_rgba(thumb.width, thumb.height, &thumb.rgba))
+            .clone()
+    }
+}
+
 /// The context menu's Sort submenu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaylistSort {
@@ -100,7 +133,10 @@ pub fn sort_order(tracks: &[Track], sort: PlaylistSort) -> Vec<usize> {
         PlaylistSort::Title => order.sort_by_cached_key(|&i| text(&tracks[i].metadata.title)),
         PlaylistSort::TrackNumber => order.sort_by_key(|&i| {
             let m = &tracks[i].metadata;
-            (m.disc_number.unwrap_or(0), m.track_number.unwrap_or(u32::MAX))
+            (
+                m.disc_number.unwrap_or(0),
+                m.track_number.unwrap_or(u32::MAX),
+            )
         }),
         PlaylistSort::Date => order.sort_by_cached_key(|&i| tracks[i].metadata.date.clone()),
         PlaylistSort::Randomize => order.shuffle(&mut rand::rng()),
@@ -122,6 +158,7 @@ pub fn build_grouped_rows(
     query: &str,
     grouping: PlaylistGrouping,
     collapsed: &HashSet<String>,
+    covers: &mut CoverCache,
 ) -> Vec<PlaylistRow> {
     let query = query.trim().to_lowercase();
     let matches = |track: &Track| {
@@ -130,7 +167,7 @@ pub fn build_grouped_rows(
             || track.metadata.artist.to_lowercase().contains(&query)
             || track.metadata.album.to_lowercase().contains(&query)
     };
-    let blank_cover = decode_cover_image(None);
+    let blank_cover = covers.placeholder();
 
     let mut rows = Vec::new();
     let mut group_start = 0;
@@ -154,6 +191,7 @@ pub fn build_grouped_rows(
                 current_index.is_some_and(|c| (group_start..group_end).contains(&c));
             rows.push(header_row(
                 first,
+                covers.cover(first),
                 grouping,
                 &key,
                 group_start,
@@ -165,7 +203,14 @@ pub fn build_grouped_rows(
 
             if !is_collapsed {
                 for i in matching {
-                    rows.push(track_row(tracks, i, group_start, &key, current_index, &blank_cover));
+                    rows.push(track_row(
+                        tracks,
+                        i,
+                        group_start,
+                        &key,
+                        current_index,
+                        &blank_cover,
+                    ));
                 }
             }
         }
@@ -220,6 +265,7 @@ fn track_row(
 #[allow(clippy::too_many_arguments)]
 fn header_row(
     first: &Track,
+    cover_image: slint::Image,
     grouping: PlaylistGrouping,
     key: &str,
     group_start: usize,
@@ -264,7 +310,7 @@ fn header_row(
 
     PlaylistRow {
         is_header: true,
-        cover_image: decode_cover_image(m.cover_art.as_deref()),
+        cover_image,
         group_title: title.into(),
         group_subtitle: subtitle.into(),
         group_info: group_info_text(first, track_count, total_duration).into(),
@@ -354,17 +400,38 @@ mod tests {
     fn collapsed_groups_keep_only_their_header() {
         let t = tracks();
         let grouping = PlaylistGrouping::Artist;
-        let expanded = build_grouped_rows(&t, None, "", grouping, &HashSet::new());
+        let expanded = build_grouped_rows(
+            &t,
+            None,
+            "",
+            grouping,
+            &HashSet::new(),
+            &mut CoverCache::default(),
+        );
         // Beta | zulu | Alpha | Yankee | Beta | xray
         assert_eq!(expanded.len(), 6);
 
         let collapsed = HashSet::from(["Beta".to_string()]);
-        let rows = build_grouped_rows(&t, Some(0), "", grouping, &collapsed);
+        let rows = build_grouped_rows(
+            &t,
+            Some(0),
+            "",
+            grouping,
+            &collapsed,
+            &mut CoverCache::default(),
+        );
         assert_eq!(rows.len(), 4);
         assert!(rows[0].is_header && rows[0].is_collapsed && rows[0].is_current);
 
         // Searching always shows the matches, collapsed or not.
-        let rows = build_grouped_rows(&t, None, "zulu", grouping, &collapsed);
+        let rows = build_grouped_rows(
+            &t,
+            None,
+            "zulu",
+            grouping,
+            &collapsed,
+            &mut CoverCache::default(),
+        );
         assert_eq!(rows.len(), 2);
     }
 
@@ -374,7 +441,14 @@ mod tests {
             track("/m/a/1.flac", "X", "Y", "a", 1),
             track("/m/a/2.flac", "Z", "W", "b", 2),
         ];
-        let rows = build_grouped_rows(&t, None, "", PlaylistGrouping::Path, &HashSet::new());
+        let rows = build_grouped_rows(
+            &t,
+            None,
+            "",
+            PlaylistGrouping::Path,
+            &HashSet::new(),
+            &mut CoverCache::default(),
+        );
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].group_title, "a");
     }
