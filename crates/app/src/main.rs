@@ -1,6 +1,7 @@
 mod platform;
 mod playlist_rows;
 mod settings;
+mod store;
 mod theme;
 mod wiring;
 
@@ -8,6 +9,7 @@ use engine::PlaybackEngine;
 use plugin_host::PluginRegistry;
 use slint::ComponentHandle;
 use std::rc::Rc;
+use store::Store;
 use ui::MainWindow;
 
 fn main() {
@@ -16,11 +18,13 @@ fn main() {
     let plugins = PluginRegistry::scan();
     tracing::info!("loaded {} plugin(s)", plugins.loaded().len());
 
+    let store = Rc::new(Store::open().expect("failed to open app database"));
+
     let window = MainWindow::new().expect("failed to create main window");
     let engine = Rc::new(PlaybackEngine::spawn());
 
     // Kept alive for the duration of `run()` below -- see wiring::wire.
-    let _ui_handles = wiring::wire(&window, engine);
+    let _ui_handles = wiring::wire(&window, engine, store);
 
     window.run().expect("UI event loop failed");
 }

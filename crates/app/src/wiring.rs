@@ -1,6 +1,7 @@
 use crate::platform;
 use crate::playlist_rows::build_grouped_rows;
 use crate::settings::Settings;
+use crate::store::Store;
 use crate::theme::{self, ThemeColors, ThemeRegistry};
 use engine::{AudioInfo, EngineCommand, EngineEvent, PlaybackEngine, PlaybackState, Track};
 use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel};
@@ -40,7 +41,7 @@ struct PlaylistViewState {
 /// Wires every UI callback to an [`EngineCommand`] and starts the timer that
 /// drains [`EngineEvent`]s back into window properties. The UI thread never
 /// touches the engine's internals directly -- only this channel boundary.
-pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>) -> UiHandles {
+pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -> UiHandles {
     let playlist_model = Rc::new(VecModel::<PlaylistRow>::default());
     window.set_playlist_rows(ModelRc::from(playlist_model.clone()));
 
@@ -53,6 +54,12 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>) -> UiHandles {
     // "Properties" item, which (unlike the playlist's right-click one) isn't
     // tied to a specific row.
     let current_track: Rc<RefCell<Option<Track>>> = Rc::new(RefCell::new(None));
+
+    let restored_paths = store.load_playlist();
+    if !restored_paths.is_empty() {
+        engine.send(EngineCommand::LoadPlaylist(restored_paths));
+        window.set_status_text("Restoring playlist\u{2026}".into());
+    }
 
     let properties_window = PropertiesWindow::new().expect("failed to create properties window");
     {
@@ -87,8 +94,8 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>) -> UiHandles {
         ThemeEditorWindow::new().expect("failed to create theme editor window");
 
     // --- Theme setup -----------------------------------------------------
-    let settings = Rc::new(RefCell::new(Settings::load()));
-    let theme_registry = Rc::new(RefCell::new(ThemeRegistry::load()));
+    let settings = Rc::new(RefCell::new(Settings::load(&store)));
+    let theme_registry = Rc::new(RefCell::new(ThemeRegistry::load(&store)));
     // The theme being built in the (initially hidden) editor window, reset
     // each time "New Theme..." is clicked.
     let draft_colors: Rc<RefCell<ThemeColors>> = Rc::new(RefCell::new(
@@ -165,11 +172,12 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>) -> UiHandles {
     }
     {
         let settings = settings.clone();
+        let store = store.clone();
         let window_weak = window.as_weak();
         let engine = engine.clone();
         settings_window.on_waveform_toggled(move |enabled| {
             settings.borrow_mut().show_waveform = enabled;
-            settings.borrow().save();
+            settings.borrow().save(&store);
             if let Some(window) = window_weak.upgrade() {
                 window.set_show_waveform(enabled);
             }
@@ -178,11 +186,12 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>) -> UiHandles {
     }
     {
         let settings = settings.clone();
+        let store = store.clone();
         let window_weak = window.as_weak();
         let engine = engine.clone();
         settings_window.on_spectrum_toggled(move |enabled| {
             settings.borrow_mut().show_spectrum = enabled;
-            settings.borrow().save();
+            settings.borrow().save(&store);
             if let Some(window) = window_weak.upgrade() {
                 window.set_show_spectrum(enabled);
             }
@@ -192,50 +201,55 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>) -> UiHandles {
 
     {
         let settings = settings.clone();
+        let store = store.clone();
         let engine = engine.clone();
         settings_window.on_spectrum_channels_changed(move |value| {
             settings.borrow_mut().spectrum.channel_mode = spectrum_channel_from_label(&value);
-            settings.borrow().save();
+            settings.borrow().save(&store);
             engine.send(EngineCommand::SetSpectrumConfig(settings.borrow().spectrum));
         });
     }
     {
         let settings = settings.clone();
+        let store = store.clone();
         let engine = engine.clone();
         settings_window.on_spectrum_min_db_changed(move |v| {
             settings.borrow_mut().spectrum.min_db = v as f32;
-            settings.borrow().save();
+            settings.borrow().save(&store);
             engine.send(EngineCommand::SetSpectrumConfig(settings.borrow().spectrum));
         });
     }
     {
         let settings = settings.clone();
+        let store = store.clone();
         let engine = engine.clone();
         settings_window.on_spectrum_max_db_changed(move |v| {
             settings.borrow_mut().spectrum.max_db = v as f32;
-            settings.borrow().save();
+            settings.borrow().save(&store);
             engine.send(EngineCommand::SetSpectrumConfig(settings.borrow().spectrum));
         });
     }
     {
         let settings = settings.clone();
+        let store = store.clone();
         let engine = engine.clone();
         settings_window.on_spectrum_fft_size_changed(move |value| {
             let Ok(size) = value.parse::<usize>() else {
                 return;
             };
             settings.borrow_mut().spectrum.fft_size = size;
-            settings.borrow().save();
+            settings.borrow().save(&store);
             engine.send(EngineCommand::SetSpectrumConfig(settings.borrow().spectrum));
         });
     }
     {
         let settings = settings.clone();
+        let store = store.clone();
         let settings_window_weak = settings_window.as_weak();
         let engine = engine.clone();
         settings_window.on_spectrum_peaks_toggled(move |enabled| {
             settings.borrow_mut().spectrum.peaks_enabled = enabled;
-            settings.borrow().save();
+            settings.borrow().save(&store);
             if let Some(window) = settings_window_weak.upgrade() {
                 window.set_spectrum_peaks_enabled(enabled);
             }
@@ -244,28 +258,31 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>) -> UiHandles {
     }
     {
         let settings = settings.clone();
+        let store = store.clone();
         let engine = engine.clone();
         settings_window.on_spectrum_peak_hold_changed(move |v| {
             settings.borrow_mut().spectrum.peak_hold_ms = v as f32;
-            settings.borrow().save();
+            settings.borrow().save(&store);
             engine.send(EngineCommand::SetSpectrumConfig(settings.borrow().spectrum));
         });
     }
     {
         let settings = settings.clone();
+        let store = store.clone();
         let engine = engine.clone();
         settings_window.on_spectrum_gravity_changed(move |v| {
             settings.borrow_mut().spectrum.gravity_db_per_s2 = v as f32;
-            settings.borrow().save();
+            settings.borrow().save(&store);
             engine.send(EngineCommand::SetSpectrumConfig(settings.borrow().spectrum));
         });
     }
     {
         let settings = settings.clone();
+        let store = store.clone();
         let engine = engine.clone();
         settings_window.on_spectrum_interval_changed(move |v| {
             settings.borrow_mut().spectrum.interval_ms = v as u32;
-            settings.borrow().save();
+            settings.borrow().save(&store);
             engine.send(EngineCommand::SetSpectrumConfig(settings.borrow().spectrum));
         });
     }
@@ -273,6 +290,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>) -> UiHandles {
     {
         let theme_registry = theme_registry.clone();
         let settings = settings.clone();
+        let store = store.clone();
         let window_weak = window.as_weak();
         let properties_window_weak = properties_window.as_weak();
         let about_window_weak = about_window.as_weak();
@@ -284,7 +302,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>) -> UiHandles {
                 return;
             };
             settings.borrow_mut().theme_id = id.clone();
-            settings.borrow().save();
+            settings.borrow().save(&store);
 
             let (
                 Some(window),
@@ -370,6 +388,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>) -> UiHandles {
     {
         let theme_registry = theme_registry.clone();
         let settings = settings.clone();
+        let store = store.clone();
         let draft_colors = draft_colors.clone();
         let draft_name = draft_name.clone();
         let window_weak = window.as_weak();
@@ -383,9 +402,9 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>) -> UiHandles {
                 return;
             }
             let colors = *draft_colors.borrow();
-            let new_id = theme_registry.borrow_mut().add_custom(&name, colors);
+            let new_id = theme_registry.borrow_mut().add_custom(&store, &name, colors);
             settings.borrow_mut().theme_id = new_id.clone();
-            settings.borrow().save();
+            settings.borrow().save(&store);
 
             let (
                 Some(window),
@@ -418,6 +437,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>) -> UiHandles {
     {
         let theme_registry = theme_registry.clone();
         let settings = settings.clone();
+        let store = store.clone();
         let window_weak = window.as_weak();
         let properties_window_weak = properties_window.as_weak();
         let about_window_weak = about_window.as_weak();
@@ -433,7 +453,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>) -> UiHandles {
             if !is_custom {
                 return;
             }
-            theme_registry.borrow_mut().remove_custom(&current_id);
+            theme_registry.borrow_mut().remove_custom(&store, &current_id);
 
             let fallback_id = "dark".to_string();
             let colors = theme_registry
@@ -442,7 +462,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>) -> UiHandles {
                 .map(|entry| entry.colors)
                 .expect("dark builtin theme must exist");
             settings.borrow_mut().theme_id = fallback_id.clone();
-            settings.borrow().save();
+            settings.borrow().save(&store);
 
             let (
                 Some(window),
@@ -643,6 +663,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>) -> UiHandles {
                 &playlist_model,
                 &playlist_view_state,
                 &current_track,
+                &store,
                 event,
             );
         }
@@ -734,6 +755,7 @@ fn apply_event(
     playlist_model: &Rc<VecModel<PlaylistRow>>,
     playlist_view_state: &Rc<RefCell<PlaylistViewState>>,
     current_track: &Rc<RefCell<Option<Track>>>,
+    store: &Store,
     event: EngineEvent,
 ) {
     match event {
@@ -781,6 +803,7 @@ fn apply_event(
             current_index,
         } => {
             let track_count = tracks.len();
+            store.save_playlist(&tracks.iter().map(|t| t.path.clone()).collect::<Vec<_>>());
             *current_track.borrow_mut() = current_index.and_then(|i| tracks.get(i).cloned());
             {
                 let mut state = playlist_view_state.borrow_mut();

@@ -17,6 +17,7 @@ plugin-host.workspace = true
 slint.workspace = true
 crossbeam-channel.workspace = true
 rfd.workspace = true
+rusqlite.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 

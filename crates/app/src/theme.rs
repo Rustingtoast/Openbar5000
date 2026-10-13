@@ -1,5 +1,5 @@
+use crate::store::Store;
 use slint::ComponentHandle;
-use std::path::PathBuf;
 use ui::{AboutWindow, MainWindow, PropertiesWindow, SettingsWindow, Theme, ThemeEditorWindow};
 
 /// The semantic color tokens every window reads via the `Theme` Slint
@@ -90,7 +90,7 @@ pub fn color_to_hex(color: slint::Color) -> String {
 }
 
 /// One selectable theme: a built-in (fixed id, not persisted) or a
-/// user-created custom one (persisted to `themes.txt`).
+/// user-created custom one (persisted to the `themes` table in [`Store`]).
 #[derive(Debug, Clone)]
 pub struct ThemeEntry {
     pub id: String,
@@ -182,9 +182,9 @@ pub struct ThemeRegistry {
 }
 
 impl ThemeRegistry {
-    pub fn load() -> Self {
+    pub fn load(store: &Store) -> Self {
         let mut entries = builtin_entries();
-        entries.extend(load_custom_themes());
+        entries.extend(store.load_custom_themes());
         Self { entries }
     }
 
@@ -193,15 +193,15 @@ impl ThemeRegistry {
     }
 
     /// Adds (or replaces, if the name slugifies to an existing custom id) a
-    /// custom theme and persists all custom themes to disk.
-    pub fn add_custom(&mut self, name: &str, colors: ThemeColors) -> String {
+    /// custom theme and persists every custom theme to `store`.
+    pub fn add_custom(&mut self, store: &Store, name: &str, colors: ThemeColors) -> String {
         let id = self.upsert_custom(name, colors);
-        self.save_custom();
+        self.save_custom(store);
         id
     }
 
-    /// The in-memory half of `add_custom`, without the file write -- split
-    /// out so it's testable without touching the real config directory.
+    /// The in-memory half of `add_custom`, without the store write -- split
+    /// out so it's testable without touching a real database.
     fn upsert_custom(&mut self, name: &str, colors: ThemeColors) -> String {
         let id = format!("custom:{}", slugify(name));
         if let Some(existing) = self.entries.iter_mut().find(|e| e.id == id) {
@@ -218,20 +218,19 @@ impl ThemeRegistry {
         id
     }
 
-    pub fn remove_custom(&mut self, id: &str) {
+    pub fn remove_custom(&mut self, store: &Store, id: &str) {
         self.entries.retain(|e| e.id != id);
-        self.save_custom();
+        self.save_custom(store);
     }
 
-    fn save_custom(&self) {
-        let contents = serialize_custom_themes(&self.entries);
-        let path = custom_themes_path();
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        if let Err(e) = std::fs::write(&path, contents) {
-            tracing::warn!("failed to save custom themes to {}: {e}", path.display());
-        }
+    fn save_custom(&self, store: &Store) {
+        let custom: Vec<ThemeEntry> = self
+            .entries
+            .iter()
+            .filter(|e| e.is_custom)
+            .cloned()
+            .collect();
+        store.save_custom_themes(&custom);
     }
 }
 
@@ -240,71 +239,6 @@ fn slugify(name: &str) -> String {
         .chars()
         .map(|c| if c.is_alphanumeric() { c } else { '-' })
         .collect()
-}
-
-/// Serializes every custom (`is_custom`) entry as `[Name]` blocks of
-/// `key=hex` lines. Pure text transform, kept separate from `save_custom`'s
-/// file I/O so it's directly testable.
-fn serialize_custom_themes(entries: &[ThemeEntry]) -> String {
-    let mut contents = String::new();
-    for entry in entries.iter().filter(|e| e.is_custom) {
-        contents.push_str(&format!("[{}]\n", entry.label));
-        for (key, _) in ThemeColors::FIELDS {
-            let value = entry.colors.get(key).expect("field key must be valid");
-            contents.push_str(&format!("{key}={}\n", color_to_hex(value)));
-        }
-        contents.push('\n');
-    }
-    contents
-}
-
-/// Parses the format `serialize_custom_themes` writes. Unknown/malformed
-/// lines are skipped rather than failing the whole file, so a hand-edited
-/// `themes.txt` degrades gracefully instead of losing every theme in it.
-fn parse_custom_themes(contents: &str) -> Vec<ThemeEntry> {
-    let mut entries = Vec::new();
-    let mut current_label: Option<String> = None;
-    let mut current_colors = builtin_entries()[0].colors;
-
-    for line in contents.lines() {
-        let line = line.trim();
-        if let Some(label) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-            if let Some(label) = current_label.take() {
-                entries.push(ThemeEntry {
-                    id: format!("custom:{}", slugify(&label)),
-                    label,
-                    colors: current_colors,
-                    is_custom: true,
-                });
-            }
-            current_label = Some(label.to_string());
-            current_colors = builtin_entries()[0].colors;
-        } else if let Some((key, value)) = line.split_once('=') {
-            if let Some(color) = parse_hex_color(value) {
-                current_colors.set(key.trim(), color);
-            }
-        }
-    }
-    if let Some(label) = current_label {
-        entries.push(ThemeEntry {
-            id: format!("custom:{}", slugify(&label)),
-            label,
-            colors: current_colors,
-            is_custom: true,
-        });
-    }
-    entries
-}
-
-fn load_custom_themes() -> Vec<ThemeEntry> {
-    let Ok(contents) = std::fs::read_to_string(custom_themes_path()) else {
-        return Vec::new();
-    };
-    parse_custom_themes(&contents)
-}
-
-fn custom_themes_path() -> PathBuf {
-    crate::settings::config_dir().join("themes.txt")
 }
 
 fn set_theme_global(theme: Theme<'_>, colors: &ThemeColors) {
@@ -371,31 +305,9 @@ mod tests {
     }
 
     #[test]
-    fn custom_theme_survives_a_serialize_parse_round_trip() {
-        let mut colors = builtin_entries()[0].colors;
-        colors.accent = rgb(0x12, 0x34, 0x56);
-        let entries = vec![ThemeEntry {
-            id: "custom:ocean-deep".into(),
-            label: "Ocean Deep".into(),
-            colors,
-            is_custom: true,
-        }];
-
-        let text = serialize_custom_themes(&entries);
-        let parsed = parse_custom_themes(&text);
-
-        assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].label, "Ocean Deep");
-        assert_eq!(parsed[0].id, "custom:ocean-deep");
-        assert!(parsed[0].is_custom);
-        assert_eq!(parsed[0].colors.accent, colors.accent);
-        assert_eq!(parsed[0].colors.bg_base, colors.bg_base);
-    }
-
-    #[test]
     fn upsert_custom_replaces_an_existing_theme_with_the_same_name_instead_of_duplicating() {
         // Exercises the in-memory half of `add_custom` only, so this test
-        // never touches the real config directory.
+        // never touches a real database.
         let mut registry = ThemeRegistry {
             entries: builtin_entries(),
         };

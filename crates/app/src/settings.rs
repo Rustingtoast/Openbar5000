@@ -1,8 +1,10 @@
+use crate::store::Store;
 use engine::{SpectrumChannelMode, SpectrumConfig};
 use std::path::PathBuf;
 
-/// Persisted, user-facing toggles and preferences. Stored as a tiny manual
-/// `key=value` text file rather than pulling in a serialization crate.
+/// Persisted, user-facing toggles and preferences. Backed by the `settings`
+/// table in [`Store`] -- a flat key/value table, so adding a new field here
+/// never needs a schema migration.
 #[derive(Debug, Clone)]
 pub struct Settings {
     pub show_waveform: bool,
@@ -39,97 +41,76 @@ fn channel_mode_from_str(value: &str) -> SpectrumChannelMode {
 }
 
 impl Settings {
-    pub fn load() -> Self {
+    pub fn load(store: &Store) -> Self {
         let mut settings = Self::default();
-        let Ok(contents) = std::fs::read_to_string(settings_path()) else {
-            return settings;
-        };
-        for line in contents.lines() {
-            let Some((key, value)) = line.split_once('=') else {
-                continue;
-            };
-            let value = value.trim();
-            match key.trim() {
-                "show_waveform" => settings.show_waveform = value == "true",
-                "show_spectrum" => settings.show_spectrum = value == "true",
-                "theme_id" => settings.theme_id = value.to_string(),
-                "spectrum_channels" => {
-                    settings.spectrum.channel_mode = channel_mode_from_str(value)
-                }
-                "spectrum_min_db" => {
-                    if let Ok(v) = value.parse() {
-                        settings.spectrum.min_db = v;
-                    }
-                }
-                "spectrum_max_db" => {
-                    if let Ok(v) = value.parse() {
-                        settings.spectrum.max_db = v;
-                    }
-                }
-                "spectrum_fft_size" => {
-                    if let Ok(v) = value.parse() {
-                        settings.spectrum.fft_size = v;
-                    }
-                }
-                "spectrum_peaks_enabled" => settings.spectrum.peaks_enabled = value == "true",
-                "spectrum_peak_hold_ms" => {
-                    if let Ok(v) = value.parse() {
-                        settings.spectrum.peak_hold_ms = v;
-                    }
-                }
-                "spectrum_gravity" => {
-                    if let Ok(v) = value.parse() {
-                        settings.spectrum.gravity_db_per_s2 = v;
-                    }
-                }
-                "spectrum_interval_ms" => {
-                    if let Ok(v) = value.parse() {
-                        settings.spectrum.interval_ms = v;
-                    }
-                }
-                _ => {}
-            }
+        let get = |key: &str| store.get_setting(key);
+
+        if let Some(v) = get("show_waveform") {
+            settings.show_waveform = v == "true";
+        }
+        if let Some(v) = get("show_spectrum") {
+            settings.show_spectrum = v == "true";
+        }
+        if let Some(v) = get("theme_id") {
+            settings.theme_id = v;
+        }
+        if let Some(v) = get("spectrum_channels") {
+            settings.spectrum.channel_mode = channel_mode_from_str(&v);
+        }
+        if let Some(v) = get("spectrum_min_db").and_then(|v| v.parse().ok()) {
+            settings.spectrum.min_db = v;
+        }
+        if let Some(v) = get("spectrum_max_db").and_then(|v| v.parse().ok()) {
+            settings.spectrum.max_db = v;
+        }
+        if let Some(v) = get("spectrum_fft_size").and_then(|v| v.parse().ok()) {
+            settings.spectrum.fft_size = v;
+        }
+        if let Some(v) = get("spectrum_peaks_enabled") {
+            settings.spectrum.peaks_enabled = v == "true";
+        }
+        if let Some(v) = get("spectrum_peak_hold_ms").and_then(|v| v.parse().ok()) {
+            settings.spectrum.peak_hold_ms = v;
+        }
+        if let Some(v) = get("spectrum_gravity").and_then(|v| v.parse().ok()) {
+            settings.spectrum.gravity_db_per_s2 = v;
+        }
+        if let Some(v) = get("spectrum_interval_ms").and_then(|v| v.parse().ok()) {
+            settings.spectrum.interval_ms = v;
         }
         settings
     }
 
-    pub fn save(&self) {
-        let path = settings_path();
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let contents = format!(
-            "show_waveform={}\n\
-             show_spectrum={}\n\
-             theme_id={}\n\
-             spectrum_channels={}\n\
-             spectrum_min_db={}\n\
-             spectrum_max_db={}\n\
-             spectrum_fft_size={}\n\
-             spectrum_peaks_enabled={}\n\
-             spectrum_peak_hold_ms={}\n\
-             spectrum_gravity={}\n\
-             spectrum_interval_ms={}\n",
-            self.show_waveform,
-            self.show_spectrum,
-            self.theme_id,
-            channel_mode_to_str(self.spectrum.channel_mode),
-            self.spectrum.min_db,
-            self.spectrum.max_db,
-            self.spectrum.fft_size,
-            self.spectrum.peaks_enabled,
-            self.spectrum.peak_hold_ms,
-            self.spectrum.gravity_db_per_s2,
-            self.spectrum.interval_ms,
-        );
-        if let Err(e) = std::fs::write(&path, contents) {
-            tracing::warn!("failed to save settings to {}: {e}", path.display());
-        }
+    pub fn save(&self, store: &Store) {
+        store.set_settings(&[
+            ("show_waveform", self.show_waveform.to_string()),
+            ("show_spectrum", self.show_spectrum.to_string()),
+            ("theme_id", self.theme_id.clone()),
+            (
+                "spectrum_channels",
+                channel_mode_to_str(self.spectrum.channel_mode).to_string(),
+            ),
+            ("spectrum_min_db", self.spectrum.min_db.to_string()),
+            ("spectrum_max_db", self.spectrum.max_db.to_string()),
+            ("spectrum_fft_size", self.spectrum.fft_size.to_string()),
+            (
+                "spectrum_peaks_enabled",
+                self.spectrum.peaks_enabled.to_string(),
+            ),
+            (
+                "spectrum_peak_hold_ms",
+                self.spectrum.peak_hold_ms.to_string(),
+            ),
+            (
+                "spectrum_gravity",
+                self.spectrum.gravity_db_per_s2.to_string(),
+            ),
+            (
+                "spectrum_interval_ms",
+                self.spectrum.interval_ms.to_string(),
+            ),
+        ]);
     }
-}
-
-fn settings_path() -> PathBuf {
-    config_dir().join("settings.txt")
 }
 
 #[cfg(target_os = "macos")]

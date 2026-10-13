@@ -34,3 +34,4 @@ slint = "1.17"
 slint-build = "1.17"
 rustfft = "6.4"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
