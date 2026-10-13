@@ -11,6 +11,11 @@ pub struct Settings {
     pub show_spectrum: bool,
     pub theme_id: String,
     pub spectrum: SpectrumConfig,
+    /// Off by default: it does nothing until the user supplies their own
+    /// Discord Application client ID (see `discord_client_id`), which only
+    /// they can create -- see README for the one-time setup steps.
+    pub discord_presence_enabled: bool,
+    pub discord_client_id: String,
 }
 
 impl Default for Settings {
@@ -20,6 +25,8 @@ impl Default for Settings {
             show_spectrum: true,
             theme_id: "dark".to_string(),
             spectrum: SpectrumConfig::default(),
+            discord_presence_enabled: false,
+            discord_client_id: String::new(),
         }
     }
 }
@@ -78,6 +85,12 @@ impl Settings {
         if let Some(v) = get("spectrum_interval_ms").and_then(|v| v.parse().ok()) {
             settings.spectrum.interval_ms = v;
         }
+        if let Some(v) = get("discord_presence_enabled") {
+            settings.discord_presence_enabled = v == "true";
+        }
+        if let Some(v) = get("discord_client_id") {
+            settings.discord_client_id = v;
+        }
         settings
     }
 
@@ -109,6 +122,11 @@ impl Settings {
                 "spectrum_interval_ms",
                 self.spectrum.interval_ms.to_string(),
             ),
+            (
+                "discord_presence_enabled",
+                self.discord_presence_enabled.to_string(),
+            ),
+            ("discord_client_id", self.discord_client_id.clone()),
         ]);
     }
 }
