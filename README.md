@@ -59,8 +59,8 @@ For a packaged build placed under `dist/<platform>/`, use the scripts in [`compi
 
 ```
 crates/
-  plugin-api/    # stable C-ABI plugin boundary (decoder/DSP/output service traits)
-  plugin-host/   # dynamic plugin loading, discovery, FFI<->trait proxying
+  plugin-api/    # native Rust plugin ABI (decoder/DSP/output service traits)
+  plugin-host/   # dynamic plugin loading and discovery
   engine/        # playback engine: decode -> DSP -> output, playlist, waveform/spectrum analysis
   ui/            # Slint UI (.slint files) and Rust glue
   app/           # the `openbar5000` binary: wires the engine to the UI
@@ -68,14 +68,11 @@ plugins/
   gain-dsp/      # proof-of-concept Openbar5000 plugin
 ```
 
-## Plugins
+## Acknowledgments
 
-Openbar5000 defines its own Rust-native plugin ABI (see `crates/plugin-api`) rather than attempting binary compatibility with real foobar2000 components, which rely on a proprietary, MSVC-specific C++ ABI. A proof-of-concept plugin lives in `plugins/gain-dsp`; load it and exercise the FFI boundary with:
-
-```bash
-cargo build -p gain-dsp
-cargo run -p plugin-host --example load_plugin -- target/debug/libgain_dsp.dylib   # .so on Linux, .dll on Windows
-```
+Openbar5000's UI is built with [Slint](https://slint.dev) — a huge thanks
+to the Slint team for a great Rust-native GUI toolkit, used here under its
+Royalty-free license.
 
 ## License
 

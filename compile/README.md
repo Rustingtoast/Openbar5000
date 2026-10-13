@@ -33,10 +33,11 @@ the standard way to produce all three from one trigger).
 
 `build-macos.sh` also wraps the binary into `dist/macos/Openbar5000.app`
 (with `Contents/Info.plist` and `Contents/Resources/AppIcon.icns`), which is
-what actually gives Openbar5000 its own icon in Finder/Launchpad/the Dock --
-a bare binary has no icon of its own outside the Dock while it's actually
-running (which Slint's `Window.icon` property covers separately, at
-runtime, on all three platforms).
+what gives Openbar5000 its own icon in Finder/Launchpad/the Dock. This is
+the only way to get a custom icon on macOS — `cargo run` won't show one in
+the Dock, since macOS ties the Dock icon to the app bundle, not the window
+(unlike Windows/Linux, where the window icon shows up even unbundled).
+Open `dist/macos/Openbar5000.app` to see the real icon.
 
 ## Linux: .deb packaging
 
