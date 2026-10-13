@@ -41,6 +41,16 @@ pub enum EngineCommand {
     /// Removes a single track from the playlist by index.
     RemoveIndex(usize),
     ClearPlaylist,
+    /// Reorders the playlist so position `k` holds the track currently at
+    /// `order[k]` (the playlist's Sort submenu). Ignored unless `order` is a
+    /// permutation of the playlist's current indices.
+    ReorderPlaylist(Vec<usize>),
+    /// Re-reads tag metadata for every playlist entry from disk, keeping
+    /// order and what's playing.
+    RefreshMetadata,
+    /// Appends a track to the playback queue: queued tracks play next, in
+    /// order, ahead of whatever the playback mode would otherwise pick.
+    EnqueueIndex(usize),
     /// Gates the (otherwise per-chunk) live FFT work in the pipeline --
     /// disabled by default so playback never pays for it unless the
     /// spectrum view is actually visible.

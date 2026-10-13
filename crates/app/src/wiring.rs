@@ -2,7 +2,9 @@ use crate::discord_presence::{
     NowPlaying, PresenceClient, PresenceCommand, PresenceEvent, DEFAULT_CLIENT_ID,
 };
 use crate::platform;
-use crate::playlist_rows::build_grouped_rows;
+use crate::playlist_rows::{
+    all_group_keys, build_grouped_rows, group_key_of, sort_order, PlaylistGrouping, PlaylistSort,
+};
 use crate::settings::Settings;
 use crate::store::Store;
 use crate::theme::{self, ThemeColors, ThemeRegistry};
@@ -11,6 +13,7 @@ use engine::{
 };
 use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::rc::Rc;
 use std::time::Duration;
 use ui::{
@@ -41,6 +44,10 @@ struct PlaylistViewState {
     tracks: Vec<Track>,
     current_index: Option<usize>,
     search_query: String,
+    grouping: PlaylistGrouping,
+    /// Group keys (see `PlaylistGrouping`) the user collapsed; reset when
+    /// the grouping changes, since the keys mean something else then.
+    collapsed: HashSet<String>,
 }
 
 /// Wires every UI callback to an [`EngineCommand`] and starts the timer that
@@ -54,6 +61,8 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         tracks: Vec::new(),
         current_index: None,
         search_query: String::new(),
+        grouping: PlaylistGrouping::default(),
+        collapsed: HashSet::new(),
     }));
     // The currently loaded track, if any -- used by the top-menu
     // "Properties" item, which (unlike the playlist's right-click one) isn't
@@ -134,6 +143,9 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         &theme_registry.borrow(),
         &initial_theme_id,
     );
+
+    playlist_view_state.borrow_mut().grouping = settings.borrow().playlist_grouping;
+    window.set_playlist_grouping(settings.borrow().playlist_grouping.as_str().into());
 
     window.set_show_waveform(settings.borrow().show_waveform);
     window.set_show_spectrum(settings.borrow().show_spectrum);
@@ -652,6 +664,148 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         });
     }
 
+    // Created on first use and then kept alive: on Linux/X11 the copied
+    // text is only served while the `Clipboard` that set it still exists.
+    let clipboard: Rc<RefCell<Option<arboard::Clipboard>>> = Rc::new(RefCell::new(None));
+    {
+        let playlist_view_state = playlist_view_state.clone();
+        let clipboard = clipboard.clone();
+        window.on_row_copy_clicked(move |index| {
+            if let Some(track) = playlist_view_state.borrow().tracks.get(index as usize) {
+                copy_to_clipboard(&clipboard, track.path.display().to_string());
+            }
+        });
+    }
+    {
+        let playlist_view_state = playlist_view_state.clone();
+        let clipboard = clipboard.clone();
+        let engine = engine.clone();
+        window.on_row_cut_clicked(move |index| {
+            let Some(path) = playlist_view_state
+                .borrow()
+                .tracks
+                .get(index as usize)
+                .map(|t| t.path.display().to_string())
+            else {
+                return;
+            };
+            if copy_to_clipboard(&clipboard, path) {
+                engine.send(EngineCommand::RemoveIndex(index as usize));
+            }
+        });
+    }
+    {
+        let playlist_view_state = playlist_view_state.clone();
+        let engine = engine.clone();
+        let window_weak = window.as_weak();
+        window.on_row_enqueue_clicked(move |index| {
+            let Some(title) = playlist_view_state
+                .borrow()
+                .tracks
+                .get(index as usize)
+                .map(|t| t.metadata.title.clone())
+            else {
+                return;
+            };
+            engine.send(EngineCommand::EnqueueIndex(index as usize));
+            if let Some(window) = window_weak.upgrade() {
+                window.set_status_text(format!("Queued: {title}").into());
+            }
+        });
+    }
+    {
+        let playlist_model = playlist_model.clone();
+        let playlist_view_state = playlist_view_state.clone();
+        window.on_group_toggle_clicked(move |key| {
+            {
+                let mut state = playlist_view_state.borrow_mut();
+                let key = key.to_string();
+                if !state.collapsed.remove(&key) {
+                    state.collapsed.insert(key);
+                }
+            }
+            refresh_playlist_rows(&playlist_model, &playlist_view_state);
+        });
+    }
+    {
+        let playlist_model = playlist_model.clone();
+        let playlist_view_state = playlist_view_state.clone();
+        window.on_collapse_all_clicked(move || {
+            {
+                let mut state = playlist_view_state.borrow_mut();
+                state.collapsed = all_group_keys(&state.tracks, state.grouping);
+            }
+            refresh_playlist_rows(&playlist_model, &playlist_view_state);
+        });
+    }
+    {
+        let playlist_model = playlist_model.clone();
+        let playlist_view_state = playlist_view_state.clone();
+        window.on_expand_all_clicked(move || {
+            playlist_view_state.borrow_mut().collapsed.clear();
+            refresh_playlist_rows(&playlist_model, &playlist_view_state);
+        });
+    }
+    {
+        let playlist_model = playlist_model.clone();
+        let playlist_view_state = playlist_view_state.clone();
+        let settings = settings.clone();
+        let store = store.clone();
+        let window_weak = window.as_weak();
+        window.on_grouping_clicked(move |id| {
+            let grouping = PlaylistGrouping::from_str(&id);
+            {
+                let mut state = playlist_view_state.borrow_mut();
+                state.grouping = grouping;
+                state.collapsed.clear();
+            }
+            settings.borrow_mut().playlist_grouping = grouping;
+            settings.borrow().save(&store);
+            if let Some(window) = window_weak.upgrade() {
+                window.set_playlist_grouping(grouping.as_str().into());
+            }
+            refresh_playlist_rows(&playlist_model, &playlist_view_state);
+        });
+    }
+    {
+        let playlist_view_state = playlist_view_state.clone();
+        let engine = engine.clone();
+        window.on_sort_clicked(move |id| {
+            let Some(sort) = PlaylistSort::from_str(&id) else {
+                return;
+            };
+            let order = sort_order(&playlist_view_state.borrow().tracks, sort);
+            engine.send(EngineCommand::ReorderPlaylist(order));
+        });
+    }
+    {
+        let playlist_model = playlist_model.clone();
+        let playlist_view_state = playlist_view_state.clone();
+        let window_weak = window.as_weak();
+        window.on_show_now_playing_clicked(move || {
+            let Some(window) = window_weak.upgrade() else {
+                return;
+            };
+            {
+                let mut state = playlist_view_state.borrow_mut();
+                let Some(current) = state.current_index else {
+                    return;
+                };
+                if let Some(key) = group_key_of(&state.tracks, current, state.grouping) {
+                    state.collapsed.remove(&key);
+                }
+            }
+            refresh_playlist_rows(&playlist_model, &playlist_view_state);
+            if let Some(y) = current_row_offset(&playlist_model) {
+                window.invoke_scroll_playlist_to(y);
+            }
+        });
+    }
+    {
+        let engine = engine.clone();
+        window.on_refresh_playlist_clicked(move || engine.send(EngineCommand::RefreshMetadata));
+    }
+
     {
         let playlist_model = playlist_model.clone();
         let playlist_view_state = playlist_view_state.clone();
@@ -809,8 +963,46 @@ fn refresh_playlist_rows(
     playlist_view_state: &Rc<RefCell<PlaylistViewState>>,
 ) {
     let state = playlist_view_state.borrow();
-    let rows = build_grouped_rows(&state.tracks, state.current_index, &state.search_query);
+    let rows = build_grouped_rows(
+        &state.tracks,
+        state.current_index,
+        &state.search_query,
+        state.grouping,
+        &state.collapsed,
+    );
     playlist_model.set_vec(rows);
+}
+
+/// Pixel offset of the now-playing track row from the top of the playlist.
+/// Row heights must match `playlist_view.slint` (64px headers, 22px tracks).
+fn current_row_offset(playlist_model: &VecModel<PlaylistRow>) -> Option<f32> {
+    let mut y = 0.0;
+    for row in playlist_model.iter() {
+        if row.is_current && !row.is_header {
+            return Some(y);
+        }
+        y += if row.is_header { 64.0 } else { 22.0 };
+    }
+    None
+}
+
+/// Puts `text` on the system clipboard, returning whether it worked.
+fn copy_to_clipboard(clipboard: &RefCell<Option<arboard::Clipboard>>, text: String) -> bool {
+    let mut clipboard = clipboard.borrow_mut();
+    if clipboard.is_none() {
+        match arboard::Clipboard::new() {
+            Ok(c) => *clipboard = Some(c),
+            Err(e) => {
+                tracing::warn!("clipboard unavailable: {e}");
+                return false;
+            }
+        }
+    }
+    let result = clipboard.as_mut().expect("initialized above").set_text(text);
+    if let Err(e) = &result {
+        tracing::warn!("failed to copy to clipboard: {e}");
+    }
+    result.is_ok()
 }
 
 fn refresh_theme_list(

@@ -37,3 +37,4 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 rusqlite = { version = "0.40", features = ["bundled"] }
 discord-rich-presence = "1.1"
 rand = "0.10"
+arboard = "3"

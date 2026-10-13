@@ -51,7 +51,7 @@ pub fn load_metadata(path: &Path) -> TrackMetadata {
         .primary_tag()
         .or_else(|| tagged_file.first_tag());
 
-    let (title, artist, album, track_number, cover_art) = match tag {
+    let (title, artist, album, track_number, disc_number, date, cover_art) = match tag {
         Some(tag) => (
             tag.title()
                 .map(|s| s.into_owned())
@@ -59,9 +59,19 @@ pub fn load_metadata(path: &Path) -> TrackMetadata {
             tag.artist().map(|s| s.into_owned()).unwrap_or_default(),
             tag.album().map(|s| s.into_owned()).unwrap_or_default(),
             tag.track(),
+            tag.disk(),
+            tag.date().map(|d| d.to_string()).unwrap_or_default(),
             tag.pictures().first().map(|pic| pic.data().to_vec()),
         ),
-        None => (fallback_title, String::new(), String::new(), None, None),
+        None => (
+            fallback_title,
+            String::new(),
+            String::new(),
+            None,
+            None,
+            String::new(),
+            None,
+        ),
     };
 
     TrackMetadata {
@@ -69,6 +79,8 @@ pub fn load_metadata(path: &Path) -> TrackMetadata {
         artist,
         album,
         track_number,
+        disc_number,
+        date,
         duration,
         cover_art,
         format_label,

@@ -75,7 +75,22 @@ export component MainWindow inherits Window {
     callback row-properties-clicked(int);
     callback row-open-folder-clicked(int);
     callback row-remove-clicked(int);
+    callback row-cut-clicked(int);
+    callback row-copy-clicked(int);
+    callback row-enqueue-clicked(int);
+    callback group-toggle-clicked(string);
+    callback collapse-all-clicked();
+    callback expand-all-clicked();
+    callback grouping-clicked(string);
+    callback sort-clicked(string);
+    callback show-now-playing-clicked();
+    callback refresh-playlist-clicked();
     callback search-edited(string);
+    in property <string> playlist-grouping: "artist-album-disc";
+
+    public function scroll-playlist-to(y: length) {
+        playlist.scroll-to(y);
+    }
     callback open-files-clicked();
     callback open-folder-clicked();
     callback properties-clicked();
@@ -120,13 +135,24 @@ export component MainWindow inherits Window {
     }
 
     VerticalLayout {
-        PlaylistView {
+        playlist := PlaylistView {
             vertical-stretch: 1;
             rows: root.playlist-rows;
+            grouping: root.playlist-grouping;
             row-clicked(i) => { root.row-clicked(i); }
             row-properties-clicked(i) => { root.row-properties-clicked(i); }
             row-open-folder-clicked(i) => { root.row-open-folder-clicked(i); }
             row-remove-clicked(i) => { root.row-remove-clicked(i); }
+            row-cut-clicked(i) => { root.row-cut-clicked(i); }
+            row-copy-clicked(i) => { root.row-copy-clicked(i); }
+            row-enqueue-clicked(i) => { root.row-enqueue-clicked(i); }
+            group-toggle-clicked(key) => { root.group-toggle-clicked(key); }
+            collapse-all-clicked => { root.collapse-all-clicked(); }
+            expand-all-clicked => { root.expand-all-clicked(); }
+            grouping-clicked(id) => { root.grouping-clicked(id); }
+            sort-clicked(id) => { root.sort-clicked(id); }
+            show-now-playing-clicked => { root.show-now-playing-clicked(); }
+            refresh-playlist-clicked => { root.refresh-playlist-clicked(); }
             search-edited(text) => { root.search-edited(text); }
         }
         if root.show-waveform: WaveformSeekbar {

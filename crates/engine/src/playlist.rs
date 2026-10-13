@@ -7,6 +7,10 @@ pub struct TrackMetadata {
     pub artist: String,
     pub album: String,
     pub track_number: Option<u32>,
+    pub disc_number: Option<u32>,
+    /// Release/recording date exactly as tagged (often just a year, e.g.
+    /// "2025", sometimes a full "2019-11-15") -- empty if untagged.
+    pub date: String,
     pub duration: Duration,
     /// Raw embedded cover art bytes (still JPEG/PNG-encoded), if the file
     /// has any. Decoding to pixels is a UI-layer concern.
@@ -104,8 +108,85 @@ impl Playlist {
         };
     }
 
+    /// Reorders the playlist so position `k` holds the track previously at
+    /// `order[k]`, keeping `current_index` on the same track. Returns
+    /// `false` (and changes nothing) unless `order` is a permutation of
+    /// `0..len()` -- e.g. one computed against a playlist that has since
+    /// changed length.
+    pub fn reorder(&mut self, order: &[usize]) -> bool {
+        if !is_permutation(order, self.tracks.len()) {
+            return false;
+        }
+        let mut old: Vec<Option<Track>> = self.tracks.drain(..).map(Some).collect();
+        self.tracks = order
+            .iter()
+            .map(|&i| old[i].take().expect("permutation visits each index once"))
+            .collect();
+        self.current_index = self
+            .current_index
+            .and_then(|current| order.iter().position(|&i| i == current));
+        true
+    }
+
+    /// Re-reads tag metadata for every track via `load`, keeping order and
+    /// `current_index` untouched.
+    pub fn refresh_metadata(&mut self, load: impl Fn(&std::path::Path) -> TrackMetadata) {
+        for track in &mut self.tracks {
+            track.metadata = load(&track.path);
+        }
+    }
+
     pub fn clear(&mut self) {
         self.tracks.clear();
         self.current_index = None;
+    }
+}
+
+/// `true` if `order` contains every index in `0..len` exactly once.
+pub(crate) fn is_permutation(order: &[usize], len: usize) -> bool {
+    if order.len() != len {
+        return false;
+    }
+    let mut seen = vec![false; len];
+    order
+        .iter()
+        .all(|&i| i < len && !std::mem::replace(&mut seen[i], true))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn track(name: &str) -> Track {
+        Track {
+            path: PathBuf::from(name),
+            metadata: TrackMetadata::default(),
+        }
+    }
+
+    fn names(playlist: &Playlist) -> Vec<String> {
+        playlist
+            .tracks()
+            .iter()
+            .map(|t| t.path.display().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn reorder_moves_tracks_and_follows_the_current_one() {
+        let mut playlist = Playlist::from_tracks(vec![track("a"), track("b"), track("c")]);
+        playlist.set_current_index(0);
+        assert!(playlist.reorder(&[2, 0, 1]));
+        assert_eq!(names(&playlist), ["c", "a", "b"]);
+        assert_eq!(playlist.current_index(), Some(1));
+    }
+
+    #[test]
+    fn reorder_rejects_non_permutations() {
+        let mut playlist = Playlist::from_tracks(vec![track("a"), track("b")]);
+        assert!(!playlist.reorder(&[0, 0]));
+        assert!(!playlist.reorder(&[0]));
+        assert!(!playlist.reorder(&[0, 2]));
+        assert_eq!(names(&playlist), ["a", "b"]);
     }
 }

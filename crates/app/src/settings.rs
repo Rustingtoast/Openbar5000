@@ -1,3 +1,4 @@
+use crate::playlist_rows::PlaylistGrouping;
 use crate::store::Store;
 use engine::{PlaybackMode, SpectrumChannelMode, SpectrumConfig};
 use std::path::PathBuf;
@@ -12,6 +13,7 @@ pub struct Settings {
     pub theme_id: String,
     pub spectrum: SpectrumConfig,
     pub playback_mode: PlaybackMode,
+    pub playlist_grouping: PlaylistGrouping,
     /// Off by default: it does nothing until the user supplies their own
     /// Discord Application client ID (see `discord_client_id`), which only
     /// they can create -- see README for the one-time setup steps.
@@ -27,6 +29,7 @@ impl Default for Settings {
             theme_id: "dark".to_string(),
             spectrum: SpectrumConfig::default(),
             playback_mode: PlaybackMode::Normal,
+            playlist_grouping: PlaylistGrouping::default(),
             discord_presence_enabled: false,
             discord_client_id: String::new(),
         }
@@ -111,6 +114,9 @@ impl Settings {
         if let Some(v) = get("playback_mode") {
             settings.playback_mode = playback_mode_from_str(&v);
         }
+        if let Some(v) = get("playlist_grouping") {
+            settings.playlist_grouping = PlaylistGrouping::from_str(&v);
+        }
         if let Some(v) = get("discord_presence_enabled") {
             settings.discord_presence_enabled = v == "true";
         }
@@ -151,6 +157,10 @@ impl Settings {
             (
                 "playback_mode",
                 playback_mode_to_str(self.playback_mode).to_string(),
+            ),
+            (
+                "playlist_grouping",
+                self.playlist_grouping.as_str().to_string(),
             ),
             (
                 "discord_presence_enabled",
