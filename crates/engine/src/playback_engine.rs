@@ -4,7 +4,8 @@ use crate::metadata::load_metadata;
 use crate::output::CpalSink;
 use crate::pipeline::Pipeline;
 use crate::playlist::{Playlist, Track};
-use crate::{EngineCommand, EngineEvent};
+use crate::shuffle::ShuffleOrder;
+use crate::{EngineCommand, EngineEvent, PlaybackMode};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use plugin_api::OutputSink;
 use std::time::{Duration, Instant};
@@ -63,6 +64,10 @@ struct EngineState {
     samples_played: u64,
     volume: f32,
     waveform_enabled: bool,
+    playback_mode: PlaybackMode,
+    /// `Some` only while `playback_mode == Shuffle`; rebuilt whenever the
+    /// playlist's contents or length change so its indices never go stale.
+    shuffle: Option<ShuffleOrder>,
 }
 
 fn run(command_rx: Receiver<EngineCommand>, event_tx: Sender<EngineEvent>) {
@@ -83,6 +88,8 @@ fn run(command_rx: Receiver<EngineCommand>, event_tx: Sender<EngineEvent>) {
         samples_played: 0,
         volume: 1.0,
         waveform_enabled: false,
+        playback_mode: PlaybackMode::Normal,
+        shuffle: None,
     };
 
     let mut last_position_sent = Instant::now();
@@ -109,7 +116,7 @@ fn run(command_rx: Receiver<EngineCommand>, event_tx: Sender<EngineEvent>) {
         }
 
         match state.pipeline.process_chunk() {
-            Ok(0) => advance_to_next_track(&mut state, &event_tx),
+            Ok(0) => on_track_finished(&mut state, &event_tx),
             Ok(written) => {
                 state.samples_played += written as u64;
                 if let Some((bars, peaks)) = state.pipeline.take_spectrum() {
@@ -137,7 +144,15 @@ fn handle_command(
     match command {
         EngineCommand::Play => {
             if state.playlist.current().is_none() && !state.playlist.is_empty() {
-                load_track(state, 0, event_tx);
+                // Respect shuffle's own (already-randomized) starting pick
+                // instead of always starting a cold play at track 0.
+                let start_index = match state.playback_mode {
+                    PlaybackMode::Shuffle => {
+                        state.shuffle.as_ref().and_then(ShuffleOrder::current).unwrap_or(0)
+                    }
+                    PlaybackMode::Normal | PlaybackMode::RepeatAll | PlaybackMode::RepeatOne => 0,
+                };
+                load_track(state, start_index, event_tx);
             }
             if state.playlist.current().is_some() {
                 set_playback_state(state, PlaybackState::Playing, event_tx);
@@ -159,15 +174,34 @@ fn handle_command(
         }
         EngineCommand::Next => advance_to_next_track(state, event_tx),
         EngineCommand::Previous => {
-            let was_playing = state.playback_state == PlaybackState::Playing;
-            let index = state
-                .playlist
-                .current_index()
-                .and_then(|i| i.checked_sub(1))
-                .unwrap_or(0);
-            load_track(state, index, event_tx);
-            if was_playing {
-                set_playback_state(state, PlaybackState::Playing, event_tx);
+            // Shuffle has its own notion of "previous" (back one step in
+            // its randomized order); RepeatAll wraps to the last track;
+            // Normal/RepeatOne just step the index down and stop at 0.
+            // Either way, an explicit Previous always navigates for real --
+            // unlike a track ending naturally, RepeatOne doesn't apply here.
+            let index = match state.playback_mode {
+                PlaybackMode::Shuffle => state.shuffle.as_mut().and_then(ShuffleOrder::retreat),
+                PlaybackMode::RepeatAll => {
+                    let len = state.playlist.len();
+                    (len > 0).then(|| match state.playlist.current_index() {
+                        Some(0) | None => len - 1,
+                        Some(i) => i - 1,
+                    })
+                }
+                PlaybackMode::Normal | PlaybackMode::RepeatOne => Some(
+                    state
+                        .playlist
+                        .current_index()
+                        .and_then(|i| i.checked_sub(1))
+                        .unwrap_or(0),
+                ),
+            };
+            if let Some(index) = index {
+                let was_playing = state.playback_state == PlaybackState::Playing;
+                load_track(state, index, event_tx);
+                if was_playing {
+                    set_playback_state(state, PlaybackState::Playing, event_tx);
+                }
             }
         }
         EngineCommand::SetVolume(volume) => {
@@ -184,11 +218,15 @@ fn handle_command(
                 .collect();
             state.playlist = Playlist::from_tracks(tracks);
             state.samples_played = 0;
+            rebuild_shuffle_order(state, None);
             send_playlist_update(state, event_tx);
         }
         EngineCommand::PlayIndex(index) => {
             load_track(state, index, event_tx);
             set_playback_state(state, PlaybackState::Playing, event_tx);
+            // Re-anchor the shuffle cycle on the track the user just picked
+            // by hand, rather than leaving it mid-way through the old one.
+            rebuild_shuffle_order(state, Some(index));
         }
         EngineCommand::RemoveIndex(index) => {
             let removed_current = state.playlist.current_index() == Some(index);
@@ -197,12 +235,14 @@ fn handle_command(
                 set_playback_state(state, PlaybackState::Stopped, event_tx);
                 state.samples_played = 0;
             }
+            rebuild_shuffle_order(state, state.playlist.current_index());
             send_playlist_update(state, event_tx);
         }
         EngineCommand::ClearPlaylist => {
             state.playlist.clear();
             set_playback_state(state, PlaybackState::Stopped, event_tx);
             state.samples_played = 0;
+            state.shuffle = None;
             send_playlist_update(state, event_tx);
         }
         EngineCommand::SetSpectrumEnabled(enabled) => {
@@ -214,8 +254,25 @@ fn handle_command(
         EngineCommand::SetSpectrumConfig(config) => {
             state.pipeline.set_spectrum_config(config);
         }
+        EngineCommand::SetPlaybackMode(mode) => {
+            state.playback_mode = mode;
+            if mode == PlaybackMode::Shuffle {
+                rebuild_shuffle_order(state, state.playlist.current_index());
+            } else {
+                state.shuffle = None;
+            }
+        }
     }
     true
+}
+
+/// Rebuilds the shuffle cycle for the playlist's current length -- a no-op
+/// unless shuffle is the active mode. `anchor`, if given, is kept as the
+/// cycle's first entry so rebuilding doesn't interrupt what's playing.
+fn rebuild_shuffle_order(state: &mut EngineState, anchor: Option<usize>) {
+    if state.playback_mode == PlaybackMode::Shuffle {
+        state.shuffle = Some(ShuffleOrder::new(state.playlist.len(), anchor));
+    }
 }
 
 fn send_playlist_update(state: &EngineState, event_tx: &Sender<EngineEvent>) {
@@ -268,16 +325,42 @@ fn spawn_waveform_computation(
         .expect("failed to spawn waveform thread");
 }
 
-fn advance_to_next_track(state: &mut EngineState, event_tx: &Sender<EngineEvent>) {
-    let next_index = state.playlist.current_index().map(|i| i + 1).unwrap_or(0);
-    if next_index < state.playlist.len() {
-        let was_playing = state.playback_state == PlaybackState::Playing;
-        load_track(state, next_index, event_tx);
-        if was_playing {
+/// Called when a track reaches its end on its own (not via an explicit
+/// Next/Previous command) -- the one place RepeatOne applies, replaying the
+/// same track instead of moving on.
+fn on_track_finished(state: &mut EngineState, event_tx: &Sender<EngineEvent>) {
+    if state.playback_mode == PlaybackMode::RepeatOne {
+        if let Some(index) = state.playlist.current_index() {
+            load_track(state, index, event_tx);
             set_playback_state(state, PlaybackState::Playing, event_tx);
+            return;
         }
-    } else {
-        set_playback_state(state, PlaybackState::Stopped, event_tx);
+    }
+    advance_to_next_track(state, event_tx);
+}
+
+fn advance_to_next_track(state: &mut EngineState, event_tx: &Sender<EngineEvent>) {
+    let next_index = match state.playback_mode {
+        PlaybackMode::Shuffle => state.shuffle.as_mut().and_then(ShuffleOrder::advance),
+        PlaybackMode::Normal | PlaybackMode::RepeatOne => {
+            let next = state.playlist.current_index().map(|i| i + 1).unwrap_or(0);
+            (next < state.playlist.len()).then_some(next)
+        }
+        PlaybackMode::RepeatAll => {
+            let len = state.playlist.len();
+            let next = state.playlist.current_index().map(|i| i + 1).unwrap_or(0);
+            (len > 0).then_some(next % len)
+        }
+    };
+    match next_index {
+        Some(next_index) => {
+            let was_playing = state.playback_state == PlaybackState::Playing;
+            load_track(state, next_index, event_tx);
+            if was_playing {
+                set_playback_state(state, PlaybackState::Playing, event_tx);
+            }
+        }
+        None => set_playback_state(state, PlaybackState::Stopped, event_tx),
     }
 }
 

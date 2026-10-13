@@ -6,7 +6,9 @@ use crate::playlist_rows::build_grouped_rows;
 use crate::settings::Settings;
 use crate::store::Store;
 use crate::theme::{self, ThemeColors, ThemeRegistry};
-use engine::{AudioInfo, EngineCommand, EngineEvent, PlaybackEngine, PlaybackState, Track};
+use engine::{
+    AudioInfo, EngineCommand, EngineEvent, PlaybackEngine, PlaybackMode, PlaybackState, Track,
+};
 use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -143,6 +145,10 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     ));
     settings_window.set_show_waveform(settings.borrow().show_waveform);
     settings_window.set_show_spectrum(settings.borrow().show_spectrum);
+
+    let initial_playback_mode = settings.borrow().playback_mode;
+    sync_playback_mode_window(window, initial_playback_mode);
+    engine.send(EngineCommand::SetPlaybackMode(initial_playback_mode));
 
     engine.send(EngineCommand::SetSpectrumConfig(settings.borrow().spectrum));
     {
@@ -713,6 +719,53 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         let engine = engine.clone();
         window.on_row_clicked(move |index| engine.send(EngineCommand::PlayIndex(index as usize)));
     }
+    {
+        let settings = settings.clone();
+        let store = store.clone();
+        let engine = engine.clone();
+        let window_weak = window.as_weak();
+        window.on_shuffle_clicked(move || {
+            let Some(window) = window_weak.upgrade() else {
+                return;
+            };
+            // Mutually exclusive with Repeat: turning Shuffle on always
+            // turns Repeat off, and clicking it again just goes back to
+            // Normal.
+            let new_mode = if settings.borrow().playback_mode == PlaybackMode::Shuffle {
+                PlaybackMode::Normal
+            } else {
+                PlaybackMode::Shuffle
+            };
+            settings.borrow_mut().playback_mode = new_mode;
+            settings.borrow().save(&store);
+            sync_playback_mode_window(&window, new_mode);
+            engine.send(EngineCommand::SetPlaybackMode(new_mode));
+        });
+    }
+    {
+        let settings = settings.clone();
+        let store = store.clone();
+        let engine = engine.clone();
+        let window_weak = window.as_weak();
+        window.on_loop_clicked(move || {
+            let Some(window) = window_weak.upgrade() else {
+                return;
+            };
+            // Three-state cycle, same as Spotify/fb2k/etc.: off -> repeat
+            // the whole queue -> repeat just this one track -> off. Any
+            // other mode (Normal or Shuffle) starts the cycle over at
+            // RepeatAll.
+            let new_mode = match settings.borrow().playback_mode {
+                PlaybackMode::RepeatAll => PlaybackMode::RepeatOne,
+                PlaybackMode::RepeatOne => PlaybackMode::Normal,
+                PlaybackMode::Normal | PlaybackMode::Shuffle => PlaybackMode::RepeatAll,
+            };
+            settings.borrow_mut().playback_mode = new_mode;
+            settings.borrow().save(&store);
+            sync_playback_mode_window(&window, new_mode);
+            engine.send(EngineCommand::SetPlaybackMode(new_mode));
+        });
+    }
 
     let event_poll_timer = Timer::default();
     let window_weak = window.as_weak();
@@ -843,6 +896,11 @@ fn apply_event(
                 )
                 .into(),
             );
+            // Reset right away rather than waiting for the next
+            // `PositionUpdate` -- otherwise a RepeatOne/RepeatAll loop back
+            // onto the same track briefly keeps showing the old end position.
+            window.set_position_seconds(0.0);
+            window.set_position_text(format_duration(Duration::ZERO).into());
             window.set_waveform_peaks(ModelRc::from(Rc::new(VecModel::<f32>::default())));
             window.set_waveform_played_bucket_index(0);
             // Not just `PlaybackStateChanged`: advancing to the next track
@@ -932,6 +990,18 @@ fn send_presence_for_track(
         elapsed,
         is_playing,
     }));
+}
+
+/// Syncs the transport bar's Shuffle/Repeat button state to `mode` --
+/// `loop-active` lights up the button for either repeat sub-state,
+/// `repeat-one-active` additionally selects the "1"-badged icon.
+fn sync_playback_mode_window(window: &MainWindow, mode: PlaybackMode) {
+    window.set_shuffle_active(mode == PlaybackMode::Shuffle);
+    window.set_loop_active(matches!(
+        mode,
+        PlaybackMode::RepeatAll | PlaybackMode::RepeatOne
+    ));
+    window.set_repeat_one_active(mode == PlaybackMode::RepeatOne);
 }
 
 fn presence_status_label(enabled: bool, connected: bool) -> &'static str {

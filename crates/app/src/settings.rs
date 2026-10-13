@@ -1,5 +1,5 @@
 use crate::store::Store;
-use engine::{SpectrumChannelMode, SpectrumConfig};
+use engine::{PlaybackMode, SpectrumChannelMode, SpectrumConfig};
 use std::path::PathBuf;
 
 /// Persisted, user-facing toggles and preferences. Backed by the `settings`
@@ -11,6 +11,7 @@ pub struct Settings {
     pub show_spectrum: bool,
     pub theme_id: String,
     pub spectrum: SpectrumConfig,
+    pub playback_mode: PlaybackMode,
     /// Off by default: it does nothing until the user supplies their own
     /// Discord Application client ID (see `discord_client_id`), which only
     /// they can create -- see README for the one-time setup steps.
@@ -25,9 +26,31 @@ impl Default for Settings {
             show_spectrum: true,
             theme_id: "dark".to_string(),
             spectrum: SpectrumConfig::default(),
+            playback_mode: PlaybackMode::Normal,
             discord_presence_enabled: false,
             discord_client_id: String::new(),
         }
+    }
+}
+
+fn playback_mode_to_str(mode: PlaybackMode) -> &'static str {
+    match mode {
+        PlaybackMode::Normal => "normal",
+        PlaybackMode::RepeatAll => "repeat_all",
+        PlaybackMode::RepeatOne => "repeat_one",
+        PlaybackMode::Shuffle => "shuffle",
+    }
+}
+
+fn playback_mode_from_str(value: &str) -> PlaybackMode {
+    match value {
+        "repeat_all" => PlaybackMode::RepeatAll,
+        // "loop" is the pre-3-state-cycle value this field used to store;
+        // kept so settings saved by an older build still load sensibly
+        // instead of silently resetting to Normal.
+        "repeat_one" | "loop" => PlaybackMode::RepeatOne,
+        "shuffle" => PlaybackMode::Shuffle,
+        _ => PlaybackMode::Normal,
     }
 }
 
@@ -85,6 +108,9 @@ impl Settings {
         if let Some(v) = get("spectrum_interval_ms").and_then(|v| v.parse().ok()) {
             settings.spectrum.interval_ms = v;
         }
+        if let Some(v) = get("playback_mode") {
+            settings.playback_mode = playback_mode_from_str(&v);
+        }
         if let Some(v) = get("discord_presence_enabled") {
             settings.discord_presence_enabled = v == "true";
         }
@@ -121,6 +147,10 @@ impl Settings {
             (
                 "spectrum_interval_ms",
                 self.spectrum.interval_ms.to_string(),
+            ),
+            (
+                "playback_mode",
+                playback_mode_to_str(self.playback_mode).to_string(),
             ),
             (
                 "discord_presence_enabled",

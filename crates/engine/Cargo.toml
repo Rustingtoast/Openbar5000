@@ -15,6 +15,7 @@ ringbuf.workspace = true
 crossbeam-channel.workspace = true
 tracing.workspace = true
 rustfft.workspace = true
+rand.workspace = true
 
 [dev-dependencies]
 tracing-subscriber.workspace = true

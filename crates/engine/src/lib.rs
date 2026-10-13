@@ -9,10 +9,11 @@ mod metadata;
 mod pipeline;
 mod playback_engine;
 mod playlist;
+mod shuffle;
 mod spectrum;
 mod waveform;
 
-pub use commands::EngineCommand;
+pub use commands::{EngineCommand, PlaybackMode};
 pub use events::{EngineEvent, PlaybackState};
 pub use library::{scan_audio_files, AUDIO_EXTENSIONS};
 pub use metadata::load_metadata;

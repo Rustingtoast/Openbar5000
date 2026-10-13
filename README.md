@@ -9,6 +9,7 @@ Openbar5000 is an open-source, cross-platform (Windows, macOS, Linux) alternativ
 - Real waveform seekbar (decoded peak data, not a mockup)
 - Live spectrum analyzer (real FFT, with channel/amplitude/FFT-size/peak-gravity settings)
 - Dark/Light/One Dark/Dracula themes, plus fully custom user-defined themes
+- Shuffle (fair-cycle: every track plays once before any repeat) and a 3-state Repeat (off → repeat queue → repeat track, with a "1" badge), mutually exclusive, in the transport bar
 - Discord Rich Presence ("Listening to \<track\>")
 - A native Rust plugin API (`plugin-api` + `plugin-host`), proven end-to-end with a sample DSP plugin
 
