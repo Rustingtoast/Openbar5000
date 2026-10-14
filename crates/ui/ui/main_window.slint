@@ -12,6 +12,7 @@ import { AboutWindow } from "about_window.slint";
 import { SettingsWindow, ThemeListEntry } from "settings_window.slint";
 import { ThemeEditorWindow } from "theme_editor_window.slint";
 import { LyricsEditorWindow } from "lyrics_editor_window.slint";
+import { VintageEqualizer } from "vintage_equalizer.slint";
 
 /// One placed panel (see `app::layout`): which panel to draw and where,
 /// relative to the panel area below the menu bar.
@@ -223,6 +224,24 @@ export component MainWindow inherits Window {
     callback panel-drag-moved(length, length);
     callback panel-drag-released();
     in property <DropPreview> drop-preview;
+    // Equalizer (issue #7): Playback > Equalizer and the Vintage
+    // Equalizer panel, both driven by `app::equalizer`.
+    in property <bool> eq-enabled: false;
+    in property <[string]> eq-band-labels: [];
+    in property <string> eq-lit-dots;
+    in property <string> eq-half-dots;
+    in property <string> eq-dim-dots;
+    in property <string> eq-readout-band;
+    in property <string> eq-readout-gain;
+    in property <string> eq-message-dots;
+    in property <int> eq-message-columns;
+    in property <string> eq-grid-dots;
+    in property <int> eq-grid-columns;
+    callback eq-settings-clicked();
+    callback eq-enabled-toggled();
+    callback eq-step(int, int);
+    callback eq-flat-clicked();
+
     callback open-files-clicked();
     callback open-folder-clicked();
     callback properties-clicked();
@@ -255,6 +274,17 @@ export component MainWindow inherits Window {
             MenuSeparator {}
             MenuItem { title: "Previous"; activated => { root.previous-clicked(); } }
             MenuItem { title: "Next"; activated => { root.next-clicked(); } }
+            MenuSeparator {}
+            Menu {
+                title: "Equalizer";
+                MenuItem {
+                    title: "Enable Equalizer";
+                    checkable: true;
+                    checked: root.eq-enabled;
+                    activated => { root.eq-enabled-toggled(); }
+                }
+                MenuItem { title: "Equalizer Settings..."; activated => { root.eq-settings-clicked(); } }
+            }
         }
         Menu {
             title: "View";
@@ -443,6 +473,24 @@ export component MainWindow inherits Window {
                 height: parent.height;
                 title: "Media library";
                 message: "Not available yet. Use File > Open Folder to load music.";
+            }
+            if slot.kind == "equalizer": VintageEqualizer {
+                width: parent.width;
+                height: parent.height;
+                band-labels: root.eq-band-labels;
+                enabled: root.eq-enabled;
+                lit-dots: root.eq-lit-dots;
+                half-dots: root.eq-half-dots;
+                dim-dots: root.eq-dim-dots;
+                readout-band: root.eq-readout-band;
+                readout-gain: root.eq-readout-gain;
+                message-dots: root.eq-message-dots;
+                message-columns: root.eq-message-columns;
+                grid-dots: root.eq-grid-dots;
+                grid-columns: root.eq-grid-columns;
+                step(band, delta) => { root.eq-step(band, delta); }
+                power-clicked => { root.eq-enabled-toggled(); }
+                flat-clicked => { root.eq-flat-clicked(); }
             }
             if slot.kind == "status-bar": StatusBar {
                 width: parent.width;

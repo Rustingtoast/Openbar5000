@@ -1,0 +1,165 @@
+import { Button, CheckBox, ComboBox } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+/// One band's vertical slider: whole dB from -max to +max, +max at the
+/// top. Reports every step while dragging, like foobar2000's.
+component BandSlider inherits Rectangle {
+    in property <int> value;
+    in property <int> max-db: 20;
+    callback changed(int);
+
+    property <bool> dragging: false;
+    property <length> thumb-height: 12px;
+    property <length> travel: root.height - root.thumb-height;
+    // 0 at the top (+max), 1 at the bottom (-max).
+    property <float> fraction: (root.max-db - root.value) / (2 * root.max-db);
+
+    // The groove.
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        width: 4px;
+        border-radius: 2px;
+        background: Theme.text-muted.transparentize(0.75);
+    }
+    // 0 dB tick.
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        height: 1px;
+        background: Theme.text-muted.transparentize(0.6);
+    }
+    Rectangle {
+        y: root.travel * root.fraction;
+        height: root.thumb-height;
+        width: parent.width - 2px;
+        border-radius: 2px;
+        background: touch.has-hover || root.dragging ? Theme.accent.brighter(0.15) : Theme.accent;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        function value-at(y: length) -> int {
+            return Math.round(root.max-db - Math.clamp((y - root.thumb-height / 2) / root.travel, 0, 1) * 2 * root.max-db);
+        }
+        pointer-event(event) => {
+            if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                root.dragging = true;
+                root.changed(self.value-at(self.mouse-y));
+            } else if event.button == PointerEventButton.left && event.kind == PointerEventKind.up {
+                root.dragging = false;
+            }
+        }
+        moved => {
+            if root.dragging {
+                root.changed(self.value-at(self.mouse-y));
+            }
+        }
+        scroll-event(event) => {
+            if event.delta-y > 0 {
+                root.changed(Math.min(root.max-db, root.value + 1));
+                return accept;
+            } else if event.delta-y < 0 {
+                root.changed(Math.max(-root.max-db, root.value - 1));
+                return accept;
+            }
+            reject
+        }
+    }
+}
+
+/// The equalizer's tab in Preferences (issue #7): 18 bands of ±20 dB,
+/// presets as foobar2000 `.feq` files. Changes are heard as they are made.
+export component EqualizerSettingsPage inherits VerticalLayout {
+    in property <[string]> band-labels;
+    in property <[int]> gains;
+    in property <int> max-db: 20;
+    in property <bool> enabled;
+    /// Built-in presets; index 0 is "Custom" (no preset matches).
+    in property <[string]> preset-names;
+    in property <int> preset-index;
+    in property <string> status;
+
+    callback band-changed(int, int);
+    callback enabled-toggled(bool);
+    callback zero-all-clicked();
+    callback auto-level-clicked();
+    callback load-preset-clicked();
+    callback save-preset-clicked();
+    callback preset-chosen(int);
+
+    padding: 16px;
+    spacing: 8px;
+
+    HorizontalLayout {
+        spacing: 12px;
+        CheckBox {
+            text: "Enable equalizer";
+            checked: root.enabled;
+            toggled => { root.enabled-toggled(self.checked); }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        Text {
+            text: "Presets";
+            vertical-alignment: center;
+            color: Theme.text-muted;
+        }
+        ComboBox {
+            width: 160px;
+            model: root.preset-names;
+            current-index: root.preset-index;
+            selected => { root.preset-chosen(self.current-index); }
+        }
+    }
+
+    // Sliders with the dB scale on the right, labels underneath.
+    HorizontalLayout {
+        vertical-stretch: 1;
+        min-height: 120px;
+        spacing: 6px;
+        sliders := HorizontalLayout {
+            spacing: 4px;
+            opacity: root.enabled ? 1 : 0.55;
+            for gain[i] in root.gains: BandSlider {
+                min-width: 18px;
+                horizontal-stretch: 1;
+                value: gain;
+                max-db: root.max-db;
+                changed(v) => { root.band-changed(i, v); }
+            }
+        }
+        Rectangle {
+            width: 46px;
+            Text { y: 0; text: "+" + root.max-db + " dB"; font-size: 11px; color: Theme.text-muted; }
+            Text { y: (parent.height - self.height) / 2; text: "0 dB"; font-size: 11px; color: Theme.text-muted; }
+            Text { y: parent.height - self.height; text: "-" + root.max-db + " dB"; font-size: 11px; color: Theme.text-muted; }
+        }
+    }
+    // Two staggered rows, so the labels don't collide at narrow widths.
+    Rectangle {
+        height: 30px;
+        property <length> column: (sliders.width - 4px * (root.gains.length - 1)) / Math.max(1, root.gains.length);
+        for label[i] in root.band-labels: Text {
+            x: i * (parent.column + 4px) + parent.column / 2 - self.width / 2;
+            y: Math.mod(i, 2) == 0 ? 0 : 15px;
+            text: label;
+            font-size: 11px;
+            color: Theme.text-muted;
+        }
+    }
+
+    HorizontalLayout {
+        spacing: 6px;
+        Button { text: "Zero all"; clicked => { root.zero-all-clicked(); } }
+        Button { text: "Auto level"; clicked => { root.auto-level-clicked(); } }
+        Button { text: "Load preset\u{2026}"; clicked => { root.load-preset-clicked(); } }
+        Button { text: "Save preset\u{2026}"; clicked => { root.save-preset-clicked(); } }
+        Text {
+            horizontal-stretch: 1;
+            text: root.status;
+            vertical-alignment: center;
+            horizontal-alignment: right;
+            overflow: elide;
+            color: Theme.text-muted;
+            font-size: 11px;
+        }
+    }
+}

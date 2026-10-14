@@ -2,7 +2,7 @@ use crate::artist_info::{LookupOptions, WIKIPEDIA_LANGUAGES};
 use crate::layout::Layout;
 use crate::playlist_rows::PlaylistGrouping;
 use crate::store::Store;
-use engine::{PlaybackMode, SpectrumChannelMode, SpectrumConfig};
+use engine::{EqualizerSettings, PlaybackMode, SpectrumChannelMode, SpectrumConfig, EQ_MAX_DB};
 use std::path::PathBuf;
 
 /// Persisted, user-facing toggles and preferences. Backed by the `settings`
@@ -33,6 +33,8 @@ pub struct Settings {
     pub artist_wikipedia: bool,
     /// Wikipedia edition to read (falls back to English).
     pub artist_wikipedia_language: String,
+    /// The graphic equalizer (issue #7).
+    pub equalizer: EqualizerSettings,
 }
 
 impl Default for Settings {
@@ -50,6 +52,7 @@ impl Default for Settings {
             discord_client_id: String::new(),
             artist_wikipedia: true,
             artist_wikipedia_language: "en".to_string(),
+            equalizer: EqualizerSettings::default(),
         }
     }
 }
@@ -207,6 +210,12 @@ impl Settings {
                 settings.artist_wikipedia_language = v;
             }
         }
+        if let Some(v) = get("eq_enabled") {
+            settings.equalizer.enabled = v == "true";
+        }
+        if let Some(gains) = get("eq_gains").and_then(|v| parse_eq_gains(&v)) {
+            settings.equalizer.gains_db = gains;
+        }
         settings.layout = get("layout")
             .and_then(|json| Layout::from_json(&json))
             .unwrap_or_else(|| Layout::default_with(settings.show_waveform, settings.show_spectrum));
@@ -260,9 +269,24 @@ impl Settings {
             ("discord_client_id", self.discord_client_id.clone()),
             ("artist_wikipedia", self.artist_wikipedia.to_string()),
             ("artist_wikipedia_language", self.artist_wikipedia_language.clone()),
+            ("eq_enabled", self.equalizer.enabled.to_string()),
+            (
+                "eq_gains",
+                self.equalizer.gains_db.map(|gain| gain.to_string()).join(","),
+            ),
             ("layout", self.layout.to_json()),
         ]);
     }
+}
+
+/// `eq_gains` as saved: comma-separated whole dB, lowest band first.
+fn parse_eq_gains(value: &str) -> Option<[i32; engine::EQ_BAND_COUNT]> {
+    value
+        .split(',')
+        .map(|gain| gain.trim().parse::<i32>().ok().map(|g| g.clamp(-EQ_MAX_DB, EQ_MAX_DB)))
+        .collect::<Option<Vec<_>>>()?
+        .try_into()
+        .ok()
 }
 
 #[cfg(target_os = "macos")]

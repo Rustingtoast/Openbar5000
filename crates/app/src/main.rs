@@ -1,5 +1,6 @@
 mod artist_info;
 mod discord_presence;
+mod equalizer;
 mod layout;
 mod lyrics;
 mod media_keys;

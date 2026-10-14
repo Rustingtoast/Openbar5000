@@ -3,6 +3,7 @@ use crate::discord_presence::{
 };
 use crate::layout::{drop_at, drop_preview, Axis, DragStart, Drop, Layout, PanelKind, Placement, Side};
 use crate::artist_info::{self, ArtistInfo, Candidate, Outcome, WIKIPEDIA_LANGUAGES};
+use crate::equalizer::Equalizer;
 use crate::lyrics::Lyrics;
 use crate::media_keys::{MediaAction, MediaKeys};
 use crate::platform;
@@ -58,6 +59,7 @@ pub struct UiHandles {
     pub settings_window: SettingsWindow,
     pub theme_editor_window: ThemeEditorWindow,
     pub lyrics_editor_window: LyricsEditorWindow,
+    pub equalizer: Rc<Equalizer>,
 }
 
 /// Shared UI-thread state kept in sync with the engine's playlist, so any
@@ -177,6 +179,14 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
 
     playlist_view_state.borrow_mut().grouping = settings.borrow().playlist_grouping;
     window.set_playlist_grouping(settings.borrow().playlist_grouping.as_str().into());
+
+    let equalizer = Equalizer::wire(
+        window,
+        &settings_window,
+        engine.clone(),
+        store.clone(),
+        settings.clone(),
+    );
 
     let track_panels = Rc::new(TrackPanels::new(window, store.clone(), settings.clone()));
     {
@@ -1212,6 +1222,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         settings_window,
         theme_editor_window,
         lyrics_editor_window,
+        equalizer,
     }
 }
 

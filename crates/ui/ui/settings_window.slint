@@ -1,5 +1,6 @@
 import { Button, CheckBox, ComboBox, GroupBox, LineEdit, Palette, ScrollView, SpinBox, TabWidget } from "std-widgets.slint";
 import { Theme } from "theme.slint";
+import { EqualizerSettingsPage } from "equalizer_settings.slint";
 
 export struct ThemeListEntry {
     id: string,
@@ -71,7 +72,8 @@ export component SettingsWindow inherits Window {
     title: "Preferences";
     icon: @image-url("assets/icons/app-icon.svg");
     preferred-width: 680px;
-    preferred-height: 520px;
+    // Tall enough for the Spectrum Analyzer tab, the tallest.
+    preferred-height: 600px;
     min-width: 560px;
     min-height: 420px;
     // See MainWindow: an explicit max keeps the window resizable.
@@ -140,12 +142,32 @@ export component SettingsWindow inherits Window {
     callback spectrum-note-range-changed(string, string);
     callback spectrum-a4-changed(int);
 
+    /// The selected tab; set to open Preferences on a given page.
+    in-out property <int> current-tab: 0;
+
+    // Equalizer tab (issue #7), driven by `app::equalizer`.
+    in property <[string]> eq-band-labels;
+    in property <[int]> eq-gains;
+    in property <int> eq-max-db: 20;
+    in property <bool> eq-enabled;
+    in property <[string]> eq-preset-names;
+    in property <int> eq-preset-index;
+    in property <string> eq-status;
+    callback eq-band-changed(int, int);
+    callback eq-enabled-toggled(bool);
+    callback eq-zero-all-clicked();
+    callback eq-auto-level-clicked();
+    callback eq-load-preset-clicked();
+    callback eq-save-preset-clicked();
+    callback eq-preset-chosen(int);
+
     VerticalLayout {
         padding: 16px;
         spacing: 12px;
 
         TabWidget {
             vertical-stretch: 1;
+            current-index <=> root.current-tab;
 
             Tab {
                 title: "Appearance";
@@ -341,6 +363,26 @@ export component SettingsWindow inherits Window {
                             }
                         }
                     }
+                }
+            }
+
+            Tab {
+                title: "Equalizer";
+                EqualizerSettingsPage {
+                    band-labels: root.eq-band-labels;
+                    gains: root.eq-gains;
+                    max-db: root.eq-max-db;
+                    enabled: root.eq-enabled;
+                    preset-names: root.eq-preset-names;
+                    preset-index: root.eq-preset-index;
+                    status: root.eq-status;
+                    band-changed(band, gain) => { root.eq-band-changed(band, gain); }
+                    enabled-toggled(on) => { root.eq-enabled-toggled(on); }
+                    zero-all-clicked => { root.eq-zero-all-clicked(); }
+                    auto-level-clicked => { root.eq-auto-level-clicked(); }
+                    load-preset-clicked => { root.eq-load-preset-clicked(); }
+                    save-preset-clicked => { root.eq-save-preset-clicked(); }
+                    preset-chosen(index) => { root.eq-preset-chosen(index); }
                 }
             }
 

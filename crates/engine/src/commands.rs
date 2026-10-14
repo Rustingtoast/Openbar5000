@@ -1,3 +1,4 @@
+use crate::dsp::EqualizerSettings;
 use crate::spectrum::SpectrumConfig;
 use std::time::Duration;
 
@@ -67,4 +68,7 @@ pub enum EngineCommand {
     /// spectrum analyzer.
     SetSpectrumConfig(SpectrumConfig),
     SetPlaybackMode(PlaybackMode),
+    /// The graphic equalizer's bands and on/off switch (issue #7); takes
+    /// effect from the next decoded chunk.
+    SetEqualizer(EqualizerSettings),
 }

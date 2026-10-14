@@ -1,4 +1,4 @@
-use crate::dsp::GainDsp;
+use crate::dsp::{EqualizerDsp, EqualizerSettings, GainDsp};
 use crate::spectrum::{SpectrumAnalyzer, SpectrumConfig};
 use plugin_api::{AudioInfo, DecodeError, Decoder, Dsp, OutputError, OutputSink};
 use std::fmt;
@@ -100,6 +100,7 @@ impl From<OutputError> for PipelineError {
 pub struct Pipeline {
     decoder: Option<Box<dyn Decoder>>,
     plugin_dsp_chain: Vec<Box<dyn Dsp>>,
+    equalizer: EqualizerDsp,
     gain: GainDsp,
     sink: Box<dyn OutputSink>,
     channels: u16,
@@ -117,6 +118,7 @@ impl Pipeline {
         Self {
             decoder: None,
             plugin_dsp_chain: Vec::new(),
+            equalizer: EqualizerDsp::new(),
             gain: GainDsp::new(1.0),
             sink,
             channels: 2,
@@ -131,6 +133,10 @@ impl Pipeline {
 
     pub fn set_volume(&mut self, volume: f32) {
         self.gain.set_volume(volume);
+    }
+
+    pub fn set_equalizer(&mut self, settings: EqualizerSettings) {
+        self.equalizer.set_settings(settings);
     }
 
     pub fn set_spectrum_enabled(&mut self, enabled: bool) {
@@ -227,6 +233,8 @@ impl Pipeline {
         for dsp in self.plugin_dsp_chain.iter_mut() {
             dsp.reset();
         }
+        self.equalizer.set_format(info.sample_rate, info.channels);
+        self.equalizer.reset();
         self.gain.reset();
         self.decoder = Some(decoder);
         Ok(info)
@@ -257,6 +265,7 @@ impl Pipeline {
         for dsp in self.plugin_dsp_chain.iter_mut() {
             dsp.process(chunk, self.channels);
         }
+        self.equalizer.process(chunk, self.channels);
         self.gain.process(chunk, self.channels);
 
         if self.spectrum_enabled {

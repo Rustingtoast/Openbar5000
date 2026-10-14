@@ -329,6 +329,9 @@ fn handle_command(
         EngineCommand::SetSpectrumConfig(config) => {
             state.pipeline.set_spectrum_config(config);
         }
+        EngineCommand::SetEqualizer(settings) => {
+            state.pipeline.set_equalizer(settings);
+        }
         EngineCommand::SetPlaybackMode(mode) => {
             state.playback_mode = mode;
             if mode == PlaybackMode::Shuffle {

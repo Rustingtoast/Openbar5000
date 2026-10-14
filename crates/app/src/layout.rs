@@ -51,13 +51,15 @@ pub enum PanelKind {
     Biography,
     /// Media library browser -- placeholder until the library exists.
     Library,
+    /// The equalizer as a vintage hardware unit with a VFD (issue #7).
+    Equalizer,
     /// Placeholder left by Split/Remove until the user picks a panel.
     Empty,
 }
 
 impl PanelKind {
     /// Panels offered in "Replace with…", in menu order.
-    pub const ALL: [PanelKind; 16] = [
+    pub const ALL: [PanelKind; 17] = [
         PanelKind::Playlist,
         PanelKind::NowPlaying,
         PanelKind::AlbumArt,
@@ -67,6 +69,7 @@ impl PanelKind {
         PanelKind::Library,
         PanelKind::Waveform,
         PanelKind::Spectrum,
+        PanelKind::Equalizer,
         PanelKind::PlaybackButtons,
         PanelKind::SeekSlider,
         PanelKind::PlaybackOptions,
@@ -94,6 +97,7 @@ impl PanelKind {
             Self::Lyrics => "lyrics",
             Self::Biography => "biography",
             Self::Library => "library",
+            Self::Equalizer => "equalizer",
             Self::Empty => "empty",
         }
     }
@@ -119,6 +123,7 @@ impl PanelKind {
             Self::Lyrics => "Lyrics",
             Self::Biography => "Biography",
             Self::Library => "Library",
+            Self::Equalizer => "Vintage equalizer",
             Self::Empty => "Empty panel",
         }
     }
@@ -136,6 +141,7 @@ impl PanelKind {
             Self::NowPlaying => "NOW",
             Self::Waveform => "WAV",
             Self::Spectrum => "SPC",
+            Self::Equalizer => "EQ",
             Self::PlaybackButtons
             | Self::SeekBar
             | Self::SeekSlider
@@ -152,6 +158,7 @@ impl PanelKind {
         match self {
             Self::Waveform => Some(80.0),
             Self::Spectrum => Some(150.0),
+            Self::Equalizer => Some(190.0),
             Self::Transport => Some(32.0),
             Self::StatusBar => Some(22.0),
             Self::NowPlaying | Self::PlaybackButtons => Some(28.0),
