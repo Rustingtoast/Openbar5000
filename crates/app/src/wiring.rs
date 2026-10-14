@@ -1,3 +1,6 @@
+use crate::discord_presence::{
+    NowPlaying, PresenceClient, PresenceCommand, PresenceEvent, DEFAULT_CLIENT_ID,
+};
 use crate::platform;
 use crate::playlist_rows::build_grouped_rows;
 use crate::settings::Settings;
@@ -152,6 +155,59 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         settings_window.set_spectrum_peak_hold_ms(spectrum.peak_hold_ms as i32);
         settings_window.set_spectrum_gravity(spectrum.gravity_db_per_s2 as i32);
         settings_window.set_spectrum_interval_ms(spectrum.interval_ms as i32);
+    }
+
+    // --- Discord Rich Presence setup --------------------------------------
+    let presence = Rc::new(PresenceClient::spawn(&settings.borrow()));
+    settings_window.set_discord_presence_enabled(settings.borrow().discord_presence_enabled);
+    settings_window.set_discord_client_id(settings.borrow().discord_client_id.clone().into());
+    settings_window.set_discord_status_text(
+        presence_status_label(settings.borrow().discord_presence_enabled, false).into(),
+    );
+
+    {
+        let settings = settings.clone();
+        let store = store.clone();
+        let presence = presence.clone();
+        let settings_window_weak = settings_window.as_weak();
+        settings_window.on_discord_presence_toggled(move |enabled| {
+            // First time this is turned on with no Client ID set yet, fall
+            // back to Openbar5000's own shared application so it works with
+            // zero setup -- still a plain editable field afterward.
+            if enabled
+                && settings.borrow().discord_client_id.is_empty()
+                && !DEFAULT_CLIENT_ID.is_empty()
+            {
+                settings.borrow_mut().discord_client_id = DEFAULT_CLIENT_ID.to_string();
+                if let Some(window) = settings_window_weak.upgrade() {
+                    window.set_discord_client_id(DEFAULT_CLIENT_ID.into());
+                }
+            }
+
+            settings.borrow_mut().discord_presence_enabled = enabled;
+            settings.borrow().save(&store);
+            presence.send(PresenceCommand::Configure {
+                enabled,
+                client_id: settings.borrow().discord_client_id.clone(),
+            });
+            if let Some(window) = settings_window_weak.upgrade() {
+                window.set_discord_status_text(presence_status_label(enabled, false).into());
+            }
+        });
+    }
+    {
+        let settings = settings.clone();
+        let store = store.clone();
+        let presence = presence.clone();
+        settings_window.on_discord_client_id_edited(move |client_id| {
+            let client_id = client_id.to_string();
+            settings.borrow_mut().discord_client_id = client_id.clone();
+            settings.borrow().save(&store);
+            presence.send(PresenceCommand::Configure {
+                enabled: settings.borrow().discord_presence_enabled,
+                client_id,
+            });
+        });
     }
 
     {
@@ -636,10 +692,17 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     }
     {
         let engine = engine.clone();
+        let presence = presence.clone();
+        let current_track = current_track.clone();
+        let window_weak = window.as_weak();
         window.on_seek_requested(move |position_seconds| {
-            engine.send(EngineCommand::Seek(Duration::from_secs_f32(
-                position_seconds.max(0.0),
-            )));
+            let position = Duration::from_secs_f32(position_seconds.max(0.0));
+            engine.send(EngineCommand::Seek(position));
+            if let (Some(track), Some(window)) =
+                (current_track.borrow().clone(), window_weak.upgrade())
+            {
+                send_presence_for_track(&presence, &track, position, window.get_is_playing());
+            }
         });
     }
     {
@@ -653,6 +716,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
 
     let event_poll_timer = Timer::default();
     let window_weak = window.as_weak();
+    let settings_window_weak = settings_window.as_weak();
     event_poll_timer.start(TimerMode::Repeated, POLL_INTERVAL, move || {
         let Some(window) = window_weak.upgrade() else {
             return;
@@ -664,8 +728,17 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                 &playlist_view_state,
                 &current_track,
                 &store,
+                &presence,
                 event,
             );
+        }
+        while let Some(event) = presence.try_recv_event() {
+            if let Some(settings_window) = settings_window_weak.upgrade() {
+                let enabled = settings.borrow().discord_presence_enabled;
+                let connected = event == PresenceEvent::Connected;
+                settings_window
+                    .set_discord_status_text(presence_status_label(enabled, connected).into());
+            }
         }
     });
 
@@ -756,6 +829,7 @@ fn apply_event(
     playlist_view_state: &Rc<RefCell<PlaylistViewState>>,
     current_track: &Rc<RefCell<Option<Track>>>,
     store: &Store,
+    presence: &PresenceClient,
     event: EngineEvent,
 ) {
     match event {
@@ -771,6 +845,11 @@ fn apply_event(
             );
             window.set_waveform_peaks(ModelRc::from(Rc::new(VecModel::<f32>::default())));
             window.set_waveform_played_bucket_index(0);
+            // Not just `PlaybackStateChanged`: advancing to the next track
+            // while already playing doesn't re-fire that event (the state
+            // didn't change), so this is the only reliable place to update
+            // presence for a plain track-to-track advance.
+            send_presence_for_track(presence, &track, Duration::ZERO, window.get_is_playing());
             *current_track.borrow_mut() = Some(track);
             playlist_view_state.borrow_mut().current_index = Some(index);
             refresh_playlist_rows(playlist_model, playlist_view_state);
@@ -791,6 +870,20 @@ fn apply_event(
         }
         EngineEvent::PlaybackStateChanged(state) => {
             window.set_is_playing(state == PlaybackState::Playing);
+            match state {
+                PlaybackState::Stopped => presence.send(PresenceCommand::Cleared),
+                PlaybackState::Playing | PlaybackState::Paused => {
+                    if let Some(track) = current_track.borrow().clone() {
+                        let elapsed = Duration::from_secs_f32(window.get_position_seconds());
+                        send_presence_for_track(
+                            presence,
+                            &track,
+                            elapsed,
+                            state == PlaybackState::Playing,
+                        );
+                    }
+                }
+            }
         }
         EngineEvent::Error(message) => {
             window.set_status_text(format!("Error: {message}").into());
@@ -823,6 +916,31 @@ fn apply_event(
             window.set_spectrum_bars(ModelRc::from(Rc::new(VecModel::from(bars))));
             window.set_spectrum_peaks(ModelRc::from(Rc::new(VecModel::from(peaks))));
         }
+    }
+}
+
+fn send_presence_for_track(
+    presence: &PresenceClient,
+    track: &Track,
+    elapsed: Duration,
+    is_playing: bool,
+) {
+    presence.send(PresenceCommand::NowPlaying(NowPlaying {
+        title: track.metadata.title.clone(),
+        artist: track.metadata.artist.clone(),
+        album: track.metadata.album.clone(),
+        elapsed,
+        is_playing,
+    }));
+}
+
+fn presence_status_label(enabled: bool, connected: bool) -> &'static str {
+    if !enabled {
+        "Disabled"
+    } else if connected {
+        "Connected"
+    } else {
+        "Not connected"
     }
 }
 

@@ -1,4 +1,4 @@
-import { Button, CheckBox, ComboBox, Palette, ScrollView, SpinBox } from "std-widgets.slint";
+import { Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView, SpinBox } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 
 export struct ThemeListEntry {
@@ -83,12 +83,19 @@ export component SettingsWindow inherits Window {
     in property <int> spectrum-gravity: 50;
     in property <int> spectrum-interval-ms: 10;
 
+    in property <bool> discord-presence-enabled: false;
+    in property <string> discord-client-id: "";
+    in property <string> discord-status-text: "Disabled";
+
     callback waveform-toggled(bool);
     callback spectrum-toggled(bool);
     callback theme-row-clicked(string);
     callback new-theme-clicked();
     callback delete-theme-clicked();
     callback close-clicked();
+
+    callback discord-presence-toggled(bool);
+    callback discord-client-id-edited(string);
 
     callback spectrum-channels-changed(string);
     callback spectrum-min-db-changed(int);
@@ -219,6 +226,34 @@ export component SettingsWindow inherits Window {
                     edited(v) => { root.spectrum-gravity-changed(v); }
                 }
                 Text { text: "dB/s\u{00b2}"; vertical-alignment: center; color: Theme.text-muted; font-size: 12px; }
+            }
+
+            Rectangle { height: 1px; background: Theme.text-muted; }
+
+            SectionHeading { text: "Discord Rich Presence"; }
+            Text {
+                text: "Shows the track you're listening to on your Discord profile. Requires your own Discord Application client ID -- see the README for the one-time setup.";
+                wrap: word-wrap;
+                font-size: 11px;
+                color: Theme.text-muted;
+            }
+            CheckBox {
+                text: "Enable Discord Rich Presence";
+                checked: root.discord-presence-enabled;
+                toggled => { root.discord-presence-toggled(self.checked); }
+            }
+            LabeledRow {
+                label: "Client ID:";
+                LineEdit {
+                    text: root.discord-client-id;
+                    placeholder-text: "e.g. 1234567890123456789";
+                    edited(text) => { root.discord-client-id-edited(text); }
+                }
+            }
+            Text {
+                text: "Status: " + root.discord-status-text;
+                font-size: 11px;
+                color: Theme.text-muted;
             }
 
             Rectangle { vertical-stretch: 1; min-height: 8px; }

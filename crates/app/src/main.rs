@@ -1,3 +1,4 @@
+mod discord_presence;
 mod platform;
 mod playlist_rows;
 mod settings;
