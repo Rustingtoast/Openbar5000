@@ -1,6 +1,32 @@
 use std::path::Path;
 use std::process::Command;
 
+/// Opens `url` in the default browser.
+pub fn open_url(url: &str) {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return;
+    }
+    if let Err(e) = open_url_with_os(url) {
+        tracing::warn!("failed to open {url}: {e}");
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn open_url_with_os(url: &str) -> std::io::Result<()> {
+    Command::new("open").arg(url).spawn().map(|_| ())
+}
+
+#[cfg(target_os = "windows")]
+fn open_url_with_os(url: &str) -> std::io::Result<()> {
+    // `start`'s first quoted argument is the window title, hence the "".
+    Command::new("cmd").args(["/C", "start", "", url]).spawn().map(|_| ())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn open_url_with_os(url: &str) -> std::io::Result<()> {
+    Command::new("xdg-open").arg(url).spawn().map(|_| ())
+}
+
 /// Opens the OS file manager with `path` selected (Finder/Explorer), or just
 /// opens its containing folder where the platform has no "select" verb.
 pub fn reveal_in_file_manager(path: &Path) {

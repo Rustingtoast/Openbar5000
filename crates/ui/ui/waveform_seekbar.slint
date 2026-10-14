@@ -19,9 +19,10 @@ export component WaveformSeekbar inherits Rectangle {
     height: 80px;
     background: Theme.bg-sunken;
 
+    // The played part, mapped exactly like the marker and clicks below.
     Rectangle {
-        width: root.width * root.played;
-        x: 0;
+        x: 4px;
+        width: (root.width - 8px) * root.played;
         background: Theme.accent.transparentize(0.88);
     }
 

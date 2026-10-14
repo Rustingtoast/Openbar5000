@@ -1,8 +1,8 @@
 import { Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { PlaylistView, PlaylistRow } from "playlist_view.slint";
-import { TransportBar, PlaybackButtons, SeekBar } from "transport_bar.slint";
-import { InfoView, InfoRow, LyricsView, LyricLine, PlaceholderView, TabStripView } from "side_panels.slint";
+import { TransportBar, PlaybackButtons, SeekBar, SeekSlider, PlaybackOptions } from "transport_bar.slint";
+import { InfoView, InfoRow, LyricsView, LyricLine, PlaceholderView, TabStripView, ArtistView, ArtistCandidate } from "side_panels.slint";
 import { StatusBar } from "status_bar.slint";
 import { WaveformSeekbar } from "waveform_seekbar.slint";
 import { SpectrumView, SpectrumNote } from "spectrum_view.slint";
@@ -129,6 +129,23 @@ export component MainWindow inherits Window {
     in property <[LyricLine]> lyric-lines: [];
     in property <int> lyric-active-line: -1;
     in property <string> lyric-status: "Nothing playing";
+
+    // Artist information (BIO panel, see `app::artist_info`).
+    in property <string> artist-state: "nothing";
+    in property <string> artist-name;
+    in property <string> artist-meta;
+    in property <string> artist-genres;
+    in property <string> artist-summary;
+    in property <image> artist-photo;
+    in property <bool> artist-has-photo: false;
+    in property <string> artist-link-label;
+    in property <string> artist-credit;
+    in property <string> artist-message;
+    in property <[ArtistCandidate]> artist-candidates: [];
+    callback artist-lookup-clicked();
+    callback artist-link-clicked();
+    callback artist-candidate-clicked(int);
+    callback artist-none-of-these-clicked();
     in property <bool> layout-editing: false;
     in property <[string]> waveform-paths: [];
     in property <int> waveform-bucket-count: 1;
@@ -361,6 +378,27 @@ export component MainWindow inherits Window {
                 shuffle-clicked => { root.shuffle-clicked(); }
                 loop-clicked => { root.loop-clicked(); }
             }
+            if slot.kind == "seek-slider": SeekSlider {
+                width: parent.width;
+                height: parent.height;
+                position-seconds: root.position-seconds;
+                duration-seconds: root.duration-seconds;
+                seek-requested(pos) => { root.seek-requested(pos); }
+            }
+            if slot.kind == "playback-options": PlaybackOptions {
+                width: parent.width;
+                height: parent.height;
+                position-seconds: root.position-seconds;
+                duration-seconds: root.duration-seconds;
+                position-text: root.position-text;
+                volume: root.volume;
+                shuffle-active: root.shuffle-active;
+                loop-active: root.loop-active;
+                repeat-one-active: root.repeat-one-active;
+                volume-changed(v) => { root.volume-changed(v); }
+                shuffle-clicked => { root.shuffle-clicked(); }
+                loop-clicked => { root.loop-clicked(); }
+            }
             if slot.kind == "info": InfoView {
                 width: parent.width;
                 height: parent.height;
@@ -373,11 +411,24 @@ export component MainWindow inherits Window {
                 active-line: root.lyric-active-line;
                 status: root.lyric-status;
             }
-            if slot.kind == "biography": PlaceholderView {
+            if slot.kind == "biography": ArtistView {
                 width: parent.width;
                 height: parent.height;
-                title: "Artist biography";
-                message: "Not available yet.";
+                state: root.artist-state;
+                artist: root.artist-name;
+                meta: root.artist-meta;
+                genres: root.artist-genres;
+                summary: root.artist-summary;
+                photo: root.artist-photo;
+                has-photo: root.artist-has-photo;
+                link-label: root.artist-link-label;
+                credit: root.artist-credit;
+                message: root.artist-message;
+                candidates: root.artist-candidates;
+                lookup-clicked => { root.artist-lookup-clicked(); }
+                link-clicked => { root.artist-link-clicked(); }
+                candidate-clicked(i) => { root.artist-candidate-clicked(i); }
+                none-of-these-clicked => { root.artist-none-of-these-clicked(); }
             }
             if slot.kind == "library": PlaceholderView {
                 width: parent.width;

@@ -19,10 +19,7 @@ pub use library::{scan_audio_files, AUDIO_EXTENSIONS};
 pub use metadata::{load_cover_art, load_metadata, COVER_THUMBNAIL_SIZE};
 pub use playback_engine::PlaybackEngine;
 pub use playlist::{CoverThumbnail, Playlist, Track, TrackMetadata};
-pub use spectrum::{
-    SpectrumChannelMode, SpectrumConfig, FIRST_NOTE as SPECTRUM_FIRST_NOTE,
-    LAST_NOTE as SPECTRUM_LAST_NOTE,
-};
+pub use spectrum::{SpectrumChannelMode, SpectrumConfig};
 pub use waveform::{compute_peaks, WaveformChannel};
 
 pub use plugin_api::{AudioInfo, DecodeError, Decoder, Dsp, OutputError, OutputSink};

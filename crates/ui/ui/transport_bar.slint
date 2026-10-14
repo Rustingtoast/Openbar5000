@@ -32,8 +32,9 @@ export component ThinSlider inherits Rectangle {
             background: root.active ? Theme.accent : Theme.text-muted;
         }
     }
+    // Centered on the position, so it lines up with the waveform's marker.
     if root.active: Rectangle {
-        x: (parent.width - self.width) * root.fraction;
+        x: parent.width * root.fraction - self.width / 2;
         y: (parent.height - self.height) / 2;
         width: 9px;
         height: 9px;
@@ -318,6 +319,90 @@ export component SeekBar inherits Rectangle {
             y: (parent.height - self.height) / 2;
             width: 15px;
             height: 15px;
+            source: @image-url("assets/icons/volume.svg");
+            colorize: Theme.text-muted;
+        }
+    }
+}
+
+/// Just the seek slider, inset 4px each side exactly like the waveform
+/// seekbar -- placed in the same column, the two line up, so a moment in
+/// the track sits at the same x in both.
+export component SeekSlider inherits Rectangle {
+    in property <float> position-seconds: 0;
+    in property <float> duration-seconds: 0;
+    callback seek-requested(float);
+
+    height: 22px;
+    background: Theme.bg-base;
+
+    ThinSlider {
+        x: 4px;
+        width: parent.width - 8px;
+        y: (parent.height - self.height) / 2;
+        minimum: 0;
+        maximum: root.duration-seconds > 0 ? root.duration-seconds : 1;
+        value: root.position-seconds;
+        changed(v) => { root.seek-requested(v); }
+    }
+}
+
+/// "0:33 / -1:59", Repeat, Shuffle and volume -- the seek row's controls,
+/// above the album art as issue #10 asks.
+export component PlaybackOptions inherits Rectangle {
+    in property <float> position-seconds: 0;
+    in property <float> duration-seconds: 0;
+    in property <float> volume: 1.0;
+    in property <string> position-text: "0:00";
+    in property <bool> shuffle-active: false;
+    in property <bool> loop-active: false;
+    in property <bool> repeat-one-active: false;
+    callback volume-changed(float);
+    callback shuffle-clicked();
+    callback loop-clicked();
+
+    property <int> remaining: Math.max(0, Math.floor(root.duration-seconds - root.position-seconds));
+
+    height: 22px;
+    background: Theme.bg-base;
+
+    HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 6px;
+        spacing: 2px;
+        Text {
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            color: Theme.text-muted;
+            font-size: 11px;
+            overflow: elide;
+            text: root.position-text + " / -" + Math.floor(root.remaining / 60) + ":"
+                + (Math.mod(root.remaining, 60) < 10 ? "0" : "") + Math.mod(root.remaining, 60);
+        }
+        IconButton {
+            y: (parent.height - self.height) / 2;
+            icon: root.repeat-one-active ? @image-url("assets/icons/repeat-one.svg") : @image-url("assets/icons/repeat.svg");
+            active: root.loop-active;
+            clicked => { root.loop-clicked(); }
+        }
+        IconButton {
+            y: (parent.height - self.height) / 2;
+            icon: @image-url("assets/icons/shuffle.svg");
+            active: root.shuffle-active;
+            clicked => { root.shuffle-clicked(); }
+        }
+        ThinSlider {
+            y: (parent.height - self.height) / 2;
+            width: 56px;
+            minimum: 0;
+            maximum: 1;
+            value: root.volume;
+            changed(v) => { root.volume-changed(v); }
+        }
+        Image {
+            y: (parent.height - self.height) / 2;
+            width: 14px;
+            height: 14px;
             source: @image-url("assets/icons/volume.svg");
             colorize: Theme.text-muted;
         }
