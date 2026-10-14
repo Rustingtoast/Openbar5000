@@ -11,15 +11,47 @@ const RAW_CHUNK_FRAMES: usize = 2048;
 const MIN_PARALLEL_DURATION: Duration = Duration::from_secs(20);
 const MAX_WORKERS: usize = 8;
 
+/// One channel's waveform outline: per bucket, the highest and lowest
+/// sample value, each in `[-1.0, 1.0]` (so `max >= 0 >= min` for audio
+/// that crosses zero within the bucket).
+#[derive(Debug, Clone, PartialEq)]
+pub struct WaveformChannel {
+    pub max: Vec<f32>,
+    pub min: Vec<f32>,
+}
+
+impl WaveformChannel {
+    fn new(bucket_count: usize) -> Self {
+        Self {
+            max: vec![0.0; bucket_count],
+            min: vec![0.0; bucket_count],
+        }
+    }
+
+    fn add(&mut self, bucket: usize, sample: f32) {
+        self.max[bucket] = self.max[bucket].max(sample);
+        self.min[bucket] = self.min[bucket].min(sample);
+    }
+
+    fn merge(&mut self, other: &WaveformChannel) {
+        for (a, b) in self.max.iter_mut().zip(&other.max) {
+            *a = a.max(*b);
+        }
+        for (a, b) in self.min.iter_mut().zip(&other.min) {
+            *a = a.min(*b);
+        }
+    }
+}
+
 /// Fully decodes `path` (on whichever thread calls this -- callers should
-/// run it off the realtime playback thread) and returns `bucket_count` peak
-/// amplitudes in `[0.0, 1.0]`, suitable for drawing a waveform seekbar.
+/// run it off the realtime playback thread) and returns, per channel,
+/// `bucket_count` min/max pairs: the outline a waveform seekbar draws.
 ///
 /// Decoding a whole track is the heaviest thing a track change does, so it
 /// is split into contiguous time slices decoded on separate cores (each
 /// with its own decoder seeked to its slice); falls back to one thread when
 /// the duration is unknown, the track is short, or seeking fails.
-pub fn compute_peaks(path: &Path, bucket_count: usize) -> Result<Vec<f32>, DecodeError> {
+pub fn compute_peaks(path: &Path, bucket_count: usize) -> Result<Vec<WaveformChannel>, DecodeError> {
     let workers = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1)
@@ -35,7 +67,7 @@ pub fn compute_peaks(path: &Path, bucket_count: usize) -> Result<Vec<f32>, Decod
     }
 
     let total_frames = info.duration_ms * info.sample_rate as u64 / 1000;
-    let slices: Vec<Result<Vec<f32>, DecodeError>> = std::thread::scope(|scope| {
+    let slices: Vec<Result<Vec<WaveformChannel>, DecodeError>> = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..workers as u64)
             .map(|i| {
                 let start = total_frames * i / workers as u64;
@@ -53,19 +85,24 @@ pub fn compute_peaks(path: &Path, bucket_count: usize) -> Result<Vec<f32>, Decod
             .collect()
     });
 
-    let mut buckets = vec![0f32; bucket_count];
+    let mut merged: Option<Vec<WaveformChannel>> = None;
     for slice in slices {
         let Ok(slice) = slice else {
             return compute_peaks_sequential(path, bucket_count);
         };
-        for (bucket, peak) in buckets.iter_mut().zip(slice) {
-            *bucket = bucket.max(peak);
+        match merged.as_mut() {
+            None => merged = Some(slice),
+            Some(channels) => {
+                for (channel, other) in channels.iter_mut().zip(&slice) {
+                    channel.merge(other);
+                }
+            }
         }
     }
-    Ok(buckets)
+    Ok(merged.unwrap_or_default())
 }
 
-/// Decodes frames `start..end` (or to the end of the stream) and max-pools
+/// Decodes frames `start..end` (or to the end of the stream) and pools
 /// them straight into `bucket_count` buckets spanning `total_frames`.
 fn peaks_for_slice(
     path: &Path,
@@ -74,14 +111,14 @@ fn peaks_for_slice(
     end: Option<u64>,
     total_frames: u64,
     bucket_count: usize,
-) -> Result<Vec<f32>, DecodeError> {
+) -> Result<Vec<WaveformChannel>, DecodeError> {
     let mut decoder = SymphoniaDecoder::new();
     let channels = decoder.open(path)?.channels.max(1) as usize;
     if start > 0 {
         decoder.seek(Duration::from_secs_f64(start as f64 / sample_rate as f64))?;
     }
 
-    let mut buckets = vec![0f32; bucket_count];
+    let mut out = vec![WaveformChannel::new(bucket_count); channels];
     let mut buf = vec![0f32; 4096];
     let mut frame = start;
     loop {
@@ -91,25 +128,27 @@ fn peaks_for_slice(
         }
         for samples in buf[..written].chunks_exact(channels) {
             if end.is_some_and(|end| frame >= end) {
-                return Ok(buckets);
+                return Ok(out);
             }
             let bucket = ((frame * bucket_count as u64 / total_frames) as usize).min(bucket_count - 1);
-            let peak = samples.iter().fold(0f32, |acc, s| acc.max(s.abs()));
-            buckets[bucket] = buckets[bucket].max(peak);
+            for (channel, &sample) in out.iter_mut().zip(samples) {
+                channel.add(bucket, sample);
+            }
             frame += 1;
         }
     }
-    Ok(buckets)
+    Ok(out)
 }
 
-fn compute_peaks_sequential(path: &Path, bucket_count: usize) -> Result<Vec<f32>, DecodeError> {
+fn compute_peaks_sequential(path: &Path, bucket_count: usize) -> Result<Vec<WaveformChannel>, DecodeError> {
     let mut decoder = SymphoniaDecoder::new();
     let info = decoder.open(path)?;
     let channels = info.channels.max(1) as usize;
 
-    let mut raw_peaks = Vec::new();
+    // Unknown length: pool fixed-size chunks first, then fit those to the
+    // bucket count once the real length is known.
+    let mut raw: Vec<WaveformChannel> = vec![WaveformChannel { max: Vec::new(), min: Vec::new() }; channels];
     let mut buf = vec![0f32; 4096];
-    let mut chunk_max = 0f32;
     let mut frames_in_chunk = 0usize;
 
     loop {
@@ -117,31 +156,37 @@ fn compute_peaks_sequential(path: &Path, bucket_count: usize) -> Result<Vec<f32>
         if written == 0 {
             break;
         }
-        for frame in buf[..written].chunks_exact(channels) {
-            let sample_max = frame.iter().fold(0f32, |acc, s| acc.max(s.abs()));
-            chunk_max = chunk_max.max(sample_max);
-            frames_in_chunk += 1;
-            if frames_in_chunk >= RAW_CHUNK_FRAMES {
-                raw_peaks.push(chunk_max);
-                chunk_max = 0.0;
-                frames_in_chunk = 0;
+        for samples in buf[..written].chunks_exact(channels) {
+            if frames_in_chunk == 0 {
+                for channel in raw.iter_mut() {
+                    channel.max.push(0.0);
+                    channel.min.push(0.0);
+                }
             }
+            let chunk = raw[0].max.len() - 1;
+            for (channel, &sample) in raw.iter_mut().zip(samples) {
+                channel.add(chunk, sample);
+            }
+            frames_in_chunk = (frames_in_chunk + 1) % RAW_CHUNK_FRAMES;
         }
     }
-    if frames_in_chunk > 0 {
-        raw_peaks.push(chunk_max);
-    }
-    if raw_peaks.is_empty() {
-        return Ok(vec![0.0; bucket_count]);
-    }
 
-    // Max-pool the raw peak stream down to exactly `bucket_count` buckets.
-    let mut buckets = vec![0f32; bucket_count];
-    for (i, &peak) in raw_peaks.iter().enumerate() {
-        let bucket = (i * bucket_count / raw_peaks.len()).min(bucket_count - 1);
-        buckets[bucket] = buckets[bucket].max(peak);
-    }
-    Ok(buckets)
+    let raw_len = raw[0].max.len();
+    Ok(raw
+        .iter()
+        .map(|channel| {
+            let mut out = WaveformChannel::new(bucket_count);
+            if bucket_count == 0 {
+                return out;
+            }
+            for i in 0..raw_len {
+                let bucket = (i * bucket_count / raw_len).min(bucket_count - 1);
+                out.add(bucket, channel.max[i]);
+                out.add(bucket, channel.min[i]);
+            }
+            out
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -160,7 +205,7 @@ mod tests {
         };
         let path = std::path::PathBuf::from(path);
         let t = std::time::Instant::now();
-        let sequential = compute_peaks_sequential(&path, 400).unwrap();
+        compute_peaks_sequential(&path, 400).unwrap();
         let sequential_time = t.elapsed();
         let t = std::time::Instant::now();
         let parallel = compute_peaks(&path, 400).unwrap();
@@ -174,31 +219,23 @@ mod tests {
         let info = SymphoniaDecoder::new().open(&path).unwrap();
         let total = info.duration_ms * info.sample_rate as u64 / 1000;
         let exact = peaks_for_slice(&path, info.sample_rate, 0, None, total, 400).unwrap();
-        let diff = |a: &[f32], b: &[f32]| {
-            a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0f32, f32::max)
-        };
-        println!(
-            "max bucket difference vs exact: parallel {}, sequential {}",
-            diff(&parallel, &exact),
-            diff(&sequential, &exact)
-        );
         assert_eq!(parallel, exact, "parallel peaks must match a one-pass decode exactly");
     }
 
     #[test]
-    fn produces_nonzero_peaks_for_a_real_fixture() {
+    fn outlines_every_channel_within_range() {
         let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/test_tone.wav");
-        let peaks = compute_peaks(&fixture, 50).unwrap();
-        assert_eq!(peaks.len(), 50);
-        assert!(
-            peaks.iter().any(|&p| p > 0.0),
-            "expected at least one nonzero peak"
-        );
-        assert!(
-            peaks.iter().all(|&p| p <= 1.0),
-            "peaks should stay within [0, 1]"
-        );
+        let channels = compute_peaks(&fixture, 50).unwrap();
+        assert!(!channels.is_empty());
+        for channel in &channels {
+            assert_eq!((channel.max.len(), channel.min.len()), (50, 50));
+            assert!(channel.max.iter().any(|&p| p > 0.0), "a tone has positive peaks");
+            assert!(channel.min.iter().any(|&p| p < 0.0), "and negative troughs");
+            assert!(channel.max.iter().chain(&channel.min).all(|p| (-1.0..=1.0).contains(p)));
+        }
+        // The sequential fallback agrees on shape.
+        let sequential = compute_peaks_sequential(&fixture, 50).unwrap();
+        assert_eq!(sequential.len(), channels.len());
     }
 }
-

@@ -1,31 +1,95 @@
-import { Button, Slider } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 
-// A plain Button's icon follows its own foreground color, which doesn't
-// give us the "accent-colored when active" affordance Shuffle/Loop need --
-// so these are built directly on a TouchArea instead, mirroring the
-// selected-row pattern already used for themes in settings_window.slint.
-component ToggleIconButton inherits Rectangle {
-    in property <image> icon;
-    in property <bool> active: false;
-    callback clicked();
+// The reference UI's thin bar slider. Reports drags through `changed`
+// without ever assigning `value` itself -- assigning would break the
+// caller's binding (see the seek-bar fix), so while dragging it shows
+// `drag-value` instead.
+export component ThinSlider inherits Rectangle {
+    in property <float> value;
+    in property <float> minimum: 0;
+    in property <float> maximum: 1;
+    callback changed(float);
 
-    width: 36px;
-    height: 30px;
-    border-radius: 4px;
-    background: root.active ? Theme.accent : transparent;
+    property <bool> dragging: false;
+    property <float> drag-value;
+    property <float> span: Math.max(0.000001, root.maximum - root.minimum);
+    property <float> shown: root.dragging ? root.drag-value : root.value;
+    property <float> fraction: Math.clamp((root.shown - root.minimum) / root.span, 0, 1);
+    property <bool> active: touch.has-hover || root.dragging;
 
-    TouchArea {
-        clicked => { root.clicked(); }
-        Image {
-            source: root.icon;
-            width: 16px;
-            height: 16px;
-            colorize: root.active ? Theme.accent-text : Theme.text-primary;
+    min-width: 40px;
+    height: 16px;
+
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        height: root.active ? 4px : 3px;
+        border-radius: self.height / 2;
+        background: Theme.text-muted.transparentize(0.75);
+        Rectangle {
+            x: 0;
+            width: parent.width * root.fraction;
+            border-radius: parent.border-radius;
+            background: root.active ? Theme.accent : Theme.text-muted;
+        }
+    }
+    if root.active: Rectangle {
+        x: (parent.width - self.width) * root.fraction;
+        y: (parent.height - self.height) / 2;
+        width: 9px;
+        height: 9px;
+        border-radius: 4.5px;
+        background: Theme.accent;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        function value-at(x: length) -> float {
+            return root.minimum + Math.clamp(x / root.width, 0, 1) * root.span;
+        }
+        pointer-event(event) => {
+            if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                root.dragging = true;
+                root.drag-value = self.value-at(self.mouse-x);
+                root.changed(root.drag-value);
+            } else if event.button == PointerEventButton.left && event.kind == PointerEventKind.up {
+                root.dragging = false;
+            }
+        }
+        moved => {
+            if root.dragging {
+                root.drag-value = self.value-at(self.mouse-x);
+                root.changed(root.drag-value);
+            }
         }
     }
 }
 
+// Flat icon button, as in the reference UI's transport row: no button
+// chrome, the icon itself lights up -- accent-colored when `active` (the
+// Shuffle/Repeat toggles), brighter on hover.
+export component IconButton inherits Rectangle {
+    in property <image> icon;
+    in property <bool> active: false;
+    callback clicked();
+
+    width: 26px;
+    height: 26px;
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    Image {
+        source: root.icon;
+        width: 15px;
+        height: 15px;
+        colorize: root.active ? Theme.accent : touch.has-hover ? Theme.text-primary : Theme.text-muted;
+        animate colorize { duration: 120ms; }
+    }
+}
+
+/// One compact row, like the reference UI: playback buttons, a thin seek
+/// bar across, the time remaining, Repeat/Shuffle and a small volume slider.
 export component TransportBar inherits Rectangle {
     in property <bool> is-playing: false;
     in property <float> position-seconds: 0;
@@ -46,81 +110,216 @@ export component TransportBar inherits Rectangle {
     callback shuffle-clicked();
     callback loop-clicked();
 
-    height: 64px;
+    // Whole seconds left, shown as "-m:ss" like the reference.
+    property <int> remaining: Math.max(0, Math.floor(root.duration-seconds - root.position-seconds));
+
+    height: 32px;
     background: Theme.bg-raised;
 
-    // Dragging the Slider assigns its `value` internally, which breaks the
-    // `value: root.position-seconds` binding for good -- so push engine
-    // position updates in explicitly instead of relying on the binding.
-    changed position-seconds => { seek-slider.value = root.position-seconds; }
+    HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 8px;
+        spacing: 4px;
+        alignment: stretch;
 
-    VerticalLayout {
-        HorizontalLayout {
-            height: 30px;
-            spacing: 6px;
-            padding: 4px;
-            Button {
-                icon: @image-url("assets/icons/skip-back.svg");
-                icon-size: 16px;
-                colorize-icon: true;
-                width: 36px;
-                clicked => { root.previous-clicked(); }
+        IconButton {
+            y: (parent.height - self.height) / 2;
+            icon: @image-url("assets/icons/skip-back.svg");
+            clicked => { root.previous-clicked(); }
+        }
+        IconButton {
+            y: (parent.height - self.height) / 2;
+            icon: root.is-playing ? @image-url("assets/icons/pause.svg") : @image-url("assets/icons/play.svg");
+            clicked => { root.play-pause-clicked(); }
+        }
+        IconButton {
+            y: (parent.height - self.height) / 2;
+            icon: @image-url("assets/icons/stop.svg");
+            clicked => { root.stop-clicked(); }
+        }
+        IconButton {
+            y: (parent.height - self.height) / 2;
+            icon: @image-url("assets/icons/skip-forward.svg");
+            clicked => { root.next-clicked(); }
+        }
+        Rectangle { width: 6px; }
+        ThinSlider {
+            y: (parent.height - self.height) / 2;
+            horizontal-stretch: 1;
+            minimum: 0;
+            maximum: root.duration-seconds > 0 ? root.duration-seconds : 1;
+            value: root.position-seconds;
+            changed(v) => { root.seek-requested(v); }
+        }
+        Text {
+            width: 52px;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            color: Theme.text-muted;
+            text: "-" + Math.floor(root.remaining / 60) + ":"
+                + (Math.mod(root.remaining, 60) < 10 ? "0" : "") + Math.mod(root.remaining, 60);
+        }
+        Rectangle { width: 8px; }
+        IconButton {
+            y: (parent.height - self.height) / 2;
+            icon: root.repeat-one-active ? @image-url("assets/icons/repeat-one.svg") : @image-url("assets/icons/repeat.svg");
+            active: root.loop-active;
+            clicked => { root.loop-clicked(); }
+        }
+        IconButton {
+            y: (parent.height - self.height) / 2;
+            icon: @image-url("assets/icons/shuffle.svg");
+            active: root.shuffle-active;
+            clicked => { root.shuffle-clicked(); }
+        }
+        Rectangle { width: 6px; }
+        ThinSlider {
+            y: (parent.height - self.height) / 2;
+            width: 70px;
+            minimum: 0;
+            maximum: 1;
+            value: root.volume;
+            changed(v) => { root.volume-changed(v); }
+        }
+        Image {
+            y: (parent.height - self.height) / 2;
+            width: 15px;
+            height: 15px;
+            source: @image-url("assets/icons/volume.svg");
+            colorize: Theme.text-muted;
+        }
+    }
+}
+
+/// Stop / previous / play-pause / next / open, for the top-right corner
+/// like the reference UI (the seek bar is its own panel).
+export component PlaybackButtons inherits Rectangle {
+    in property <bool> is-playing: false;
+    callback play-pause-clicked();
+    callback stop-clicked();
+    callback next-clicked();
+    callback previous-clicked();
+    callback open-files-clicked();
+    callback open-folder-clicked();
+
+    height: 28px;
+    background: Theme.bg-raised;
+
+    HorizontalLayout {
+        alignment: end;
+        padding-right: 6px;
+        spacing: 2px;
+        IconButton {
+            y: (parent.height - self.height) / 2;
+            icon: @image-url("assets/icons/stop.svg");
+            clicked => { root.stop-clicked(); }
+        }
+        IconButton {
+            y: (parent.height - self.height) / 2;
+            icon: @image-url("assets/icons/skip-back.svg");
+            clicked => { root.previous-clicked(); }
+        }
+        IconButton {
+            y: (parent.height - self.height) / 2;
+            icon: root.is-playing ? @image-url("assets/icons/pause.svg") : @image-url("assets/icons/play.svg");
+            clicked => { root.play-pause-clicked(); }
+        }
+        IconButton {
+            y: (parent.height - self.height) / 2;
+            icon: @image-url("assets/icons/skip-forward.svg");
+            clicked => { root.next-clicked(); }
+        }
+        // One system dialog can't reliably pick files *or* a folder on
+        // every platform, so the open button offers both.
+        open-menu := ContextMenuArea {
+            y: (parent.height - self.height) / 2;
+            width: 26px;
+            height: 26px;
+            Menu {
+                MenuItem { title: "Open Files..."; activated => { root.open-files-clicked(); } }
+                MenuItem { title: "Open Folder..."; activated => { root.open-folder-clicked(); } }
             }
-            Button {
-                icon: root.is-playing ? @image-url("assets/icons/pause.svg") : @image-url("assets/icons/play.svg");
-                icon-size: 16px;
-                colorize-icon: true;
-                width: 36px;
-                clicked => { root.play-pause-clicked(); }
-            }
-            Button {
-                icon: @image-url("assets/icons/stop.svg");
-                icon-size: 16px;
-                colorize-icon: true;
-                width: 36px;
-                clicked => { root.stop-clicked(); }
-            }
-            Button {
-                icon: @image-url("assets/icons/skip-forward.svg");
-                icon-size: 16px;
-                colorize-icon: true;
-                width: 36px;
-                clicked => { root.next-clicked(); }
-            }
-            Rectangle { width: 4px; }
-            ToggleIconButton {
-                icon: @image-url("assets/icons/shuffle.svg");
-                active: root.shuffle-active;
-                clicked => { root.shuffle-clicked(); }
-            }
-            ToggleIconButton {
-                icon: root.repeat-one-active ? @image-url("assets/icons/repeat-one.svg") : @image-url("assets/icons/repeat.svg");
-                active: root.loop-active;
-                clicked => { root.loop-clicked(); }
-            }
-            Rectangle { horizontal-stretch: 1; }
-            Text { text: "Vol"; vertical-alignment: center; color: Theme.text-muted; }
-            Slider {
-                width: 100px;
-                minimum: 0;
-                maximum: 1;
-                value: root.volume;
-                changed(v) => { root.volume-changed(v); }
+            IconButton {
+                icon: @image-url("assets/icons/eject.svg");
+                clicked => { open-menu.show({ x: 0, y: self.height }); }
             }
         }
-        HorizontalLayout {
-            height: 26px;
-            padding: 4px;
-            spacing: 6px;
-            Text { text: root.position-text; vertical-alignment: center; color: Theme.text-muted; }
-            seek-slider := Slider {
-                horizontal-stretch: 1;
-                minimum: 0;
-                maximum: root.duration-seconds > 0 ? root.duration-seconds : 1;
-                value: root.position-seconds;
-                changed(v) => { root.seek-requested(v); }
-            }
-            Text { text: root.duration-text; vertical-alignment: center; color: Theme.text-muted; }
+    }
+}
+
+/// "0:07 ━━━━━━ -6:36  repeat shuffle  volume", like the reference UI.
+export component SeekBar inherits Rectangle {
+    in property <float> position-seconds: 0;
+    in property <float> duration-seconds: 0;
+    in property <float> volume: 1.0;
+    in property <string> position-text: "0:00";
+    in property <bool> shuffle-active: false;
+    in property <bool> loop-active: false;
+    in property <bool> repeat-one-active: false;
+    callback seek-requested(float);
+    callback volume-changed(float);
+    callback shuffle-clicked();
+    callback loop-clicked();
+
+    property <int> remaining: Math.max(0, Math.floor(root.duration-seconds - root.position-seconds));
+
+    height: 26px;
+    background: Theme.bg-base;
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 6px;
+        Text {
+            width: 44px;
+            vertical-alignment: center;
+            color: Theme.text-muted;
+            text: root.position-text;
+        }
+        ThinSlider {
+            y: (parent.height - self.height) / 2;
+            horizontal-stretch: 1;
+            minimum: 0;
+            maximum: root.duration-seconds > 0 ? root.duration-seconds : 1;
+            value: root.position-seconds;
+            changed(v) => { root.seek-requested(v); }
+        }
+        Text {
+            width: 52px;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            color: Theme.text-muted;
+            text: "-" + Math.floor(root.remaining / 60) + ":"
+                + (Math.mod(root.remaining, 60) < 10 ? "0" : "") + Math.mod(root.remaining, 60);
+        }
+        Rectangle { width: 4px; }
+        IconButton {
+            y: (parent.height - self.height) / 2;
+            icon: root.repeat-one-active ? @image-url("assets/icons/repeat-one.svg") : @image-url("assets/icons/repeat.svg");
+            active: root.loop-active;
+            clicked => { root.loop-clicked(); }
+        }
+        IconButton {
+            y: (parent.height - self.height) / 2;
+            icon: @image-url("assets/icons/shuffle.svg");
+            active: root.shuffle-active;
+            clicked => { root.shuffle-clicked(); }
+        }
+        Rectangle { width: 4px; }
+        ThinSlider {
+            y: (parent.height - self.height) / 2;
+            width: 70px;
+            minimum: 0;
+            maximum: 1;
+            value: root.volume;
+            changed(v) => { root.volume-changed(v); }
+        }
+        Image {
+            y: (parent.height - self.height) / 2;
+            width: 15px;
+            height: 15px;
+            source: @image-url("assets/icons/volume.svg");
+            colorize: Theme.text-muted;
         }
     }
 }

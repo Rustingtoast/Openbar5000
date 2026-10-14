@@ -245,6 +245,7 @@ dependencies = [
  "rand 0.10.3",
  "rfd",
  "rusqlite",
+ "serde",
  "serde_json",
  "slint",
  "tracing",

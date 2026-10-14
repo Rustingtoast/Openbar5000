@@ -87,8 +87,6 @@ export component SettingsWindow inherits Window {
         Palette.color-scheme = root.theme-is-dark ? ColorScheme.dark : ColorScheme.light;
     }
 
-    in property <bool> show-waveform: true;
-    in property <bool> show-spectrum: true;
     in property <string> visualization-fps: "60 fps";
     in property <[ThemeListEntry]> themes: [];
     in property <bool> current-theme-is-custom: false;
@@ -106,8 +104,6 @@ export component SettingsWindow inherits Window {
     in property <string> discord-client-id: "";
     in property <string> discord-status-text: "Disabled";
 
-    callback waveform-toggled(bool);
-    callback spectrum-toggled(bool);
     callback visualization-fps-changed(string);
     callback theme-row-clicked(string);
     callback new-theme-clicked();
@@ -183,17 +179,7 @@ export component SettingsWindow inherits Window {
                     alignment: start;
 
                     SectionHeading { text: "Panels"; }
-                    HintText { text: "Choose which visualizations are shown below the playlist. Hidden panels cost no CPU."; }
-                    CheckBox {
-                        text: "Show waveform seekbar";
-                        checked: root.show-waveform;
-                        toggled => { root.waveform-toggled(self.checked); }
-                    }
-                    CheckBox {
-                        text: "Show spectrum analyzer";
-                        checked: root.show-spectrum;
-                        toggled => { root.spectrum-toggled(self.checked); }
-                    }
+                    HintText { text: "Add, remove, move and resize the waveform seekbar, spectrum analyzer and other panels with View > Edit Layout. Panels that aren't in the layout cost no CPU."; }
 
                     Rectangle { height: 8px; }
                     SectionHeading { text: "Performance"; }

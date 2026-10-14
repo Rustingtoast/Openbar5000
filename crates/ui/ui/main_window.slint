@@ -1,14 +1,72 @@
 import { Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { PlaylistView, PlaylistRow } from "playlist_view.slint";
-import { TransportBar } from "transport_bar.slint";
+import { TransportBar, PlaybackButtons, SeekBar } from "transport_bar.slint";
+import { InfoView, InfoRow, LyricsView, LyricLine, PlaceholderView, TabStripView } from "side_panels.slint";
 import { StatusBar } from "status_bar.slint";
 import { WaveformSeekbar } from "waveform_seekbar.slint";
-import { SpectrumView } from "spectrum_view.slint";
+import { SpectrumView, SpectrumNote } from "spectrum_view.slint";
+import { NowPlayingBar, AlbumArtView } from "now_playing.slint";
 import { PropertiesWindow } from "properties_window.slint";
 import { AboutWindow } from "about_window.slint";
 import { SettingsWindow, ThemeListEntry } from "settings_window.slint";
 import { ThemeEditorWindow } from "theme_editor_window.slint";
+
+/// One placed panel (see `app::layout`): which panel to draw and where,
+/// relative to the panel area below the menu bar.
+export struct PanelSlot {
+    kind: string,
+    label: string,
+    x: length,
+    y: length,
+    width: length,
+    height: length,
+    // For "Move Left/Right" vs "Move Up/Down": whether the split holding
+    // this panel lays it out side by side, and which ways it can go.
+    move-side-by-side: bool,
+    can-move-back: bool,
+    can-move-forward: bool,
+}
+
+/// Where a dragged panel will land, highlighted while dragging.
+export struct DropPreview {
+    visible: bool,
+    label: string,
+    x: length,
+    y: length,
+    width: length,
+    height: length,
+}
+
+/// A tab group's strip of tab buttons (see `app::layout::TabStrip`).
+export struct TabStripSlot {
+    labels: [string],
+    active: int,
+    x: length,
+    y: length,
+    width: length,
+    height: length,
+}
+
+/// A draggable boundary between two panels, shown while editing the
+/// layout. `side-by-side`: the panels sit left/right of it, so it's a
+/// vertical bar dragged horizontally.
+export struct LayoutDivider {
+    side-by-side: bool,
+    // Shown (as a thin line you can drag) even outside edit mode -- between
+    // big side-by-side panels like the tabs and the playlist.
+    separator: bool,
+    x: length,
+    y: length,
+    width: length,
+    height: length,
+}
+
+/// An entry in a panel's "Replace with" menu -- the panel registry.
+export struct PanelChoice {
+    id: string,
+    label: string,
+}
 
 export { PlaylistRow, PropertiesWindow, AboutWindow, SettingsWindow, ThemeListEntry, ThemeEditorWindow, Theme }
 
@@ -56,12 +114,32 @@ export component MainWindow inherits Window {
     in property <bool> repeat-one-active: false;
     in property <string> status-text: "Openbar5000 — an open-source foobar2000-alike";
 
-    in property <bool> show-waveform: true;
-    in property <bool> show-spectrum: true;
-    in property <[float]> waveform-peaks: [];
-    in property <int> waveform-played-bucket-index: 0;
+    in property <[PanelSlot]> panel-slots: [];
+    in property <[LayoutDivider]> layout-dividers: [];
+    in property <[PanelChoice]> panel-choices: [];
+    in property <[TabStripSlot]> tab-strips: [];
+    // Tab press/drag/release: strip index, tab index, and positions
+    // relative to the panel area. A release without a drag is a click.
+    callback tab-drag-pressed(int, int, length, length);
+    callback tab-drag-moved(length, length);
+    callback tab-drag-released();
+    callback panel-add-tab-clicked(int);
+
+    in property <[InfoRow]> track-info: [];
+    in property <[LyricLine]> lyric-lines: [];
+    in property <int> lyric-active-line: -1;
+    in property <string> lyric-status: "Nothing playing";
+    in property <bool> layout-editing: false;
+    in property <[string]> waveform-paths: [];
+    in property <int> waveform-bucket-count: 1;
     in property <[float]> spectrum-bars: [];
     in property <[float]> spectrum-peaks: [];
+    in property <[SpectrumNote]> spectrum-notes: [];
+    in property <int> spectrum-min-db: -80;
+    in property <int> spectrum-max-db: 0;
+    in property <string> now-playing-text;
+    in property <image> album-art;
+    in property <bool> has-album-art: false;
 
     callback play-pause-clicked();
     callback menu-play-clicked();
@@ -89,10 +167,40 @@ export component MainWindow inherits Window {
     callback refresh-playlist-clicked();
     callback search-edited(string);
     in property <string> playlist-grouping: "artist-album-disc";
+    in property <string> playlist-summary: "";
 
+    // The playlist lives inside a panel slot, where it can't be addressed
+    // by id; bumping the serial asks whichever playlist panel exists to
+    // scroll to `playlist-scroll-y`.
+    in-out property <int> playlist-scroll-serial: 0;
+    in-out property <length> playlist-scroll-y: 0;
     public function scroll-playlist-to(y: length) {
-        playlist.scroll-to(y);
+        root.playlist-scroll-y = y;
+        root.playlist-scroll-serial += 1;
     }
+
+    callback panel-area-resized(length, length);
+    // Read once at startup: `panel-area`'s init runs before the Rust side
+    // has connected `panel-area-resized`.
+    out property <length> panel-area-width: panel-area.width;
+    out property <length> panel-area-height: panel-area.height;
+    callback layout-edit-toggled();
+    callback layout-reset-clicked();
+    // Panel actions take the slot's index in `panel-slots`.
+    callback panel-replace-clicked(int, string);
+    callback panel-split-clicked(int, bool);
+    callback panel-remove-clicked(int);
+    // Divider drags report window coordinates along the drag axis, so the
+    // delta stays right while the divider itself moves under the pointer.
+    callback divider-pressed(int, length);
+    callback divider-moved(length);
+    callback divider-released();
+    callback panel-move-clicked(int, bool);
+    // Dragging a panel (edit mode): positions are relative to the panel area.
+    callback panel-drag-pressed(int, length, length);
+    callback panel-drag-moved(length, length);
+    callback panel-drag-released();
+    in property <DropPreview> drop-preview;
     callback open-files-clicked();
     callback open-folder-clicked();
     callback properties-clicked();
@@ -128,6 +236,12 @@ export component MainWindow inherits Window {
         }
         Menu {
             title: "View";
+            MenuItem {
+                title: root.layout-editing ? "Finish Editing Layout" : "Edit Layout";
+                activated => { root.layout-edit-toggled(); }
+            }
+            MenuItem { title: "Reset Layout"; activated => { root.layout-reset-clicked(); } }
+            MenuSeparator {}
             MenuItem { title: "Preferences..."; activated => { root.settings-clicked(); } }
         }
         Menu {
@@ -136,58 +250,292 @@ export component MainWindow inherits Window {
         }
     }
 
-    VerticalLayout {
-        playlist := PlaylistView {
-            vertical-stretch: 1;
-            rows: root.playlist-rows;
-            grouping: root.playlist-grouping;
-            row-clicked(i) => { root.row-clicked(i); }
-            row-properties-clicked(i) => { root.row-properties-clicked(i); }
-            row-open-folder-clicked(i) => { root.row-open-folder-clicked(i); }
-            row-remove-clicked(i) => { root.row-remove-clicked(i); }
-            row-cut-clicked(i) => { root.row-cut-clicked(i); }
-            row-copy-clicked(i) => { root.row-copy-clicked(i); }
-            row-enqueue-clicked(i) => { root.row-enqueue-clicked(i); }
-            group-toggle-clicked(key) => { root.group-toggle-clicked(key); }
-            collapse-all-clicked => { root.collapse-all-clicked(); }
-            expand-all-clicked => { root.expand-all-clicked(); }
-            grouping-clicked(id) => { root.grouping-clicked(id); }
-            sort-clicked(id) => { root.sort-clicked(id); }
-            show-now-playing-clicked => { root.show-now-playing-clicked(); }
-            refresh-playlist-clicked => { root.refresh-playlist-clicked(); }
-            search-edited(text) => { root.search-edited(text); }
+    panel-area := Rectangle {
+        changed width => { root.panel-area-resized(self.width, self.height); }
+        changed height => { root.panel-area-resized(self.width, self.height); }
+
+        for slot[slot-index] in root.panel-slots: Rectangle {
+            x: slot.x;
+            y: slot.y;
+            width: slot.width;
+            height: slot.height;
+            clip: true;
+
+            if slot.kind == "playlist": PlaylistView {
+                width: parent.width;
+                height: parent.height;
+                rows: root.playlist-rows;
+                grouping: root.playlist-grouping;
+                summary: root.playlist-summary;
+                scroll-serial: root.playlist-scroll-serial;
+                scroll-y: root.playlist-scroll-y;
+                row-clicked(i) => { root.row-clicked(i); }
+                row-properties-clicked(i) => { root.row-properties-clicked(i); }
+                row-open-folder-clicked(i) => { root.row-open-folder-clicked(i); }
+                row-remove-clicked(i) => { root.row-remove-clicked(i); }
+                row-cut-clicked(i) => { root.row-cut-clicked(i); }
+                row-copy-clicked(i) => { root.row-copy-clicked(i); }
+                row-enqueue-clicked(i) => { root.row-enqueue-clicked(i); }
+                group-toggle-clicked(key) => { root.group-toggle-clicked(key); }
+                collapse-all-clicked => { root.collapse-all-clicked(); }
+                expand-all-clicked => { root.expand-all-clicked(); }
+                grouping-clicked(id) => { root.grouping-clicked(id); }
+                sort-clicked(id) => { root.sort-clicked(id); }
+                show-now-playing-clicked => { root.show-now-playing-clicked(); }
+                refresh-playlist-clicked => { root.refresh-playlist-clicked(); }
+                search-edited(text) => { root.search-edited(text); }
+            }
+            if slot.kind == "waveform": WaveformSeekbar {
+                width: parent.width;
+                height: parent.height;
+                channel-paths: root.waveform-paths;
+                bucket-count: root.waveform-bucket-count;
+                position-seconds: root.position-seconds;
+                duration-seconds: root.duration-seconds;
+                seek-requested(pos) => { root.seek-requested(pos); }
+            }
+            if slot.kind == "spectrum": SpectrumView {
+                width: parent.width;
+                height: parent.height;
+                bars: root.spectrum-bars;
+                peaks: root.spectrum-peaks;
+                notes: root.spectrum-notes;
+                min-db: root.spectrum-min-db;
+                max-db: root.spectrum-max-db;
+            }
+            if slot.kind == "transport": TransportBar {
+                width: parent.width;
+                height: parent.height;
+                is-playing: root.is-playing;
+                position-seconds: root.position-seconds;
+                duration-seconds: root.duration-seconds;
+                position-text: root.position-text;
+                duration-text: root.duration-text;
+                volume: root.volume;
+                shuffle-active: root.shuffle-active;
+                loop-active: root.loop-active;
+                repeat-one-active: root.repeat-one-active;
+                play-pause-clicked => { root.play-pause-clicked(); }
+                stop-clicked => { root.stop-clicked(); }
+                next-clicked => { root.next-clicked(); }
+                previous-clicked => { root.previous-clicked(); }
+                seek-requested(pos) => { root.seek-requested(pos); }
+                volume-changed(v) => { root.volume-changed(v); }
+                shuffle-clicked => { root.shuffle-clicked(); }
+                loop-clicked => { root.loop-clicked(); }
+            }
+            if slot.kind == "now-playing": NowPlayingBar {
+                width: parent.width;
+                height: parent.height;
+                text: root.now-playing-text;
+            }
+            if slot.kind == "album-art": AlbumArtView {
+                width: parent.width;
+                height: parent.height;
+                art: root.album-art;
+                has-art: root.has-album-art;
+            }
+            if slot.kind == "playback-buttons": PlaybackButtons {
+                width: parent.width;
+                height: parent.height;
+                is-playing: root.is-playing;
+                play-pause-clicked => { root.play-pause-clicked(); }
+                stop-clicked => { root.stop-clicked(); }
+                next-clicked => { root.next-clicked(); }
+                previous-clicked => { root.previous-clicked(); }
+                open-files-clicked => { root.open-files-clicked(); }
+                open-folder-clicked => { root.open-folder-clicked(); }
+            }
+            if slot.kind == "seek-bar": SeekBar {
+                width: parent.width;
+                height: parent.height;
+                position-seconds: root.position-seconds;
+                duration-seconds: root.duration-seconds;
+                position-text: root.position-text;
+                volume: root.volume;
+                shuffle-active: root.shuffle-active;
+                loop-active: root.loop-active;
+                repeat-one-active: root.repeat-one-active;
+                seek-requested(pos) => { root.seek-requested(pos); }
+                volume-changed(v) => { root.volume-changed(v); }
+                shuffle-clicked => { root.shuffle-clicked(); }
+                loop-clicked => { root.loop-clicked(); }
+            }
+            if slot.kind == "info": InfoView {
+                width: parent.width;
+                height: parent.height;
+                rows: root.track-info;
+            }
+            if slot.kind == "lyrics": LyricsView {
+                width: parent.width;
+                height: parent.height;
+                lines: root.lyric-lines;
+                active-line: root.lyric-active-line;
+                status: root.lyric-status;
+            }
+            if slot.kind == "biography": PlaceholderView {
+                width: parent.width;
+                height: parent.height;
+                title: "Artist biography";
+                message: "Not available yet.";
+            }
+            if slot.kind == "library": PlaceholderView {
+                width: parent.width;
+                height: parent.height;
+                title: "Media library";
+                message: "Not available yet. Use File > Open Folder to load music.";
+            }
+            if slot.kind == "status-bar": StatusBar {
+                width: parent.width;
+                height: parent.height;
+                text: root.status-text;
+            }
+
+            // While editing: outline + name over each panel and the layout
+            // menu on right-click. The drag handle sits *below* the menu
+            // area: a TouchArea takes every button, so inside it would
+            // swallow the right-click too; here it only gets what the menu
+            // area declines -- left clicks, which start a panel drag and
+            // stay off the panel itself.
+            if root.layout-editing: TouchArea {
+                mouse-cursor: self.pressed ? MouseCursor.grabbing : MouseCursor.grab;
+                pointer-event(event) => {
+                    if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                        root.panel-drag-pressed(slot-index,
+                            self.absolute-position.x + self.mouse-x - panel-area.absolute-position.x,
+                            self.absolute-position.y + self.mouse-y - panel-area.absolute-position.y);
+                    } else if event.button == PointerEventButton.left && event.kind == PointerEventKind.up {
+                        root.panel-drag-released();
+                    }
+                }
+                moved => {
+                    root.panel-drag-moved(
+                        self.absolute-position.x + self.mouse-x - panel-area.absolute-position.x,
+                        self.absolute-position.y + self.mouse-y - panel-area.absolute-position.y);
+                }
+            }
+            if root.layout-editing: ContextMenuArea {
+                Menu {
+                    Menu {
+                        title: "Replace with";
+                        for choice in root.panel-choices: MenuItem {
+                            title: choice.label;
+                            checkable: true;
+                            checked: choice.id == slot.kind;
+                            activated => { root.panel-replace-clicked(slot-index, choice.id); }
+                        }
+                    }
+                    if slot.can-move-back: MenuItem {
+                        title: slot.move-side-by-side ? "Move Left" : "Move Up";
+                        activated => { root.panel-move-clicked(slot-index, false); }
+                    }
+                    if slot.can-move-forward: MenuItem {
+                        title: slot.move-side-by-side ? "Move Right" : "Move Down";
+                        activated => { root.panel-move-clicked(slot-index, true); }
+                    }
+                    if slot.can-move-back || slot.can-move-forward: MenuSeparator {}
+                    MenuItem { title: "Add Tab"; activated => { root.panel-add-tab-clicked(slot-index); } }
+                    MenuItem { title: "Split Side by Side"; activated => { root.panel-split-clicked(slot-index, true); } }
+                    MenuItem { title: "Split Top and Bottom"; activated => { root.panel-split-clicked(slot-index, false); } }
+                    MenuSeparator {}
+                    MenuItem { title: "Remove Panel"; activated => { root.panel-remove-clicked(slot-index); } }
+                    MenuSeparator {}
+                    MenuItem { title: "Reset Layout"; activated => { root.layout-reset-clicked(); } }
+                    MenuItem { title: "Finish Editing Layout"; activated => { root.layout-edit-toggled(); } }
+                }
+                Rectangle {
+                    background: Theme.bg-sunken.transparentize(0.25);
+                    border-width: 1px;
+                    border-color: Theme.accent;
+                    Text {
+                        text: slot.label;
+                        color: Theme.text-primary;
+                        font-weight: 700;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+            }
+            if !root.layout-editing && slot.kind == "empty": Text {
+                text: "Empty panel -- View > Edit Layout to choose one";
+                color: Theme.text-muted;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                overflow: elide;
+            }
         }
-        if root.show-waveform: WaveformSeekbar {
-            peaks: root.waveform-peaks;
-            played-bucket-index: root.waveform-played-bucket-index;
-            duration-seconds: root.duration-seconds;
-            seek-requested(pos) => { root.seek-requested(pos); }
+
+        for strip[strip-index] in root.tab-strips: TabStripView {
+            x: strip.x;
+            y: strip.y;
+            width: strip.width;
+            height: strip.height;
+            labels: strip.labels;
+            active: strip.active;
+            tab-pressed(tab, x, y) => { root.tab-drag-pressed(strip-index, tab, strip.x + x, strip.y + y); }
+            tab-moved(x, y) => { root.tab-drag-moved(strip.x + x, strip.y + y); }
+            tab-released => { root.tab-drag-released(); }
         }
-        if root.show-spectrum: SpectrumView {
-            bars: root.spectrum-bars;
-            peaks: root.spectrum-peaks;
+
+        // Drop target while dragging a panel (edit mode) or a tab.
+        if root.drop-preview.visible: Rectangle {
+            x: root.drop-preview.x;
+            y: root.drop-preview.y;
+            width: root.drop-preview.width;
+            height: root.drop-preview.height;
+            background: Theme.accent.transparentize(0.55);
+            border-width: 2px;
+            border-color: Theme.accent;
+            Text {
+                text: root.drop-preview.label;
+                color: Theme.accent-text;
+                font-weight: 700;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                wrap: word-wrap;
+            }
         }
-        TransportBar {
-            is-playing: root.is-playing;
-            position-seconds: root.position-seconds;
-            duration-seconds: root.duration-seconds;
-            position-text: root.position-text;
-            duration-text: root.duration-text;
-            volume: root.volume;
-            shuffle-active: root.shuffle-active;
-            loop-active: root.loop-active;
-            repeat-one-active: root.repeat-one-active;
-            play-pause-clicked => { root.play-pause-clicked(); }
-            stop-clicked => { root.stop-clicked(); }
-            next-clicked => { root.next-clicked(); }
-            previous-clicked => { root.previous-clicked(); }
-            seek-requested(pos) => { root.seek-requested(pos); }
-            volume-changed(v) => { root.volume-changed(v); }
-            shuffle-clicked => { root.shuffle-clicked(); }
-            loop-clicked => { root.loop-clicked(); }
-        }
-        StatusBar {
-            text: root.status-text;
+
+        for divider[divider-index] in root.layout-dividers: Rectangle {
+            x: divider.x;
+            y: divider.y;
+            width: divider.width;
+            height: divider.height;
+
+            if root.layout-editing || divider.separator: Rectangle {
+            // Edit mode: a highlighted handle. Otherwise a 1px line
+            // centered in the (wider, invisible) grab area.
+            background: root.layout-editing
+                ? (drag-area.has-hover || drag-area.pressed ? Theme.accent : Theme.accent.transparentize(0.5))
+                : transparent;
+            if !root.layout-editing: Rectangle {
+                x: divider.side-by-side ? (parent.width - self.width) / 2 : 0;
+                y: divider.side-by-side ? 0 : (parent.height - self.height) / 2;
+                width: divider.side-by-side ? 1px : parent.width;
+                height: divider.side-by-side ? parent.height : 1px;
+                background: drag-area.has-hover || drag-area.pressed
+                    ? Theme.accent
+                    : Theme.text-muted.transparentize(0.7);
+            }
+            drag-area := TouchArea {
+                mouse-cursor: divider.side-by-side ? MouseCursor.col-resize : MouseCursor.row-resize;
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                        root.divider-pressed(divider-index, divider.side-by-side
+                            ? self.absolute-position.x + self.mouse-x
+                            : self.absolute-position.y + self.mouse-y);
+                    } else if event.kind == PointerEventKind.up && event.button == PointerEventButton.left {
+                        root.divider-released();
+                    }
+                }
+                moved => {
+                    root.divider-moved(divider.side-by-side
+                        ? self.absolute-position.x + self.mouse-x
+                        : self.absolute-position.y + self.mouse-y);
+                }
+            }
+            }
         }
     }
 }

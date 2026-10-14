@@ -1,4 +1,5 @@
 use crate::playlist::Track;
+use crate::waveform::WaveformChannel;
 use std::time::Duration;
 
 /// Sent from the playback thread to the UI thread. The UI drains these via a
@@ -31,11 +32,12 @@ pub enum EngineEvent {
         done: usize,
         total: usize,
     },
-    /// Peak amplitudes for the whole track, computed on a background thread
-    /// after `TrackChanged`; drives the waveform seekbar.
+    /// The whole track's waveform outline, one entry per channel, computed
+    /// on a background thread after `TrackChanged`; drives the waveform
+    /// seekbar.
     WaveformReady {
         index: usize,
-        peaks: Vec<f32>,
+        channels: Vec<WaveformChannel>,
     },
     /// Live spectrum bars (and, if enabled, their falling peak markers) for
     /// the audio currently being written to the output device, sent at the
