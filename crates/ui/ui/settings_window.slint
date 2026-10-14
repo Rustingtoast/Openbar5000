@@ -150,6 +150,11 @@ export component SettingsWindow inherits Window {
     in property <[int]> eq-gains;
     in property <int> eq-max-db: 20;
     in property <bool> eq-enabled;
+    in property <bool> eq-vintage;
+    in property <string> eq-lit-dots;
+    in property <string> eq-half-dots;
+    in property <string> eq-dim-dots;
+    callback eq-vintage-toggled(bool);
     in property <[string]> eq-preset-names;
     in property <int> eq-preset-index;
     in property <string> eq-status;
@@ -373,6 +378,11 @@ export component SettingsWindow inherits Window {
                     gains: root.eq-gains;
                     max-db: root.eq-max-db;
                     enabled: root.eq-enabled;
+                    vintage: root.eq-vintage;
+                    lit-dots: root.eq-lit-dots;
+                    half-dots: root.eq-half-dots;
+                    dim-dots: root.eq-dim-dots;
+                    vintage-toggled(on) => { root.eq-vintage-toggled(on); }
                     preset-names: root.eq-preset-names;
                     preset-index: root.eq-preset-index;
                     status: root.eq-status;

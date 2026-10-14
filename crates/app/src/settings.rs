@@ -35,6 +35,8 @@ pub struct Settings {
     pub artist_wikipedia_language: String,
     /// The graphic equalizer (issue #7).
     pub equalizer: EqualizerSettings,
+    /// Shows the Equalizer tab in Preferences as a hardware faceplate.
+    pub equalizer_vintage_look: bool,
 }
 
 impl Default for Settings {
@@ -53,6 +55,7 @@ impl Default for Settings {
             artist_wikipedia: true,
             artist_wikipedia_language: "en".to_string(),
             equalizer: EqualizerSettings::default(),
+            equalizer_vintage_look: false,
         }
     }
 }
@@ -213,6 +216,9 @@ impl Settings {
         if let Some(v) = get("eq_enabled") {
             settings.equalizer.enabled = v == "true";
         }
+        if let Some(v) = get("eq_vintage_look") {
+            settings.equalizer_vintage_look = v == "true";
+        }
         if let Some(gains) = get("eq_gains").and_then(|v| parse_eq_gains(&v)) {
             settings.equalizer.gains_db = gains;
         }
@@ -270,6 +276,7 @@ impl Settings {
             ("artist_wikipedia", self.artist_wikipedia.to_string()),
             ("artist_wikipedia_language", self.artist_wikipedia_language.clone()),
             ("eq_enabled", self.equalizer.enabled.to_string()),
+            ("eq_vintage_look", self.equalizer_vintage_look.to_string()),
             (
                 "eq_gains",
                 self.equalizer.gains_db.map(|gain| gain.to_string()).join(","),

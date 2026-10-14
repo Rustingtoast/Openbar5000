@@ -275,6 +275,7 @@ impl Equalizer {
         window.set_eq_band_labels(labels(&BAND_LABELS));
         window.set_eq_gains(ModelRc::from(eq.gains_model.clone()));
         window.set_eq_max_db(EQ_MAX_DB);
+        window.set_eq_vintage(eq.settings.borrow().equalizer_vintage_look);
         let mut names = vec!["Custom"];
         names.extend(PRESETS.iter().map(|(name, _)| *name));
         window.set_eq_preset_names(labels(&names));
@@ -336,6 +337,15 @@ impl Equalizer {
                     let current = eq.current();
                     eq.set(EqualizerSettings { enabled, ..current });
                 }
+            });
+        }
+        {
+            let weak = Rc::downgrade(&eq);
+            window.on_eq_vintage_toggled(move |on| {
+                let Some(eq) = weak.upgrade() else { return };
+                eq.settings.borrow_mut().equalizer_vintage_look = on;
+                eq.settings.borrow().save(&eq.store);
+                eq.window.set_eq_vintage(on);
             });
         }
         {
@@ -403,9 +413,13 @@ impl Equalizer {
                 .map_or(0, |i| i as i32 + 1),
         );
 
+        let [lit, half, dim] = band_dots(&gains);
+        self.window.set_eq_lit_dots(lit.as_str().into());
+        self.window.set_eq_half_dots(half.as_str().into());
+        self.window.set_eq_dim_dots(dim.as_str().into());
+
         let Some(main) = self.main.upgrade() else { return };
         main.set_eq_enabled(current.enabled);
-        let [lit, half, dim] = band_dots(&gains);
         main.set_eq_lit_dots(lit.into());
         main.set_eq_half_dots(half.into());
         main.set_eq_dim_dots(dim.into());
