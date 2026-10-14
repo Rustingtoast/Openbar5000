@@ -22,6 +22,10 @@ use ui::{
     ThemeEditorWindow, ThemeListEntry,
 };
 
+/// The workspace version from `Cargo.toml` -- the one number the build
+/// scripts also stamp into the macOS/Windows/Linux packages.
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// How often engine events are drained -- which, since the spectrum and
 /// seekbar only change when they are, is also their redraw rate.
 fn poll_interval(fps: u32) -> Duration {
@@ -96,7 +100,9 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         });
     }
 
+    window.set_app_version(APP_VERSION.into());
     let about_window = AboutWindow::new().expect("failed to create about window");
+    about_window.set_app_version(APP_VERSION.into());
     {
         let about_window_weak = about_window.as_weak();
         about_window.on_close_clicked(move || {

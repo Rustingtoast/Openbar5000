@@ -13,7 +13,9 @@ import { ThemeEditorWindow } from "theme_editor_window.slint";
 export { PlaylistRow, PropertiesWindow, AboutWindow, SettingsWindow, ThemeListEntry, ThemeEditorWindow, Theme }
 
 export component MainWindow inherits Window {
-    title: "Openbar5000";
+    // Set from Cargo.toml's version at startup (see `app::wiring`).
+    in property <string> app-version;
+    title: root.app-version == "" ? "Openbar5000" : "Openbar5000 v" + root.app-version;
     icon: @image-url("assets/icons/app-icon.svg");
     preferred-width: 1400px;
     preferred-height: 700px;
