@@ -406,7 +406,10 @@ fn load_track(state: &mut EngineState, index: usize, event_tx: &Sender<EngineEve
             if state.waveform_enabled {
                 spawn_waveform_computation(state, track.path.clone(), index, event_tx.clone());
             }
-            let _ = event_tx.send(EngineEvent::TrackChanged { index, track });
+            let _ = event_tx.send(EngineEvent::TrackChanged {
+                index,
+                track: Box::new(track),
+            });
         }
         Err(e) => {
             let _ = event_tx.send(EngineEvent::Error(e.to_string()));

@@ -1,11 +1,14 @@
 use crate::store::Store;
 use slint::ComponentHandle;
-use ui::{AboutWindow, MainWindow, PropertiesWindow, SettingsWindow, Theme, ThemeEditorWindow};
+use ui::{
+    AboutWindow, LyricsEditorWindow, MainWindow, PropertiesWindow, SettingsWindow, Theme,
+    ThemeEditorWindow,
+};
 
 /// The semantic color tokens every window reads via the `Theme` Slint
 /// global (see `crates/ui/ui/theme.slint`). Each top-level window is a
 /// separate Slint component instance with its own copy of that global, so
-/// `apply_theme` below writes these into all of them.
+/// `ThemedWindows::apply` below writes these into all of them.
 #[derive(Debug, Clone, Copy)]
 pub struct ThemeColors {
     pub bg_base: slint::Color,
@@ -260,30 +263,50 @@ fn set_theme_global(theme: Theme<'_>, colors: &ThemeColors) {
 /// independent global state) and syncs `theme-is-dark`, which each window's
 /// own `.slint` file uses to keep std-widgets (Button/CheckBox/LineEdit/
 /// MenuBar/...) in the matching built-in dark/light style.
-pub fn apply_theme(
-    main_window: &MainWindow,
-    properties_window: &PropertiesWindow,
-    about_window: &AboutWindow,
-    settings_window: &SettingsWindow,
-    theme_editor_window: &ThemeEditorWindow,
-    colors: &ThemeColors,
-) {
-    let is_dark = is_dark_background(colors.bg_base);
+/// Every top-level window, so a theme can be applied to all of them at
+/// once (each has its own copy of the `Theme` global). Holds weak handles:
+/// a window that's gone is simply skipped.
+#[derive(Clone)]
+pub struct ThemedWindows {
+    main: slint::Weak<MainWindow>,
+    properties: slint::Weak<PropertiesWindow>,
+    about: slint::Weak<AboutWindow>,
+    settings: slint::Weak<SettingsWindow>,
+    theme_editor: slint::Weak<ThemeEditorWindow>,
+    lyrics_editor: slint::Weak<LyricsEditorWindow>,
+}
 
-    set_theme_global(main_window.global::<Theme>(), colors);
-    main_window.set_theme_is_dark(is_dark);
+impl ThemedWindows {
+    pub fn new(
+        main: &MainWindow,
+        properties: &PropertiesWindow,
+        about: &AboutWindow,
+        settings: &SettingsWindow,
+        theme_editor: &ThemeEditorWindow,
+        lyrics_editor: &LyricsEditorWindow,
+    ) -> Self {
+        Self {
+            main: main.as_weak(),
+            properties: properties.as_weak(),
+            about: about.as_weak(),
+            settings: settings.as_weak(),
+            theme_editor: theme_editor.as_weak(),
+            lyrics_editor: lyrics_editor.as_weak(),
+        }
+    }
 
-    set_theme_global(properties_window.global::<Theme>(), colors);
-    properties_window.set_theme_is_dark(is_dark);
-
-    set_theme_global(about_window.global::<Theme>(), colors);
-    about_window.set_theme_is_dark(is_dark);
-
-    set_theme_global(settings_window.global::<Theme>(), colors);
-    settings_window.set_theme_is_dark(is_dark);
-
-    set_theme_global(theme_editor_window.global::<Theme>(), colors);
-    theme_editor_window.set_theme_is_dark(is_dark);
+    pub fn apply(&self, colors: &ThemeColors) {
+        let is_dark = is_dark_background(colors.bg_base);
+        macro_rules! apply_to {
+            ($($window:ident),*) => {$(
+                if let Some(window) = self.$window.upgrade() {
+                    set_theme_global(window.global::<Theme>(), colors);
+                    window.set_theme_is_dark(is_dark);
+                }
+            )*};
+        }
+        apply_to!(main, properties, about, settings, theme_editor, lyrics_editor);
+    }
 }
 
 #[cfg(test)]

@@ -57,22 +57,40 @@ export component LyricsView inherits Rectangle {
     in property <[LyricLine]> lines: [];
     /// Index into `lines` of the line being sung; -1 for none/unsynced.
     in property <int> active-line: -1;
+    /// Synced lyrics keep the sung line in the middle; plain lyrics read
+    /// from the top.
+    in property <bool> synced: false;
     in property <string> status: "";
+    /// Shows "Add lyrics…" / "Edit lyrics…" (a track is playing).
+    in property <bool> editable: false;
+    callback edit-clicked();
 
     property <length> line-height: 22px;
 
     background: Theme.bg-base;
     clip: true;
 
-    if root.lines.length == 0: Text {
-        text: root.status;
-        color: Theme.text-muted;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-        wrap: word-wrap;
+    if root.lines.length == 0: VerticalLayout {
+        alignment: center;
+        spacing: 10px;
+        Text {
+            text: root.status;
+            color: Theme.text-muted;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+        if root.editable: HorizontalLayout {
+            alignment: center;
+            Button { text: "Add lyrics…"; clicked => { root.edit-clicked(); } }
+        }
     }
     if root.lines.length > 0: flick := Flickable {
-        content-height: root.lines.length * root.line-height + self.height;
+        // Plain lyrics: the lines plus a margin, so scrolling stops at the
+        // last line. Synced: enough room above and below for the first and
+        // last line to sit in the middle -- no more.
+        content-height: root.synced
+            ? root.lines.length * root.line-height + self.height - root.line-height
+            : root.lines.length * root.line-height + 32px;
         // Synced: keep the active line centered; unsynced: free scrolling
         // starting at the top.
         content-y: root.active-line >= 0
@@ -82,7 +100,7 @@ export component LyricsView inherits Rectangle {
 
         for line[i] in root.lines: Text {
             x: 0;
-            y: root.height / 2 - root.line-height / 2 + i * root.line-height;
+            y: (root.synced ? root.height / 2 - root.line-height / 2 : 16px) + i * root.line-height;
             width: root.width;
             height: root.line-height;
             text: line.text;
@@ -91,6 +109,12 @@ export component LyricsView inherits Rectangle {
             color: i == root.active-line ? Theme.text-primary : Theme.text-muted;
             font-weight: i == root.active-line ? 700 : 400;
         }
+    }
+    if root.editable && root.lines.length > 0: Button {
+        x: parent.width - self.width - 10px;
+        y: 10px;
+        text: "Edit lyrics…";
+        clicked => { root.edit-clicked(); }
     }
 }
 
