@@ -1,6 +1,27 @@
 use crate::spectrum::SpectrumConfig;
 use std::time::Duration;
 
+/// How the playlist advances once a track ends (naturally, or via
+/// Next/Previous) -- toggled by the shuffle/repeat buttons in the
+/// transport bar, and mutually exclusive by construction (there's exactly
+/// one active mode, not two independent flags).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PlaybackMode {
+    #[default]
+    Normal,
+    /// Wraps back to the first track once the last one ends (naturally, or
+    /// via Next), and symmetrically wraps to the last track if Previous is
+    /// pressed on the first one -- the queue repeats as a whole.
+    RepeatAll,
+    /// Replays the current track in place when it reaches its end.
+    /// Explicit Next/Previous still navigate normally (no wraparound) --
+    /// this only governs what happens when a track finishes on its own.
+    RepeatOne,
+    /// Advances through a randomized order that visits every playlist
+    /// track once before any repeat.
+    Shuffle,
+}
+
 /// Sent from the UI thread to the playback thread. See
 /// [`crate::PlaybackEngine`] for how these are consumed.
 #[derive(Debug, Clone)]
@@ -30,4 +51,5 @@ pub enum EngineCommand {
     /// Channels/amplitude-range/FFT-size/peak-physics settings for the
     /// spectrum analyzer.
     SetSpectrumConfig(SpectrumConfig),
+    SetPlaybackMode(PlaybackMode),
 }

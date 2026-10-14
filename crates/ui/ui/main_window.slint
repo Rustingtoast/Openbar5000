@@ -49,6 +49,9 @@ export component MainWindow inherits Window {
     in property <string> position-text: "0:00";
     in property <string> duration-text: "0:00";
     in property <float> volume: 1.0;
+    in property <bool> shuffle-active: false;
+    in property <bool> loop-active: false;
+    in property <bool> repeat-one-active: false;
     in property <string> status-text: "Openbar5000 — an open-source foobar2000-alike";
 
     in property <bool> show-waveform: true;
@@ -66,6 +69,8 @@ export component MainWindow inherits Window {
     callback previous-clicked();
     callback seek-requested(float);
     callback volume-changed(float);
+    callback shuffle-clicked();
+    callback loop-clicked();
     callback row-clicked(int);
     callback row-properties-clicked(int);
     callback row-open-folder-clicked(int);
@@ -141,12 +146,17 @@ export component MainWindow inherits Window {
             position-text: root.position-text;
             duration-text: root.duration-text;
             volume: root.volume;
+            shuffle-active: root.shuffle-active;
+            loop-active: root.loop-active;
+            repeat-one-active: root.repeat-one-active;
             play-pause-clicked => { root.play-pause-clicked(); }
             stop-clicked => { root.stop-clicked(); }
             next-clicked => { root.next-clicked(); }
             previous-clicked => { root.previous-clicked(); }
             seek-requested(pos) => { root.seek-requested(pos); }
             volume-changed(v) => { root.volume-changed(v); }
+            shuffle-clicked => { root.shuffle-clicked(); }
+            loop-clicked => { root.loop-clicked(); }
         }
         StatusBar {
             text: root.status-text;

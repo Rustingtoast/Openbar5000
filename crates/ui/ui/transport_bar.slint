@@ -1,6 +1,31 @@
 import { Button, Slider } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 
+// A plain Button's icon follows its own foreground color, which doesn't
+// give us the "accent-colored when active" affordance Shuffle/Loop need --
+// so these are built directly on a TouchArea instead, mirroring the
+// selected-row pattern already used for themes in settings_window.slint.
+component ToggleIconButton inherits Rectangle {
+    in property <image> icon;
+    in property <bool> active: false;
+    callback clicked();
+
+    width: 36px;
+    height: 30px;
+    border-radius: 4px;
+    background: root.active ? Theme.accent : transparent;
+
+    TouchArea {
+        clicked => { root.clicked(); }
+        Image {
+            source: root.icon;
+            width: 16px;
+            height: 16px;
+            colorize: root.active ? Theme.accent-text : Theme.text-primary;
+        }
+    }
+}
+
 export component TransportBar inherits Rectangle {
     in property <bool> is-playing: false;
     in property <float> position-seconds: 0;
@@ -8,6 +33,9 @@ export component TransportBar inherits Rectangle {
     in property <float> volume: 1.0;
     in property <string> position-text: "0:00";
     in property <string> duration-text: "0:00";
+    in property <bool> shuffle-active: false;
+    in property <bool> loop-active: false;
+    in property <bool> repeat-one-active: false;
 
     callback play-pause-clicked();
     callback stop-clicked();
@@ -15,9 +43,16 @@ export component TransportBar inherits Rectangle {
     callback previous-clicked();
     callback seek-requested(float);
     callback volume-changed(float);
+    callback shuffle-clicked();
+    callback loop-clicked();
 
     height: 64px;
     background: Theme.bg-raised;
+
+    // Dragging the Slider assigns its `value` internally, which breaks the
+    // `value: root.position-seconds` binding for good -- so push engine
+    // position updates in explicitly instead of relying on the binding.
+    changed position-seconds => { seek-slider.value = root.position-seconds; }
 
     VerticalLayout {
         HorizontalLayout {
@@ -52,6 +87,17 @@ export component TransportBar inherits Rectangle {
                 width: 36px;
                 clicked => { root.next-clicked(); }
             }
+            Rectangle { width: 4px; }
+            ToggleIconButton {
+                icon: @image-url("assets/icons/shuffle.svg");
+                active: root.shuffle-active;
+                clicked => { root.shuffle-clicked(); }
+            }
+            ToggleIconButton {
+                icon: root.repeat-one-active ? @image-url("assets/icons/repeat-one.svg") : @image-url("assets/icons/repeat.svg");
+                active: root.loop-active;
+                clicked => { root.loop-clicked(); }
+            }
             Rectangle { horizontal-stretch: 1; }
             Text { text: "Vol"; vertical-alignment: center; color: Theme.text-muted; }
             Slider {
@@ -67,7 +113,7 @@ export component TransportBar inherits Rectangle {
             padding: 4px;
             spacing: 6px;
             Text { text: root.position-text; vertical-alignment: center; color: Theme.text-muted; }
-            Slider {
+            seek-slider := Slider {
                 horizontal-stretch: 1;
                 minimum: 0;
                 maximum: root.duration-seconds > 0 ? root.duration-seconds : 1;
