@@ -4,6 +4,9 @@ import { Theme } from "theme.slint";
 export struct PlaylistRow {
     is-header: bool,
     cover-image: image,
+    // False when the group's first track has no embedded art: a grey disc
+    // icon is shown instead of `cover-image`.
+    has-cover: bool,
     group-title: string,
     group-subtitle: string,
     group-info: string,
@@ -21,6 +24,8 @@ export struct PlaylistRow {
 
 export component PlaylistView inherits Rectangle {
     in property <[PlaylistRow]> rows: [];
+    /// Shown above the list, e.g. "23 tracks, Length: 1:21:07".
+    in property <string> summary: "";
     // Active Grouping submenu id (see `PlaylistGrouping::as_str`), for the
     // submenu's check mark.
     in property <string> grouping: "artist-album-disc";
@@ -40,6 +45,12 @@ export component PlaylistView inherits Rectangle {
     callback refresh-playlist-clicked();
     callback search-edited(string);
 
+    // `scroll-to(scroll-y)` runs whenever `scroll-serial` changes -- how the
+    // main window reaches this view inside a panel slot.
+    in property <int> scroll-serial: 0;
+    in property <length> scroll-y: 0;
+    changed scroll-serial => { root.scroll-to(root.scroll-y); }
+
     // Scrolls so content offset `y` (from the top of the list) sits a
     // third of the way down the visible area.
     public function scroll-to(y: length) {
@@ -49,20 +60,18 @@ export component PlaylistView inherits Rectangle {
     background: Theme.bg-base;
 
     VerticalLayout {
+        // Summary line on top, search box at the bottom, as in the
+        // reference UI.
         Rectangle {
-            height: 36px;
+            height: 18px;
             background: Theme.bg-raised;
-            HorizontalLayout {
-                padding: 5px;
-                spacing: 8px;
-                Text { text: "Search:"; vertical-alignment: center; color: Theme.text-muted; font-size: 14px; }
-                LineEdit {
-                    placeholder-text: "Type a search query and press Enter";
-                    font-size: 14px;
-                    height: 26px;
-                    edited(text) => { root.search-edited(text); }
-                    accepted(text) => { root.search-edited(text); }
-                }
+            Text {
+                text: root.summary;
+                font-size: 11px;
+                color: Theme.text-muted;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                overflow: elide;
             }
         }
         list := ListView {
@@ -135,24 +144,47 @@ export component PlaylistView inherits Rectangle {
                                 vertical-alignment: center;
                                 color: row.is-current ? Theme.accent-text : Theme.text-muted;
                             }
-                            Image {
+                            if row.has-cover: Image {
                                 source: row.cover-image;
                                 width: 48px;
                                 height: 48px;
+                            }
+                            if !row.has-cover: Rectangle {
+                                width: 48px;
+                                height: 48px;
+                                background: Theme.bg-sunken;
+                                Image {
+                                    source: @image-url("assets/icons/disc.svg");
+                                    width: 28px;
+                                    height: 28px;
+                                    colorize: Theme.text-muted;
+                                }
                             }
                             VerticalLayout {
                                 alignment: center;
                                 spacing: 2px;
                                 Text { text: row.group-title; font-size: 15px; font-weight: 700; color: row.is-current ? Theme.accent-text : Theme.text-primary; overflow: elide; }
-                                Text { text: row.group-subtitle; font-size: 12px; color: row.is-current ? Theme.accent-text : Theme.accent; overflow: elide; }
+                                // Album, then a thin rule running across to
+                                // the date.
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Text { text: row.group-subtitle; font-size: 12px; color: row.is-current ? Theme.accent-text : Theme.accent; overflow: elide; }
+                                    Rectangle {
+                                        horizontal-stretch: 1;
+                                        min-width: 16px;
+                                        Rectangle {
+                                            y: (parent.height - self.height) / 2;
+                                            height: 1px;
+                                            background: row.is-current ? Theme.accent-text.transparentize(0.6) : Theme.text-muted.transparentize(0.7);
+                                        }
+                                    }
+                                    Text {
+                                        text: row.group-date;
+                                        font-size: 12px;
+                                        color: row.is-current ? Theme.accent-text : Theme.text-muted;
+                                    }
+                                }
                                 Text { text: row.group-info; font-size: 10px; color: row.is-current ? Theme.accent-text : Theme.text-muted; overflow: elide; }
-                            }
-                            Text {
-                                text: row.group-date;
-                                horizontal-alignment: right;
-                                vertical-alignment: center;
-                                font-size: 13px;
-                                color: row.is-current ? Theme.accent-text : Theme.text-muted;
                             }
                         }
                     }
@@ -168,6 +200,19 @@ export component PlaylistView inherits Rectangle {
                             Text { text: row.duration; width: 60px; vertical-alignment: center; color: row.is-current ? Theme.accent-text : Theme.text-primary; }
                         }
                     }
+                }
+            }
+        }
+        Rectangle {
+            height: 28px;
+            background: Theme.bg-raised;
+            HorizontalLayout {
+                padding: 2px;
+                LineEdit {
+                    placeholder-text: "Type a search query and press Enter";
+                    font-size: 12px;
+                    edited(text) => { root.search-edited(text); }
+                    accepted(text) => { root.search-edited(text); }
                 }
             }
         }

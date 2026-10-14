@@ -32,10 +32,28 @@ pub const COVER_THUMBNAIL_SIZE: u32 = 96;
 /// Decodes embedded JPEG/PNG art and shrinks it (keeping aspect ratio) to
 /// fit `COVER_THUMBNAIL_SIZE`. `None` if it doesn't decode.
 fn cover_thumbnail(bytes: &[u8]) -> Option<CoverThumbnail> {
-    let thumbnail = image::load_from_memory(bytes)
-        .ok()?
-        .thumbnail(COVER_THUMBNAIL_SIZE, COVER_THUMBNAIL_SIZE)
-        .into_rgba8();
+    scaled_cover(bytes, COVER_THUMBNAIL_SIZE)
+}
+
+/// Reads `path`'s embedded cover art at up to `max_size` px on its longest
+/// edge -- for the album-art panel, which shows one cover far larger than
+/// the playlist thumbnails kept in `TrackMetadata`. Decodes the file's
+/// art, so call it off the UI thread. `None` if there's no usable art.
+pub fn load_cover_art(path: &Path, max_size: u32) -> Option<CoverThumbnail> {
+    let tagged_file = lofty::read_from_path(path).ok()?;
+    let tag = tagged_file.primary_tag().or_else(|| tagged_file.first_tag())?;
+    scaled_cover(tag.pictures().first()?.data(), max_size)
+}
+
+fn scaled_cover(bytes: &[u8], max_size: u32) -> Option<CoverThumbnail> {
+    let decoded = image::load_from_memory(bytes).ok()?;
+    // `thumbnail` only ever shrinks; small art stays as it is.
+    let scaled = if decoded.width().max(decoded.height()) > max_size {
+        decoded.thumbnail(max_size, max_size)
+    } else {
+        decoded
+    };
+    let thumbnail = scaled.into_rgba8();
     let (width, height) = thumbnail.dimensions();
     Some(CoverThumbnail {
         width,
@@ -178,6 +196,13 @@ mod tests {
         );
         assert_eq!(thumb.rgba.len(), (thumb.width * thumb.height * 4) as usize);
         assert!(cover_thumbnail(b"not an image").is_none());
+
+        // Larger sizes shrink to the requested bound; small art isn't
+        // blown up.
+        let big = scaled_cover(&png(1200, 600), 600).unwrap();
+        assert_eq!((big.width, big.height), (600, 300));
+        let small = scaled_cover(&png(200, 100), 600).unwrap();
+        assert_eq!((small.width, small.height), (200, 100));
     }
 
     #[test]

@@ -1,4 +1,6 @@
 mod discord_presence;
+mod layout;
+mod lyrics;
 mod platform;
 mod playlist_rows;
 mod settings;

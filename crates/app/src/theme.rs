@@ -114,7 +114,9 @@ fn builtin_entries() -> Vec<ThemeEntry> {
                 accent: rgb(0xc9, 0x7a, 0x26),
                 accent_text: rgb(0x1b, 0x1b, 0x1b),
                 waveform_unplayed: rgb(0x4a, 0x4a, 0x4a),
-                spectrum_bar: rgb(0x3f, 0xb8, 0xe8),
+                // Quiet bars stay grey and blend into the accent as they
+                // get louder (see spectrum_view.slint), like the reference.
+                spectrum_bar: rgb(0x3a, 0x3a, 0x3a),
             },
         },
         ThemeEntry {

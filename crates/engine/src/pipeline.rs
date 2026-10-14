@@ -157,7 +157,10 @@ impl Pipeline {
         let window = self.spectrum.fft_size() * channels;
         self.history
             .copy_window(self.sink.queued_samples(), window, &mut self.spectrum_window);
-        Some(self.spectrum.analyze(&self.spectrum_window, channels))
+        Some(
+            self.spectrum
+                .analyze(&self.spectrum_window, channels, self.sample_rate),
+        )
     }
 
     /// Whether the sink can take a whole chunk without `process_chunk`
