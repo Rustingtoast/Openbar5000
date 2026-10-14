@@ -3,6 +3,7 @@ import { Theme } from "theme.slint";
 
 export component AboutWindow inherits Window {
     title: "About Openbar5000";
+    icon: @image-url("assets/icons/app-icon.svg");
     preferred-width: 380px;
     preferred-height: 220px;
     background: Theme.bg-raised;
@@ -21,11 +22,22 @@ export component AboutWindow inherits Window {
         padding: 18px;
         spacing: 10px;
 
-        Text { text: "Openbar5000"; font-size: 20px; font-weight: 700; color: Theme.text-primary; }
-        Text {
-            text: "An open-source, cross-platform alternative to foobar2000.";
-            color: Theme.text-muted;
-            wrap: word-wrap;
+        HorizontalLayout {
+            spacing: 14px;
+            Image {
+                source: @image-url("assets/icons/app-icon.svg");
+                width: 56px;
+                height: 56px;
+            }
+            VerticalLayout {
+                alignment: center;
+                Text { text: "Openbar5000"; font-size: 20px; font-weight: 700; color: Theme.text-primary; }
+                Text {
+                    text: "An open-source, cross-platform alternative to foobar2000.";
+                    color: Theme.text-muted;
+                    wrap: word-wrap;
+                }
+            }
         }
         Text { text: "Built with Rust and Slint."; color: Theme.text-muted; }
         Text {
