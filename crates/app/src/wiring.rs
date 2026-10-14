@@ -6,7 +6,7 @@ use crate::playlist_rows::{
     all_group_keys, build_grouped_rows, group_key_of, sort_order, CoverCache, PlaylistGrouping,
     PlaylistSort,
 };
-use crate::settings::Settings;
+use crate::settings::{normalize_fps, Settings};
 use crate::store::Store;
 use crate::theme::{self, ThemeColors, ThemeRegistry};
 use engine::{
@@ -22,7 +22,15 @@ use ui::{
     ThemeEditorWindow, ThemeListEntry,
 };
 
-const POLL_INTERVAL: Duration = Duration::from_millis(150);
+/// How often engine events are drained -- which, since the spectrum and
+/// seekbar only change when they are, is also their redraw rate.
+fn poll_interval(fps: u32) -> Duration {
+    Duration::from_millis(1000 / normalize_fps(fps) as u64)
+}
+
+fn fps_label(fps: u32) -> String {
+    format!("{} fps", normalize_fps(fps))
+}
 
 /// Resources the caller must keep alive for as long as the window's event
 /// loop runs: the timer that drains [`EngineEvent`]s, and the (initially
@@ -30,7 +38,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(150);
 /// are read again after `wire()` returns -- they only need to not be dropped.
 #[allow(dead_code)]
 pub struct UiHandles {
-    pub event_poll_timer: Timer,
+    pub event_poll_timer: Rc<Timer>,
     pub properties_window: PropertiesWindow,
     pub about_window: AboutWindow,
     pub settings_window: SettingsWindow,
@@ -259,6 +267,21 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                 window.set_show_waveform(enabled);
             }
             engine.send(EngineCommand::SetWaveformEnabled(enabled));
+        });
+    }
+    // Created here (started at the end of `wire`) so the frame-rate setting
+    // can retune it.
+    let event_poll_timer = Rc::new(Timer::default());
+    settings_window.set_visualization_fps(fps_label(settings.borrow().visualization_fps).into());
+    {
+        let settings = settings.clone();
+        let store = store.clone();
+        let event_poll_timer = event_poll_timer.clone();
+        settings_window.on_visualization_fps_changed(move |label| {
+            let fps = normalize_fps(label.trim_end_matches(" fps").parse().unwrap_or(60));
+            settings.borrow_mut().visualization_fps = fps;
+            settings.borrow().save(&store);
+            event_poll_timer.set_interval(poll_interval(fps));
         });
     }
     {
@@ -921,14 +944,46 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         });
     }
 
-    let event_poll_timer = Timer::default();
+    // Kept for the window's lifetime and updated row by row: handing Slint a
+    // fresh model every frame would make it rebuild every bar element.
+    let spectrum_bars = Rc::new(VecModel::<f32>::default());
+    let spectrum_peaks = Rc::new(VecModel::<f32>::default());
+    window.set_spectrum_bars(ModelRc::from(spectrum_bars.clone()));
+    window.set_spectrum_peaks(ModelRc::from(spectrum_peaks.clone()));
+
     let window_weak = window.as_weak();
     let settings_window_weak = settings_window.as_weak();
-    event_poll_timer.start(TimerMode::Repeated, POLL_INTERVAL, move || {
+    let initial_poll_interval = poll_interval(settings.borrow().visualization_fps);
+    event_poll_timer.start(TimerMode::Repeated, initial_poll_interval, move || {
         let Some(window) = window_weak.upgrade() else {
             return;
         };
+        // Position and spectrum updates can arrive several per tick; only
+        // the newest of each is worth drawing.
+        let mut latest_position = None;
+        let mut latest_spectrum = None;
         while let Some(event) = engine.try_recv_event() {
+            match event {
+                EngineEvent::PositionUpdate { .. } => latest_position = Some(event),
+                EngineEvent::SpectrumUpdate { bars, peaks } => latest_spectrum = Some((bars, peaks)),
+                event => {
+                    if matches!(event, EngineEvent::TrackChanged { .. }) {
+                        // Belongs to the previous track.
+                        latest_position = None;
+                    }
+                    apply_event(
+                        &window,
+                        &playlist_model,
+                        &playlist_view_state,
+                        &current_track,
+                        &store,
+                        &presence,
+                        event,
+                    );
+                }
+            }
+        }
+        if let Some(event) = latest_position {
             apply_event(
                 &window,
                 &playlist_model,
@@ -938,6 +993,10 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                 &presence,
                 event,
             );
+        }
+        if let Some((bars, peaks)) = latest_spectrum {
+            update_in_place(&spectrum_bars, bars);
+            update_in_place(&spectrum_peaks, peaks);
         }
         while let Some(event) = presence.try_recv_event() {
             if let Some(settings_window) = settings_window_weak.upgrade() {
@@ -1172,9 +1231,22 @@ fn apply_event(
                 window.set_waveform_played_bucket_index(0);
             }
         }
-        EngineEvent::SpectrumUpdate { bars, peaks } => {
-            window.set_spectrum_bars(ModelRc::from(Rc::new(VecModel::from(bars))));
-            window.set_spectrum_peaks(ModelRc::from(Rc::new(VecModel::from(peaks))));
+        // Coalesced and applied by the poll timer instead (see `wire`).
+        EngineEvent::SpectrumUpdate { .. } => {}
+    }
+}
+
+/// Overwrites `model`'s rows with `values`, only replacing the whole
+/// contents when the length changes (e.g. peaks toggled), so a repeater
+/// bound to it keeps its existing elements.
+fn update_in_place(model: &VecModel<f32>, values: Vec<f32>) {
+    if model.row_count() != values.len() {
+        model.set_vec(values);
+        return;
+    }
+    for (row, value) in values.into_iter().enumerate() {
+        if model.row_data(row) != Some(value) {
+            model.set_row_data(row, value);
         }
     }
 }

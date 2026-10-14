@@ -101,6 +101,17 @@ impl SpectrumAnalyzer {
         self.mono_scratch = vec![0.0; fft_size];
     }
 
+    pub fn fft_size(&self) -> usize {
+        self.config.fft_size
+    }
+
+    /// How long until `due` turns true.
+    pub fn time_until_due(&self) -> std::time::Duration {
+        let interval = std::time::Duration::from_millis(self.config.interval_ms as u64);
+        self.last_analyze
+            .map_or(std::time::Duration::ZERO, |last| interval.saturating_sub(last.elapsed()))
+    }
+
     /// Whether enough time has passed since the last update to honor
     /// `interval_ms` -- callers should skip `analyze` entirely when this is
     /// false, to avoid paying for FFTs nobody will see.

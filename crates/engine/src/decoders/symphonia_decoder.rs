@@ -9,7 +9,10 @@ use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo, TrackType};
 use symphonia::core::io::{MediaSourceStream, MediaSourceStreamOptions};
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::units::Time;
+use symphonia::core::units::{Time, TimeBase};
+
+/// How far before a seek target decoding resumes (see `seek`).
+const SEEK_PREROLL: Duration = Duration::from_millis(100);
 
 /// The built-in [`Decoder`] implementation, backed by `symphonia`. Treated by
 /// `engine::pipeline` exactly like a decoder loaded from a plugin -- it's
@@ -23,6 +26,11 @@ pub struct SymphoniaDecoder {
     /// fit in the caller's `out` buffer yet.
     pending: Vec<f32>,
     pending_pos: usize,
+    time_base: Option<TimeBase>,
+    /// Frames still to discard after a seek: symphonia's accurate seek can
+    /// land before the requested time (MP3 backs up for decoder pre-roll)
+    /// and leaves dropping the difference to the caller.
+    skip_frames: u64,
 }
 
 impl Default for SymphoniaDecoder {
@@ -39,6 +47,8 @@ impl Default for SymphoniaDecoder {
             },
             pending: Vec::new(),
             pending_pos: 0,
+            time_base: None,
+            skip_frames: 0,
         }
     }
 }
@@ -132,6 +142,8 @@ impl Decoder for SymphoniaDecoder {
             duration_ms,
         };
         self.track_id = track_id;
+        self.time_base = track.time_base;
+        self.skip_frames = 0;
         self.format = Some(format);
         self.decoder = Some(decoder);
         self.pending.clear();
@@ -141,8 +153,18 @@ impl Decoder for SymphoniaDecoder {
     }
 
     fn next_frame(&mut self, out: &mut [f32]) -> Result<usize, DecodeError> {
-        if self.pending_pos >= self.pending.len() && !self.decode_next_packet()? {
-            return Ok(0);
+        loop {
+            if self.pending_pos >= self.pending.len() && !self.decode_next_packet()? {
+                return Ok(0);
+            }
+            if self.skip_frames == 0 {
+                break;
+            }
+            let channels = self.info.channels.max(1) as usize;
+            let available_frames = (self.pending.len() - self.pending_pos) / channels;
+            let skip = (self.skip_frames as usize).min(available_frames);
+            self.pending_pos += skip * channels;
+            self.skip_frames -= skip as u64;
         }
 
         let available = self.pending.len() - self.pending_pos;
@@ -154,8 +176,12 @@ impl Decoder for SymphoniaDecoder {
 
     fn seek(&mut self, pos: Duration) -> Result<(), DecodeError> {
         let format = self.format.as_mut().ok_or(DecodeError::SeekUnsupported)?;
-        let time = Time::try_from_secs_f64(pos.as_secs_f64()).unwrap_or(Time::ZERO);
-        format
+        // Land a little early and decode through it: the first packet after
+        // a seek can come out wrong (e.g. MP3's bit reservoir is empty), so
+        // it's decoded only to warm the decoder up, then discarded.
+        let landing = pos.saturating_sub(SEEK_PREROLL);
+        let time = Time::try_from_secs_f64(landing.as_secs_f64()).unwrap_or(Time::ZERO);
+        let seeked = format
             .seek(
                 SeekMode::Accurate,
                 SeekTo::Time {
@@ -164,6 +190,15 @@ impl Decoder for SymphoniaDecoder {
                 },
             )
             .map_err(|e| DecodeError::CorruptStream(e.to_string()))?;
+        let behind = (seeked.required_ts.get() - seeked.actual_ts.get()).max(0) as i128;
+        self.skip_frames = match self.time_base {
+            // Convert timebase units to frames at the output sample rate.
+            Some(tb) => {
+                (behind * tb.numer.get() as i128 * self.info.sample_rate as i128
+                    / tb.denom.get() as i128) as u64
+            }
+            None => behind as u64,
+        } + ((pos - landing).as_secs_f64() * self.info.sample_rate as f64).round() as u64;
         if let Some(decoder) = self.decoder.as_mut() {
             decoder.reset();
         }
@@ -174,5 +209,53 @@ impl Decoder for SymphoniaDecoder {
 
     fn info(&self) -> AudioInfo {
         self.info
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn decode_from(decoder: &mut SymphoniaDecoder, frames: usize, channels: usize) -> Vec<f32> {
+        let mut out = vec![0f32; frames * channels];
+        let mut got = 0;
+        while got < out.len() {
+            let n = decoder.next_frame(&mut out[got..]).unwrap();
+            assert!(n > 0, "stream ended early");
+            got += n;
+        }
+        out
+    }
+
+    /// Seeking lands on exactly the requested sample with correct audio --
+    /// for formats like MP3 where symphonia's seek lands early and the
+    /// first packet afterwards decodes wrong. Needs a real track:
+    /// `OPENBAR_TEST_TRACK=song.mp3 cargo test -p engine seek -- --ignored`.
+    #[test]
+    #[ignore]
+    fn seeks_are_sample_exact() {
+        let Some(path) = std::env::var_os("OPENBAR_TEST_TRACK") else {
+            return;
+        };
+        let path = std::path::PathBuf::from(path);
+        let mut straight = SymphoniaDecoder::new();
+        let info = straight.open(&path).unwrap();
+        let channels = info.channels as usize;
+        let rate = info.sample_rate as f64;
+        let reference = decode_from(&mut straight, (rate * 125.0) as usize, channels);
+
+        for secs in [30.0, 66.75, 120.0] {
+            let mut seeked = SymphoniaDecoder::new();
+            seeked.open(&path).unwrap();
+            seeked.seek(Duration::from_secs_f64(secs)).unwrap();
+            let got = decode_from(&mut seeked, 4096, channels);
+            let start = (secs * rate) as usize * channels;
+            let max_err = got
+                .iter()
+                .zip(&reference[start..start + got.len()])
+                .map(|(a, b)| (a - b).abs())
+                .fold(0f32, f32::max);
+            assert!(max_err < 1e-6, "seek to {secs}s is off by up to {max_err}");
+        }
     }
 }

@@ -12,7 +12,9 @@ use plugin_api::OutputSink;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-const POSITION_UPDATE_INTERVAL: Duration = Duration::from_millis(200);
+/// ~30 fps for the seekbar and waveform cursor.
+const POSITION_UPDATE_INTERVAL: Duration = Duration::from_millis(33);
+
 const LOAD_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const WAVEFORM_BUCKET_COUNT: usize = 400;
@@ -103,10 +105,21 @@ fn run(command_rx: Receiver<EngineCommand>, event_tx: Sender<EngineEvent>) {
     let mut last_position_sent = Instant::now();
 
     loop {
-        let poll_timeout = if state.playback_state == PlaybackState::Playing {
-            Duration::from_millis(0)
-        } else {
-            IDLE_POLL_INTERVAL
+        // While playing, only decode when the output has room for another
+        // chunk, rather than blocking inside the sink's `write`. Otherwise
+        // sleep (still answering commands) exactly until the next thing is
+        // due -- room for a chunk, a spectrum frame, or a position update --
+        // instead of polling, so an idle-ish playback thread stays asleep.
+        let poll_timeout = match state.playback_state {
+            PlaybackState::Playing => {
+                let position_due = POSITION_UPDATE_INTERVAL.saturating_sub(last_position_sent.elapsed());
+                let mut next = state.pipeline.time_until_room().min(position_due);
+                if let Some(spectrum_due) = state.pipeline.time_until_spectrum() {
+                    next = next.min(spectrum_due);
+                }
+                next.min(IDLE_POLL_INTERVAL)
+            }
+            PlaybackState::Paused | PlaybackState::Stopped => IDLE_POLL_INTERVAL,
         };
 
         match command_rx.recv_timeout(poll_timeout) {
@@ -123,22 +136,27 @@ fn run(command_rx: Receiver<EngineCommand>, event_tx: Sender<EngineEvent>) {
             continue;
         }
 
-        match state.pipeline.process_chunk() {
-            Ok(0) => on_track_finished(&mut state, &event_tx),
-            Ok(written) => {
-                state.samples_played += written as u64;
-                if let Some((bars, peaks)) = state.pipeline.take_spectrum() {
-                    let _ = event_tx.send(EngineEvent::SpectrumUpdate { bars, peaks });
+        if state.pipeline.has_room_for_chunk() {
+            match state.pipeline.process_chunk() {
+                Ok(0) => {
+                    on_track_finished(&mut state, &event_tx);
+                    continue;
                 }
-                if last_position_sent.elapsed() >= POSITION_UPDATE_INTERVAL {
-                    send_position_update(&state, &event_tx);
-                    last_position_sent = Instant::now();
+                Ok(written) => state.samples_played += written as u64,
+                Err(e) => {
+                    let _ = event_tx.send(EngineEvent::Error(e.to_string()));
+                    set_playback_state(&mut state, PlaybackState::Stopped, &event_tx);
+                    continue;
                 }
             }
-            Err(e) => {
-                let _ = event_tx.send(EngineEvent::Error(e.to_string()));
-                set_playback_state(&mut state, PlaybackState::Stopped, &event_tx);
-            }
+        }
+
+        if let Some((bars, peaks)) = state.pipeline.audible_spectrum() {
+            let _ = event_tx.send(EngineEvent::SpectrumUpdate { bars, peaks });
+        }
+        if last_position_sent.elapsed() >= POSITION_UPDATE_INTERVAL {
+            send_position_update(&state, &event_tx);
+            last_position_sent = Instant::now();
         }
     }
 }
@@ -465,7 +483,13 @@ fn set_playback_state(
 }
 
 fn send_position_update(state: &EngineState, event_tx: &Sender<EngineEvent>) {
-    let frames_played = state.samples_played / state.channels.max(1) as u64;
+    // What's been heard, not just decoded: the sink still holds the
+    // difference. Right after a track change that's audio from the
+    // previous track, so this stays at 0:00 until the new one is audible.
+    let audible = state
+        .samples_played
+        .saturating_sub(state.pipeline.queued_samples() as u64);
+    let frames_played = audible / state.channels.max(1) as u64;
     let position = Duration::from_secs_f64(frames_played as f64 / state.sample_rate.max(1) as f64);
     let duration = state
         .playlist
