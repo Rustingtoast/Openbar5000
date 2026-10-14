@@ -1,0 +1,163 @@
+import { Button, GroupBox, Palette, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+/// Add or edit the playing track's lyrics and save them into the file
+/// (issue #6), modelled on the reference UI's lyric editor.
+/// "Synchronise selected line" stamps the line under the cursor with the
+/// current playback time ([mm:ss.xx], LRC style) and moves to the next.
+export component LyricsEditorWindow inherits Window {
+    title: "Lyrics Editor" + (root.track-title == "" ? "" : " \u{2014} " + root.track-title);
+    icon: @image-url("assets/icons/app-icon.svg");
+    preferred-width: 900px;
+    preferred-height: 640px;
+    min-width: 640px;
+    min-height: 420px;
+    max-width: 100000px;
+    max-height: 100000px;
+    background: Theme.bg-raised;
+
+    in property <bool> theme-is-dark: true;
+    init => {
+        Palette.color-scheme = root.theme-is-dark ? ColorScheme.dark : ColorScheme.light;
+    }
+    changed theme-is-dark => {
+        Palette.color-scheme = root.theme-is-dark ? ColorScheme.dark : ColorScheme.light;
+    }
+
+    in property <string> track-title;
+    /// The lyrics being edited; two-way bound to the text field.
+    in-out property <string> text;
+    /// UTF-8 byte offset of the text cursor: tells the app which line is
+    /// "selected". Moved with `place-cursor`.
+    out property <int> cursor: input.cursor-position-byte-offset;
+    public function place-cursor(offset: int) {
+        input.set-selection-offsets(offset, offset);
+        input.focus();
+    }
+    in property <string> playback-time: "0:00";
+    in property <bool> is-playing: false;
+    /// "Saving…", "Saved", or what went wrong.
+    in property <string> status;
+    in property <bool> busy: false;
+
+    callback sync-clicked();
+    callback remove-timestamp-clicked();
+    callback seek-back-clicked();
+    callback seek-forward-clicked();
+    callback play-pause-clicked();
+    callback undo-clicked();
+    callback ok-clicked();
+    callback apply-clicked();
+    callback cancel-clicked();
+
+    HorizontalLayout {
+        padding: 12px;
+        spacing: 12px;
+
+        VerticalLayout {
+            width: 220px;
+            spacing: 10px;
+            alignment: start;
+
+            GroupBox {
+                title: "Synchronise";
+                VerticalLayout {
+                    spacing: 6px;
+                    Button {
+                        text: "Synchronise selected line";
+                        enabled: !root.busy;
+                        clicked => { root.sync-clicked(); input.focus(); }
+                    }
+                    Button {
+                        text: "Remove timestamp";
+                        enabled: !root.busy;
+                        clicked => { root.remove-timestamp-clicked(); input.focus(); }
+                    }
+                    Text {
+                        text: "Puts the current playback time in front of the line with the cursor, then moves to the next line.";
+                        wrap: word-wrap;
+                        font-size: 11px;
+                        color: Theme.text-muted;
+                    }
+                }
+            }
+
+            GroupBox {
+                title: "Playback";
+                VerticalLayout {
+                    spacing: 6px;
+                    Text {
+                        text: "Playback time: " + root.playback-time;
+                        color: Theme.text-primary;
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Button { text: "«"; clicked => { root.seek-back-clicked(); } }
+                        Button {
+                            text: root.is-playing ? "Pause" : "Play";
+                            horizontal-stretch: 1;
+                            clicked => { root.play-pause-clicked(); }
+                        }
+                        Button { text: "»"; clicked => { root.seek-forward-clicked(); } }
+                    }
+                }
+            }
+
+            Button {
+                text: "Undo changes";
+                enabled: !root.busy;
+                clicked => { root.undo-clicked(); }
+            }
+        }
+
+        VerticalLayout {
+            spacing: 10px;
+
+            Rectangle {
+                vertical-stretch: 1;
+                background: Theme.bg-base;
+                border-width: 1px;
+                border-color: input.has-focus ? Theme.accent : Theme.text-muted.transparentize(0.6);
+                border-radius: 4px;
+
+                scroll := ScrollView {
+                    input := TextInput {
+                        x: 8px;
+                        y: 8px;
+                        width: scroll.visible-width - 16px;
+                        height: max(self.preferred-height, scroll.visible-height - 16px);
+                        single-line: false;
+                        wrap: word-wrap;
+                        read-only: root.busy;
+                        color: Theme.text-primary;
+                        selection-background-color: Theme.accent.transparentize(0.5);
+                        font-size: 14px;
+                        text <=> root.text;
+                        // Keep the cursor in view while typing / syncing.
+                        cursor-position-changed(position) => {
+                            if position.y + scroll.content-y < 0 {
+                                scroll.content-y = -position.y;
+                            } else if position.y + 24px + scroll.content-y > scroll.visible-height {
+                                scroll.content-y = scroll.visible-height - position.y - 40px;
+                            }
+                        }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.status;
+                    vertical-alignment: center;
+                    color: Theme.text-muted;
+                    overflow: elide;
+                }
+                Button { text: "Cancel"; clicked => { root.cancel-clicked(); } }
+                Button { text: "Apply"; enabled: !root.busy; clicked => { root.apply-clicked(); } }
+                Button { text: "OK"; primary: true; enabled: !root.busy; clicked => { root.ok-clicked(); } }
+            }
+        }
+    }
+}
