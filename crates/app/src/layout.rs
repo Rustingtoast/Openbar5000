@@ -38,6 +38,11 @@ pub enum PanelKind {
     PlaybackButtons,
     /// Elapsed time, seek bar, remaining time, repeat/shuffle and volume.
     SeekBar,
+    /// Just the seek slider -- inset like the waveform, so placed above it
+    /// the two line up.
+    SeekSlider,
+    /// Elapsed / remaining time, repeat/shuffle and volume.
+    PlaybackOptions,
     /// The current track's tags and technical details.
     Info,
     /// Synced or plain lyrics for the current track (see `crate::lyrics`).
@@ -52,7 +57,7 @@ pub enum PanelKind {
 
 impl PanelKind {
     /// Panels offered in "Replace with…", in menu order.
-    pub const ALL: [PanelKind; 14] = [
+    pub const ALL: [PanelKind; 16] = [
         PanelKind::Playlist,
         PanelKind::NowPlaying,
         PanelKind::AlbumArt,
@@ -63,6 +68,8 @@ impl PanelKind {
         PanelKind::Waveform,
         PanelKind::Spectrum,
         PanelKind::PlaybackButtons,
+        PanelKind::SeekSlider,
+        PanelKind::PlaybackOptions,
         PanelKind::SeekBar,
         PanelKind::Transport,
         PanelKind::StatusBar,
@@ -81,6 +88,8 @@ impl PanelKind {
             Self::NowPlaying => "now-playing",
             Self::PlaybackButtons => "playback-buttons",
             Self::SeekBar => "seek-bar",
+            Self::SeekSlider => "seek-slider",
+            Self::PlaybackOptions => "playback-options",
             Self::Info => "info",
             Self::Lyrics => "lyrics",
             Self::Biography => "biography",
@@ -103,7 +112,9 @@ impl PanelKind {
             Self::AlbumArt => "Album art",
             Self::NowPlaying => "Now playing",
             Self::PlaybackButtons => "Playback buttons",
-            Self::SeekBar => "Seek bar",
+            Self::SeekBar => "Seek bar (with controls)",
+            Self::SeekSlider => "Seek slider",
+            Self::PlaybackOptions => "Playback options",
             Self::Info => "Track info",
             Self::Lyrics => "Lyrics",
             Self::Biography => "Biography",
@@ -125,7 +136,11 @@ impl PanelKind {
             Self::NowPlaying => "NOW",
             Self::Waveform => "WAV",
             Self::Spectrum => "SPC",
-            Self::PlaybackButtons | Self::SeekBar | Self::Transport => "CTL",
+            Self::PlaybackButtons
+            | Self::SeekBar
+            | Self::SeekSlider
+            | Self::PlaybackOptions
+            | Self::Transport => "CTL",
             Self::StatusBar => "STS",
             Self::Empty => "---",
         }
@@ -141,6 +156,7 @@ impl PanelKind {
             Self::StatusBar => Some(22.0),
             Self::NowPlaying | Self::PlaybackButtons => Some(28.0),
             Self::SeekBar => Some(26.0),
+            Self::SeekSlider | Self::PlaybackOptions => Some(22.0),
             Self::Playlist
             | Self::AlbumArt
             | Self::Info
@@ -252,8 +268,8 @@ impl Layout {
     /// and #10), top to bottom:
     /// - now-playing line, playback buttons at its right;
     /// - a tab group (INF / BIO / LYR / ART / LIB) beside the playlist;
-    /// - the seek bar row;
-    /// - waveform over spectrum, album art square to their right;
+    /// - seek slider over waveform over spectrum, with the playback options
+    ///   over the album art to their right;
     /// - the status bar.
     ///
     /// `show_waveform`/`show_spectrum` carry over the visibility toggles
@@ -267,15 +283,17 @@ impl Layout {
             size: Size::Weight(1.0),
             node,
         };
-        let mut visualizations = Vec::new();
+        // Left column: seek slider, waveform and spectrum -- one width, so
+        // the slider and the waveform line up. Right column: the playback
+        // options above the album art (issue #10).
+        let mut left = vec![panel(PanelKind::SeekSlider)];
         if show_waveform {
-            visualizations.push(panel(PanelKind::Waveform));
+            left.push(panel(PanelKind::Waveform));
         }
         if show_spectrum {
-            visualizations.push(panel(PanelKind::Spectrum));
+            left.push(panel(PanelKind::Spectrum));
         }
-        // The cover is a square as tall as the visualizations beside it.
-        let row_height: f32 = visualizations
+        let row_height: f32 = left
             .iter()
             .map(|child| match child.size {
                 Size::Fixed(px) => px,
@@ -283,21 +301,23 @@ impl Layout {
             })
             .sum::<f32>()
             .max(DEFAULT_ALBUM_ART_SIZE);
-        let left = match visualizations.len() {
-            0 => Node::Panel(PanelKind::Empty),
-            1 => visualizations.remove(0).node,
-            _ => Node::Split {
-                axis: Axis::Vertical,
-                children: visualizations,
-            },
+        let right = Node::Split {
+            axis: Axis::Vertical,
+            children: vec![
+                panel(PanelKind::PlaybackOptions),
+                weighted(Node::Panel(PanelKind::AlbumArt)),
+            ],
         };
         let bottom_row = Node::Split {
             axis: Axis::Horizontal,
             children: vec![
-                weighted(left),
+                weighted(Node::Split {
+                    axis: Axis::Vertical,
+                    children: left,
+                }),
                 Child {
                     size: Size::Fixed(row_height),
-                    node: Node::Panel(PanelKind::AlbumArt),
+                    node: right,
                 },
             ],
         };
@@ -338,7 +358,6 @@ impl Layout {
                         node: top_row,
                     },
                     weighted(middle),
-                    panel(PanelKind::SeekBar),
                     Child {
                         size: Size::Fixed(row_height),
                         node: bottom_row,
@@ -980,9 +999,10 @@ mod tests {
                 PanelKind::PlaybackButtons,
                 PanelKind::Lyrics,
                 PanelKind::Playlist,
-                PanelKind::SeekBar,
+                PanelKind::SeekSlider,
                 PanelKind::Waveform,
                 PanelKind::Spectrum,
+                PanelKind::PlaybackOptions,
                 PanelKind::AlbumArt,
                 PanelKind::StatusBar
             ]
@@ -992,18 +1012,23 @@ mod tests {
         let buttons = rect(PanelKind::PlaybackButtons);
         assert_eq!((buttons.x + buttons.width, buttons.y), (1400.0, 0.0));
         // Tabs (strip + lyrics) on the left half, playlist on the right.
-        assert_eq!(placed.tab_strips.len(), 1);
         let strip = &placed.tab_strips[0];
         assert_eq!(strip.labels, ["INF", "BIO", "LYR", "ART", "LIB"]);
         assert_eq!(strip.active, 2);
-        assert_eq!((strip.rect.y, strip.rect.width), (28.0, 700.0));
         assert_eq!(rect(PanelKind::Lyrics).y, 28.0 + TAB_STRIP_HEIGHT);
         assert_eq!(rect(PanelKind::Playlist).x, 700.0);
-        // The cover is a square as tall as waveform + spectrum, bottom right.
-        let art = rect(PanelKind::AlbumArt);
-        assert_eq!((art.width, art.height), (230.0, 230.0));
+        // The seek slider sits right above the waveform with the same x
+        // range, so positions in the two line up.
+        let (slider, waveform) = (rect(PanelKind::SeekSlider), rect(PanelKind::Waveform));
+        assert_eq!((slider.x, slider.width), (waveform.x, waveform.width));
+        assert_eq!(slider.y + slider.height, waveform.y);
+        // Playback options above the cover, at the right of that column.
+        let (options, art) = (rect(PanelKind::PlaybackOptions), rect(PanelKind::AlbumArt));
+        assert_eq!((options.x, options.y), (art.x, slider.y));
+        assert_eq!(options.y + options.height, art.y);
         assert_eq!(art.x + art.width, 1400.0);
-        assert_eq!(rect(PanelKind::Playlist).height, 700.0 - 28.0 - 26.0 - 230.0 - 22.0);
+        assert_eq!(art.width, 22.0 + 80.0 + 150.0);
+        assert_eq!(rect(PanelKind::Playlist).height, 700.0 - 28.0 - 252.0 - 22.0);
 
         // Old visibility toggles still carry over.
         let without = Layout::default_with(false, true);

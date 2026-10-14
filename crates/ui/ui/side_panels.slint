@@ -1,4 +1,4 @@
-import { ScrollView } from "std-widgets.slint";
+import { Button, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 
 /// One label/value pair in the Info panel.
@@ -163,6 +163,173 @@ export component TabStripView inherits Rectangle {
             width: 1px;
             height: parent.height - 8px;
             background: Theme.text-muted.transparentize(0.75);
+        }
+    }
+}
+
+/// One of several artists sharing a name, offered in `ArtistView`.
+export struct ArtistCandidate {
+    name: string,
+    detail: string,
+}
+
+/// Artist information (the reference UI's BIO tab), from MusicBrainz and
+/// optionally Wikipedia via `app::artist_info`. Looked up only when the
+/// user clicks the button.
+export component ArtistView inherits Rectangle {
+    /// "nothing", "idle", "loading", "choose", "found", "not-found" or
+    /// "error".
+    in property <string> state: "nothing";
+    /// Namesakes to choose from in the "choose" state.
+    in property <[ArtistCandidate]> candidates: [];
+    callback candidate-clicked(int);
+    callback none-of-these-clicked();
+    in property <string> artist;
+    in property <string> meta;
+    in property <string> genres;
+    in property <string> summary;
+    in property <image> photo;
+    in property <bool> has-photo: false;
+    in property <string> link-label;
+    in property <string> credit;
+    /// Idle: what clicking sends where. Not found / error: what happened.
+    in property <string> message;
+    callback lookup-clicked();
+    callback link-clicked();
+
+    background: Theme.bg-base;
+
+    if root.state == "nothing": Text {
+        text: "Nothing playing";
+        color: Theme.text-muted;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    if root.state == "idle" || root.state == "loading" || root.state == "not-found" || root.state == "error": VerticalLayout {
+        alignment: center;
+        padding: 24px;
+        spacing: 10px;
+        Text {
+            text: root.artist;
+            font-size: 18px;
+            font-weight: 700;
+            color: Theme.text-primary;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+        Text {
+            text: root.state == "loading" ? "Looking up artist information…" : root.message;
+            color: root.state == "error" ? Theme.accent : Theme.text-muted;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+        if root.state != "loading": HorizontalLayout {
+            alignment: center;
+            Button {
+                text: root.state == "idle" ? "Look up artist online" : "Look up again";
+                clicked => { root.lookup-clicked(); }
+            }
+        }
+    }
+
+    if root.state == "choose": ScrollView {
+        VerticalLayout {
+            padding: 16px;
+            spacing: 6px;
+            alignment: start;
+            Text { text: root.artist; font-size: 18px; font-weight: 700; color: Theme.text-primary; }
+            Text {
+                text: "Several artists have this name. Which one is it?";
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+            Rectangle { height: 4px; }
+            for candidate[i] in root.candidates: Rectangle {
+                height: 44px;
+                border-radius: 4px;
+                background: pick.has-hover ? Theme.bg-raised : Theme.bg-sunken;
+                pick := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.candidate-clicked(i); }
+                }
+                VerticalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    alignment: center;
+                    Text { text: candidate.name; font-weight: 700; color: Theme.text-primary; }
+                    if candidate.detail != "": Text {
+                        text: candidate.detail;
+                        font-size: 11px;
+                        color: Theme.text-muted;
+                        overflow: elide;
+                    }
+                }
+            }
+            HorizontalLayout {
+                alignment: start;
+                padding-top: 4px;
+                Button {
+                    text: "None of these";
+                    clicked => { root.none-of-these-clicked(); }
+                }
+            }
+            Text {
+                text: "Your choice is remembered for this artist name.";
+                font-size: 10px;
+                color: Theme.text-muted;
+            }
+        }
+    }
+
+    if root.state == "found": ScrollView {
+        VerticalLayout {
+            padding: 16px;
+            spacing: 12px;
+            alignment: start;
+            HorizontalLayout {
+                spacing: 14px;
+                if root.has-photo: Image {
+                    source: root.photo;
+                    width: 120px;
+                    height: 120px;
+                    image-fit: cover;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 4px;
+                    Text { text: root.artist; font-size: 20px; font-weight: 700; color: Theme.text-primary; wrap: word-wrap; }
+                    if root.meta != "": Text { text: root.meta; color: Theme.text-muted; }
+                    if root.genres != "": Text { text: root.genres; color: Theme.accent; wrap: word-wrap; }
+                }
+            }
+            if root.summary != "": Text {
+                text: root.summary;
+                color: Theme.text-primary;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: 12px;
+                link := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.link-clicked(); }
+                    Text {
+                        text: root.link-label;
+                        color: link.has-hover ? Theme.text-primary : Theme.accent;
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                Button {
+                    text: "Look up again";
+                    clicked => { root.lookup-clicked(); }
+                }
+            }
+            Text {
+                text: root.credit;
+                font-size: 10px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
         }
     }
 }

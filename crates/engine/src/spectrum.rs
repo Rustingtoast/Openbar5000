@@ -30,6 +30,20 @@ pub struct SpectrumConfig {
     /// Minimum time between UI-visible updates; throttled independently of
     /// how often `analyze` is actually called from the decode chunk cadence.
     pub interval_ms: u32,
+    /// MIDI notes of the lowest and highest bar (one bar per semitone),
+    /// like the reference UI's "Notes: F#0 - A8".
+    pub first_note: u8,
+    pub last_note: u8,
+    /// Reference pitch of A4 every note's frequency is derived from (e.g.
+    /// 432 for alternative tunings) -- the reference UI's "Pitch (A4)".
+    pub a4_hz: f32,
+}
+
+impl SpectrumConfig {
+    /// One bar per note from `first_note` to `last_note`.
+    pub fn bar_count(&self) -> usize {
+        self.last_note.saturating_sub(self.first_note) as usize + 1
+    }
 }
 
 impl Default for SpectrumConfig {
@@ -43,20 +57,22 @@ impl Default for SpectrumConfig {
             peak_hold_ms: 250.0,
             gravity_db_per_s2: 50.0,
             interval_ms: 10,
+            first_note: DEFAULT_FIRST_NOTE,
+            last_note: DEFAULT_LAST_NOTE,
+            a4_hz: 440.0,
         }
     }
 }
 
-/// MIDI note of the lowest bar (F#0, ~23 Hz) and the highest (A8, 7040 Hz)
-/// -- the reference UI's default "Notes: F#0 - A8" range.
-pub const FIRST_NOTE: u8 = 18;
-pub const LAST_NOTE: u8 = 117;
-/// One bar per semitone.
-pub const BAR_COUNT: usize = (LAST_NOTE - FIRST_NOTE + 1) as usize;
+/// Default MIDI notes of the lowest bar (F#0, ~23 Hz) and the highest (A8,
+/// 7040 Hz) -- the reference UI's default "Notes: F#0 - A8" range.
+pub const DEFAULT_FIRST_NOTE: u8 = 18;
+pub const DEFAULT_LAST_NOTE: u8 = 117;
 
-/// Frequency (Hz) of MIDI note `note` (fractional for band edges), A4 = 440.
-fn note_frequency(note: f32) -> f32 {
-    440.0 * 2f32.powf((note - 69.0) / 12.0)
+/// Frequency (Hz) of MIDI note `note` (fractional for band edges), tuned so
+/// A4 (note 69) is `a4_hz`.
+fn note_frequency(note: f32, a4_hz: f32) -> f32 {
+    a4_hz * 2f32.powf((note - 69.0) / 12.0)
 }
 
 /// Live magnitude-spectrum analyzer: windows and FFTs a chunk of audio, then
@@ -83,9 +99,9 @@ impl SpectrumAnalyzer {
             window: Vec::new(),
             buffer: Vec::new(),
             mono_scratch: Vec::new(),
-            peak_db: vec![config.min_db; BAR_COUNT],
-            peak_velocity: vec![0.0; BAR_COUNT],
-            peak_hold_remaining_ms: vec![0.0; BAR_COUNT],
+            peak_db: vec![config.min_db; config.bar_count()],
+            peak_velocity: vec![0.0; config.bar_count()],
+            peak_hold_remaining_ms: vec![0.0; config.bar_count()],
             last_analyze: None,
         };
         analyzer.rebuild_fft(config.fft_size);
@@ -95,6 +111,13 @@ impl SpectrumAnalyzer {
     pub fn set_config(&mut self, config: SpectrumConfig) {
         if config.fft_size != self.config.fft_size {
             self.rebuild_fft(config.fft_size);
+        }
+        if config.bar_count() != self.config.bar_count() {
+            // A different note range: start the peak markers afresh.
+            let bars = config.bar_count();
+            self.peak_db = vec![config.min_db; bars];
+            self.peak_velocity = vec![0.0; bars];
+            self.peak_hold_remaining_ms = vec![0.0; bars];
         }
         self.config = config;
     }
@@ -133,7 +156,7 @@ impl SpectrumAnalyzer {
     }
 
     /// Analyzes one chunk of interleaved PCM recorded at `sample_rate` and
-    /// returns `(bars, peaks)`, each `BAR_COUNT` magnitudes normalized to
+    /// returns `(bars, peaks)`, each `bar_count()` magnitudes normalized to
     /// `[0, 1]` for typical program material (not strictly bounded -- loud
     /// peaks can exceed 1.0 before the dB clamp catches up). `peaks` is
     /// empty when disabled.
@@ -172,9 +195,10 @@ impl SpectrumAnalyzer {
         let range = (self.config.max_db - self.config.min_db).max(1.0);
 
         let bin_hz = sample_rate.max(1) as f32 / fft_size as f32;
-        let mut bars = vec![0f32; BAR_COUNT];
+        let mut bars = vec![0f32; self.config.bar_count()];
         for (bar, bar_value) in bars.iter_mut().enumerate() {
-            let (start, end) = note_bins(FIRST_NOTE as usize + bar, bin_hz, half);
+            let note = self.config.first_note as usize + bar;
+            let (start, end) = note_bins(note, self.config.a4_hz, bin_hz, half);
             let mut peak_mag = 0f32;
             for bin in start..end {
                 peak_mag = peak_mag.max(self.buffer[bin].norm() / normalize);
@@ -237,14 +261,14 @@ impl SpectrumAnalyzer {
 /// of its pitch). Low notes are narrower than one bin at typical FFT sizes,
 /// so a band always gets at least the bin nearest its pitch -- neighbouring
 /// bass notes may then share a bin, as on any FFT-based note analyzer.
-fn note_bins(note: usize, bin_hz: f32, half: usize) -> (usize, usize) {
+fn note_bins(note: usize, a4_hz: f32, bin_hz: f32, half: usize) -> (usize, usize) {
     let note = note as f32;
-    let lo = (note_frequency(note - 0.5) / bin_hz).ceil() as usize;
-    let hi = (note_frequency(note + 0.5) / bin_hz).ceil() as usize;
+    let lo = (note_frequency(note - 0.5, a4_hz) / bin_hz).ceil() as usize;
+    let hi = (note_frequency(note + 0.5, a4_hz) / bin_hz).ceil() as usize;
     if lo < hi {
         (lo.min(half), hi.min(half))
     } else {
-        let nearest = ((note_frequency(note) / bin_hz).round() as usize).min(half.saturating_sub(1));
+        let nearest = ((note_frequency(note, a4_hz) / bin_hz).round() as usize).min(half.saturating_sub(1));
         (nearest, nearest + 1)
     }
 }
@@ -307,13 +331,46 @@ mod tests {
             .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / rate).sin() * 0.5)
             .collect();
         let (bars, _) = analyzer.analyze(&tone, 1, 44_100);
-        assert_eq!(bars.len(), BAR_COUNT);
+        assert_eq!(bars.len(), SpectrumConfig::default().bar_count());
         let loudest = bars
             .iter()
             .enumerate()
             .max_by(|a, b| a.1.total_cmp(b.1))
             .unwrap()
             .0;
-        assert_eq!(FIRST_NOTE as usize + loudest, 69, "A4 is MIDI note 69");
+        assert_eq!(DEFAULT_FIRST_NOTE as usize + loudest, 69, "A4 is MIDI note 69");
+    }
+
+    fn loudest_note(config: SpectrumConfig, tone_hz: f32) -> usize {
+        let mut analyzer = SpectrumAnalyzer::new(config);
+        let tone: Vec<f32> = (0..8192)
+            .map(|i| (2.0 * std::f32::consts::PI * tone_hz * i as f32 / 44_100.0).sin() * 0.5)
+            .collect();
+        let (bars, _) = analyzer.analyze(&tone, 1, 44_100);
+        let loudest = bars.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).unwrap().0;
+        config.first_note as usize + loudest
+    }
+
+    #[test]
+    fn note_range_and_reference_pitch_are_configurable() {
+        // A narrower range: C4 (60) to C6 (84) -> 25 bars, and A4 still
+        // lands on note 69.
+        let range = SpectrumConfig {
+            fft_size: 8192,
+            first_note: 60,
+            last_note: 84,
+            ..SpectrumConfig::default()
+        };
+        assert_eq!(range.bar_count(), 25);
+        assert_eq!(loudest_note(range, 440.0), 69);
+        // Tuned to A4 = 432 Hz, a 432 Hz tone is A4 too...
+        let tuned = SpectrumConfig { a4_hz: 432.0, ..range };
+        assert_eq!(loudest_note(tuned, 432.0), 69);
+        // ...and changing the range resizes the peak markers.
+        let mut analyzer = SpectrumAnalyzer::new(SpectrumConfig::default());
+        analyzer.set_config(range);
+        let silence = vec![0.0; 8192];
+        let (bars, peaks) = analyzer.analyze(&silence, 1, 44_100);
+        assert_eq!((bars.len(), peaks.len()), (25, 25));
     }
 }

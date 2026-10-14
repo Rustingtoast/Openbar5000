@@ -99,10 +99,26 @@ export component SettingsWindow inherits Window {
     in property <int> spectrum-peak-hold-ms: 250;
     in property <int> spectrum-gravity: 50;
     in property <int> spectrum-interval-ms: 10;
+    in property <[string]> note-names: [];
+    // Indices into `note-names`, two-way bound to the note ComboBoxes: the
+    // list arrives from Rust after creation, and a ComboBox resets its
+    // selection when its model changes -- which would permanently break a
+    // plain `current-value: ...` binding (it showed "C0" for both).
+    in-out property <int> spectrum-first-note-index: 0;
+    in-out property <int> spectrum-last-note-index: 0;
+    in property <int> spectrum-a4-hz: 440;
 
     in property <bool> discord-presence-enabled: false;
     in property <string> discord-client-id: "";
     in property <string> discord-status-text: "Disabled";
+
+    in property <bool> artist-wikipedia: true;
+    in property <[string]> wikipedia-languages: [];
+    // Two-way bound to the ComboBox: its list arrives from Rust after
+    // creation (see the note-range boxes for why a value binding breaks).
+    in-out property <int> wikipedia-language-index: 0;
+    callback artist-wikipedia-toggled(bool);
+    callback wikipedia-language-changed(int);
 
     callback visualization-fps-changed(string);
     callback theme-row-clicked(string);
@@ -121,6 +137,8 @@ export component SettingsWindow inherits Window {
     callback spectrum-peak-hold-changed(int);
     callback spectrum-gravity-changed(int);
     callback spectrum-interval-changed(int);
+    callback spectrum-note-range-changed(string, string);
+    callback spectrum-a4-changed(int);
 
     VerticalLayout {
         padding: 16px;
@@ -211,6 +229,30 @@ export component SettingsWindow inherits Window {
                             title: "Processing";
                             GridLayout {
                                 spacing: 8px;
+                                Row {
+                                    FieldLabel { text: "Notes:"; }
+                                    first-note := ComboBox {
+                                        model: root.note-names;
+                                        current-index <=> root.spectrum-first-note-index;
+                                        selected(value) => { root.spectrum-note-range-changed(value, last-note.current-value); }
+                                    }
+                                    UnitText { text: "to"; horizontal-alignment: center; }
+                                    last-note := ComboBox {
+                                        model: root.note-names;
+                                        current-index <=> root.spectrum-last-note-index;
+                                        selected(value) => { root.spectrum-note-range-changed(first-note.current-value, value); }
+                                    }
+                                }
+                                Row {
+                                    FieldLabel { text: "Pitch (A4):"; }
+                                    SpinBox {
+                                        minimum: 400;
+                                        maximum: 480;
+                                        value: root.spectrum-a4-hz;
+                                        edited(v) => { root.spectrum-a4-changed(v); }
+                                    }
+                                    UnitText { text: "Hz"; colspan: 2; }
+                                }
                                 Row {
                                     FieldLabel { text: "Channels:"; }
                                     ComboBox {
@@ -334,6 +376,31 @@ export component SettingsWindow inherits Window {
                             UnitText { text: root.discord-status-text; }
                         }
                     }
+
+                    Rectangle { height: 8px; }
+                    SectionHeading { text: "Artist information"; }
+                    HintText {
+                        text: "While the BIO tab is open, the playing artist is looked up online from the track's artist and title -- MusicBrainz identifies the artist (type, country, active years, genres). Nothing is sent while the tab is closed, and results are kept, so each artist is looked up once.";
+                    }
+                    CheckBox {
+                        text: "Include biography and photo from Wikipedia";
+                        checked: root.artist-wikipedia;
+                        toggled => { root.artist-wikipedia-toggled(self.checked); }
+                    }
+                    GridLayout {
+                        spacing: 8px;
+                        Row {
+                            FieldLabel { text: "Language:"; }
+                            ComboBox {
+                                enabled: root.artist-wikipedia;
+                                model: root.wikipedia-languages;
+                                current-index <=> root.wikipedia-language-index;
+                                selected => { root.wikipedia-language-changed(self.current-index); }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                    }
+                    HintText { text: "Articles missing in the chosen language fall back to English."; }
                 }
             }
         }
