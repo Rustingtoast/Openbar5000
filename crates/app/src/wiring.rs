@@ -44,9 +44,8 @@ fn poll_interval(fps: u32) -> Duration {
     Duration::from_millis(1000 / normalize_fps(fps) as u64)
 }
 
-fn fps_label(fps: u32) -> String {
-    format!("{} fps", normalize_fps(fps))
-}
+/// The FFT sizes Preferences offers, in its ComboBox's order.
+const FFT_SIZES: [usize; 5] = [1024, 2048, 4096, 8192, 16384];
 
 /// Resources the caller must keep alive for as long as the window's event
 /// loop runs: the timer that drains [`EngineEvent`]s, and the (initially
@@ -397,10 +396,16 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     window.set_spectrum_max_db(settings.borrow().spectrum.max_db as i32);
     {
         let spectrum = settings.borrow().spectrum;
-        settings_window.set_spectrum_channels(spectrum_channel_label(spectrum.channel_mode).into());
+        settings_window.set_spectrum_channels_index(match spectrum.channel_mode {
+            engine::SpectrumChannelMode::All => 0,
+            engine::SpectrumChannelMode::Left => 1,
+            engine::SpectrumChannelMode::Right => 2,
+        });
         settings_window.set_spectrum_min_db(spectrum.min_db as i32);
         settings_window.set_spectrum_max_db(spectrum.max_db as i32);
-        settings_window.set_spectrum_fft_size(spectrum.fft_size.to_string().into());
+        settings_window.set_spectrum_fft_size_index(
+            FFT_SIZES.iter().position(|&size| size == spectrum.fft_size).unwrap_or(1) as i32,
+        );
         settings_window.set_spectrum_peaks_enabled(spectrum.peaks_enabled);
         settings_window.set_spectrum_peak_hold_ms(spectrum.peak_hold_ms as i32);
         settings_window.set_spectrum_gravity(spectrum.gravity_db_per_s2 as i32);
@@ -479,7 +484,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     // Created here (started at the end of `wire`) so the frame-rate setting
     // can retune it.
     let event_poll_timer = Rc::new(Timer::default());
-    settings_window.set_visualization_fps(fps_label(settings.borrow().visualization_fps).into());
+    settings_window.set_visualization_fps_index(if normalize_fps(settings.borrow().visualization_fps) == 30 { 1 } else { 0 });
     {
         let settings = settings.clone();
         let store = store.clone();
@@ -2770,14 +2775,6 @@ fn presence_status_label(enabled: bool, connected: bool) -> &'static str {
         "Connected"
     } else {
         "Not connected"
-    }
-}
-
-fn spectrum_channel_label(mode: engine::SpectrumChannelMode) -> &'static str {
-    match mode {
-        engine::SpectrumChannelMode::All => "All Channels",
-        engine::SpectrumChannelMode::Left => "Left",
-        engine::SpectrumChannelMode::Right => "Right",
     }
 }
 

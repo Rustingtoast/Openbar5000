@@ -89,14 +89,18 @@ export component SettingsWindow inherits Window {
         Palette.color-scheme = root.theme-is-dark ? ColorScheme.dark : ColorScheme.light;
     }
 
-    in property <string> visualization-fps: "60 fps";
+    // The fixed-choice ComboBoxes below are two-way bound by index, like
+    // the note-range boxes: a ComboBox overwrites a `current-value:`
+    // binding the first time it syncs, so a value the app set after
+    // startup never showed (issue #28).
+    in-out property <int> visualization-fps-index: 0;
     in property <[ThemeListEntry]> themes: [];
     in property <bool> current-theme-is-custom: false;
 
-    in property <string> spectrum-channels: "All Channels";
+    in-out property <int> spectrum-channels-index: 0;
     in property <int> spectrum-min-db: -80;
     in property <int> spectrum-max-db: 0;
-    in property <string> spectrum-fft-size: "2048";
+    in-out property <int> spectrum-fft-size-index: 1;
     in property <bool> spectrum-peaks-enabled: true;
     in property <int> spectrum-peak-hold-ms: 250;
     in property <int> spectrum-gravity: 50;
@@ -242,7 +246,7 @@ export component SettingsWindow inherits Window {
                             FieldLabel { text: "Frame rate:"; }
                             ComboBox {
                                 model: ["60 fps", "30 fps"];
-                                current-value: root.visualization-fps;
+                                current-index <=> root.visualization-fps-index;
                                 selected(value) => { root.visualization-fps-changed(value); }
                             }
                             Rectangle { horizontal-stretch: 1; }
@@ -292,7 +296,7 @@ export component SettingsWindow inherits Window {
                                     ComboBox {
                                         colspan: 3;
                                         model: ["All Channels", "Left", "Right"];
-                                        current-value: root.spectrum-channels;
+                                        current-index <=> root.spectrum-channels-index;
                                         selected(value) => { root.spectrum-channels-changed(value); }
                                     }
                                 }
@@ -317,7 +321,7 @@ export component SettingsWindow inherits Window {
                                     FieldLabel { text: "FFT size:"; }
                                     ComboBox {
                                         model: ["1024", "2048", "4096", "8192", "16384"];
-                                        current-value: root.spectrum-fft-size;
+                                        current-index <=> root.spectrum-fft-size-index;
                                         selected(value) => { root.spectrum-fft-size-changed(value); }
                                     }
                                     UnitText { text: "samples"; colspan: 2; }
