@@ -60,6 +60,10 @@ fn init_logging() {
                 .with_target("symphonia_bundle_mp3", tracing::Level::ERROR)
                 .with_target("symphonia_core", tracing::Level::WARN)
                 .with_target("zbus", tracing::Level::ERROR)
+                // Warns "could not find pipe" on every connection attempt
+                // while Discord isn't running -- expected, and shown as the
+                // status in Preferences instead (issue #29).
+                .with_target("discord_rich_presence", tracing::Level::ERROR)
         });
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer())
