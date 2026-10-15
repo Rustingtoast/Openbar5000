@@ -13,6 +13,7 @@ import { SettingsWindow, ThemeListEntry } from "settings_window.slint";
 import { ThemeEditorWindow } from "theme_editor_window.slint";
 import { LyricsEditorWindow } from "lyrics_editor_window.slint";
 import { VintageEqualizer } from "vintage_equalizer.slint";
+import { LibraryView, LibraryRow } from "library_view.slint";
 
 /// One placed panel (see `app::layout`): which panel to draw and where,
 /// relative to the panel area below the menu bar.
@@ -70,7 +71,7 @@ export struct PanelChoice {
     label: string,
 }
 
-export { PlaylistRow, PropertiesWindow, AboutWindow, SettingsWindow, ThemeListEntry, ThemeEditorWindow, LyricsEditorWindow, Theme }
+export { LibraryRow, PlaylistRow, PropertiesWindow, AboutWindow, SettingsWindow, ThemeListEntry, ThemeEditorWindow, LyricsEditorWindow, Theme }
 
 export component MainWindow inherits Window {
     // Set from Cargo.toml's version at startup (see `app::wiring`).
@@ -237,6 +238,24 @@ export component MainWindow inherits Window {
     in property <int> eq-message-columns;
     in property <string> eq-grid-dots;
     in property <int> eq-grid-columns;
+    // Media library (LIB panel, see `app::media_library`).
+    in property <[LibraryRow]> library-rows: [];
+    in property <[string]> library-groupings: [];
+    in property <int> library-grouping-index: 0;
+    in property <string> library-status;
+    in property <bool> library-has-folders: false;
+    in property <int> library-selected: -1;
+    callback library-grouping-changed(int);
+    callback library-search-edited(string);
+    callback library-row-clicked(int);
+    callback library-row-toggled(int);
+    callback library-row-activated(int);
+    callback library-row-add-clicked(int);
+    callback library-collapse-all-clicked();
+    callback library-rescan-clicked();
+    callback library-add-folder-clicked();
+    callback library-folders-clicked();
+
     callback eq-settings-clicked();
     callback eq-enabled-toggled();
     callback eq-step(int, int);
@@ -468,11 +487,25 @@ export component MainWindow inherits Window {
                 candidate-clicked(i) => { root.artist-candidate-clicked(i); }
                 none-of-these-clicked => { root.artist-none-of-these-clicked(); }
             }
-            if slot.kind == "library": PlaceholderView {
+            if slot.kind == "library": LibraryView {
                 width: parent.width;
                 height: parent.height;
-                title: "Media library";
-                message: "Not available yet. Use File > Open Folder to load music.";
+                rows: root.library-rows;
+                groupings: root.library-groupings;
+                grouping-index: root.library-grouping-index;
+                status: root.library-status;
+                has-folders: root.library-has-folders;
+                selected: root.library-selected;
+                grouping-changed(i) => { root.library-grouping-changed(i); }
+                search-edited(text) => { root.library-search-edited(text); }
+                row-clicked(i) => { root.library-row-clicked(i); }
+                row-toggled(i) => { root.library-row-toggled(i); }
+                row-activated(i) => { root.library-row-activated(i); }
+                row-add-clicked(i) => { root.library-row-add-clicked(i); }
+                collapse-all-clicked => { root.library-collapse-all-clicked(); }
+                rescan-clicked => { root.library-rescan-clicked(); }
+                add-folder-clicked => { root.library-add-folder-clicked(); }
+                folders-clicked => { root.library-folders-clicked(); }
             }
             if slot.kind == "equalizer": VintageEqualizer {
                 width: parent.width;

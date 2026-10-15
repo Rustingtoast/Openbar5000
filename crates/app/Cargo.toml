@@ -25,6 +25,7 @@ serde_json.workspace = true
 ureq.workspace = true
 image.workspace = true
 rusqlite.workspace = true
+notify.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 

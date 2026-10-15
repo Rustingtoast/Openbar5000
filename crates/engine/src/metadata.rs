@@ -370,6 +370,66 @@ pub fn load_metadata_parallel(
         .collect()
 }
 
+/// The tags the media library indexes -- a lighter read than
+/// [`load_metadata`]: no cover art is loaded, let alone decoded.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LibraryTags {
+    pub title: String,
+    pub artist: String,
+    pub album_artist: String,
+    pub album: String,
+    pub track_number: Option<u32>,
+    pub disc_number: Option<u32>,
+    pub date: String,
+    pub genre: String,
+    pub duration: Duration,
+}
+
+/// Reads [`LibraryTags`]; like `load_metadata`, an unreadable file still
+/// gets an entry, titled after its file name.
+pub fn read_library_tags(path: &Path) -> LibraryTags {
+    let fallback_title = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tagged_file = lofty::probe::Probe::open(path)
+        .map(|probe| probe.options(lofty::config::ParseOptions::new().read_cover_art(false)))
+        .and_then(|probe| probe.read());
+    let Ok(tagged_file) = tagged_file else {
+        return LibraryTags {
+            title: fallback_title,
+            ..Default::default()
+        };
+    };
+    let duration = Duration::from_secs_f64(tagged_file.properties().duration().as_secs_f64());
+    let Some(tag) = best_tag(&tagged_file) else {
+        return LibraryTags {
+            title: fallback_title,
+            duration,
+            ..Default::default()
+        };
+    };
+    let text = |value: Option<std::borrow::Cow<'_, str>>| {
+        value.map(|s| s.trim().to_string()).unwrap_or_default()
+    };
+    LibraryTags {
+        title: Some(text(tag.title()))
+            .filter(|title| !title.is_empty())
+            .unwrap_or(fallback_title),
+        artist: text(tag.artist()),
+        album_artist: tag
+            .get_string(lofty::tag::ItemKey::AlbumArtist)
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default(),
+        album: text(tag.album()),
+        track_number: tag.track(),
+        disc_number: tag.disk(),
+        date: tag.date().map(|d| d.to_string()).unwrap_or_default(),
+        genre: text(tag.genre()),
+        duration,
+    }
+}
+
 /// Reads tag + duration metadata for the playlist grid. Best-effort: a file
 /// lofty can't parse still gets a `TrackMetadata` falling back to its file
 /// name, rather than failing the whole playlist load.

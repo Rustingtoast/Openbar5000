@@ -37,6 +37,8 @@ pub enum EngineCommand {
     /// 0.0 (silent) to 1.0 (unity gain).
     SetVolume(f32),
     LoadPlaylist(Vec<std::path::PathBuf>),
+    /// Adds tracks to the end of the playlist, keeping what's playing.
+    AppendToPlaylist(Vec<std::path::PathBuf>),
     /// Recursively scans a folder for audio files and loads them as the
     /// playlist (done on the engine thread so a big or slow folder never
     /// blocks the UI). Sends `EngineEvent::Error` instead, leaving the

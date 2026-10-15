@@ -4,6 +4,7 @@ use crate::discord_presence::{
 use crate::layout::{drop_at, drop_preview, Axis, DragStart, Drop, Layout, PanelKind, Placement, Side};
 use crate::artist_info::{self, ArtistInfo, Candidate, Outcome, WIKIPEDIA_LANGUAGES};
 use crate::equalizer::Equalizer;
+use crate::media_library::MediaLibrary;
 use crate::lyrics::Lyrics;
 use crate::media_keys::{MediaAction, MediaKeys};
 use crate::platform;
@@ -60,6 +61,7 @@ pub struct UiHandles {
     pub theme_editor_window: ThemeEditorWindow,
     pub lyrics_editor_window: LyricsEditorWindow,
     pub equalizer: Rc<Equalizer>,
+    pub media_library: Rc<MediaLibrary>,
 }
 
 /// Shared UI-thread state kept in sync with the engine's playlist, so any
@@ -181,6 +183,14 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     window.set_playlist_grouping(settings.borrow().playlist_grouping.as_str().into());
 
     let equalizer = Equalizer::wire(
+        window,
+        &settings_window,
+        engine.clone(),
+        store.clone(),
+        settings.clone(),
+    );
+
+    let media_library = MediaLibrary::wire(
         window,
         &settings_window,
         engine.clone(),
@@ -1061,8 +1071,30 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         });
     }
     {
+        // The slider only shows `volume` while it isn't being dragged, so
+        // it must be written back here -- otherwise it snaps back to the
+        // old value on release (issue #27). Saved once the slider settles.
+        let initial = settings.borrow().volume;
+        window.set_volume(initial);
+        engine.send(EngineCommand::SetVolume(initial));
         let engine = engine.clone();
-        window.on_volume_changed(move |volume| engine.send(EngineCommand::SetVolume(volume)));
+        let window_weak = window.as_weak();
+        let settings = settings.clone();
+        let store = store.clone();
+        let save_timer = Rc::new(Timer::default());
+        window.on_volume_changed(move |volume| {
+            let volume = volume.clamp(0.0, 1.0);
+            if let Some(window) = window_weak.upgrade() {
+                window.set_volume(volume);
+            }
+            engine.send(EngineCommand::SetVolume(volume));
+            settings.borrow_mut().volume = volume;
+            let settings = settings.clone();
+            let store = store.clone();
+            save_timer.start(TimerMode::SingleShot, Duration::from_millis(500), move || {
+                settings.borrow().save(&store);
+            });
+        });
     }
     {
         let engine = engine.clone();
@@ -1223,6 +1255,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         theme_editor_window,
         lyrics_editor_window,
         equalizer,
+        media_library,
     }
 }
 

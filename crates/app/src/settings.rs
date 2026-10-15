@@ -33,10 +33,16 @@ pub struct Settings {
     pub artist_wikipedia: bool,
     /// Wikipedia edition to read (falls back to English).
     pub artist_wikipedia_language: String,
+    /// Playback volume, 0.0 to 1.0.
+    pub volume: f32,
     /// The graphic equalizer (issue #7).
     pub equalizer: EqualizerSettings,
     /// Shows the Equalizer tab in Preferences as a hardware faceplate.
     pub equalizer_vintage_look: bool,
+    /// The media library's music folders (see `media_library`).
+    pub library_folders: Vec<PathBuf>,
+    /// How the LIB panel groups the library (`media_library::Grouping` id).
+    pub library_grouping: String,
 }
 
 impl Default for Settings {
@@ -54,8 +60,11 @@ impl Default for Settings {
             discord_client_id: String::new(),
             artist_wikipedia: true,
             artist_wikipedia_language: "en".to_string(),
+            volume: 1.0,
             equalizer: EqualizerSettings::default(),
             equalizer_vintage_look: false,
+            library_folders: Vec::new(),
+            library_grouping: "artist-album".to_string(),
         }
     }
 }
@@ -213,8 +222,21 @@ impl Settings {
                 settings.artist_wikipedia_language = v;
             }
         }
+        if let Some(v) = get("volume").and_then(|v| v.parse::<f32>().ok()) {
+            if v.is_finite() {
+                settings.volume = v.clamp(0.0, 1.0);
+            }
+        }
         if let Some(v) = get("eq_enabled") {
             settings.equalizer.enabled = v == "true";
+        }
+        if let Some(folders) = get("library_folders")
+            .and_then(|json| serde_json::from_str::<Vec<PathBuf>>(&json).ok())
+        {
+            settings.library_folders = folders;
+        }
+        if let Some(v) = get("library_grouping") {
+            settings.library_grouping = v;
         }
         if let Some(v) = get("eq_vintage_look") {
             settings.equalizer_vintage_look = v == "true";
@@ -275,8 +297,14 @@ impl Settings {
             ("discord_client_id", self.discord_client_id.clone()),
             ("artist_wikipedia", self.artist_wikipedia.to_string()),
             ("artist_wikipedia_language", self.artist_wikipedia_language.clone()),
+            ("volume", self.volume.to_string()),
             ("eq_enabled", self.equalizer.enabled.to_string()),
             ("eq_vintage_look", self.equalizer_vintage_look.to_string()),
+            (
+                "library_folders",
+                serde_json::to_string(&self.library_folders).unwrap_or_else(|_| "[]".into()),
+            ),
+            ("library_grouping", self.library_grouping.clone()),
             (
                 "eq_gains",
                 self.equalizer.gains_db.map(|gain| gain.to_string()).join(","),

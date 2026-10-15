@@ -1,3 +1,4 @@
+use crate::media_library::LibraryTrack;
 use crate::theme::{ThemeColors, ThemeEntry};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
@@ -57,6 +58,25 @@ const MIGRATIONS: &[&str] = &[
         fetched_at INTEGER NOT NULL
     );
     "#,
+    // v3: the media library index (see `media_library`): one row per audio
+    // file under the music folders, with the tags the LIB panel groups by.
+    // `modified`/`size` tell a rescan which files need reading again.
+    r#"
+    CREATE TABLE library_tracks (
+        path         TEXT PRIMARY KEY,
+        modified     INTEGER NOT NULL,
+        size         INTEGER NOT NULL,
+        title        TEXT NOT NULL,
+        artist       TEXT NOT NULL,
+        album_artist TEXT NOT NULL,
+        album        TEXT NOT NULL,
+        track        INTEGER,
+        disc         INTEGER,
+        date         TEXT NOT NULL,
+        genre        TEXT NOT NULL,
+        duration_ms  INTEGER NOT NULL
+    );
+    "#,
 ];
 
 /// The id of the one playlist this app currently exposes in the UI. The
@@ -113,6 +133,80 @@ impl Store {
             params![key, data, photo, now],
         ) {
             tracing::warn!("failed to cache artist info: {e}");
+        }
+    }
+
+    // --- media library ---------------------------------------------------
+
+    pub fn library_tracks(&self) -> Vec<LibraryTrack> {
+        let result = (|| -> rusqlite::Result<Vec<LibraryTrack>> {
+            let mut stmt = self.conn.prepare(
+                "SELECT path, modified, size, title, artist, album_artist, album, track, disc,
+                        date, genre, duration_ms
+                 FROM library_tracks",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok(LibraryTrack {
+                    path: PathBuf::from(row.get::<_, String>(0)?),
+                    modified: row.get(1)?,
+                    size: row.get::<_, i64>(2)? as u64,
+                    tags: engine::LibraryTags {
+                        title: row.get(3)?,
+                        artist: row.get(4)?,
+                        album_artist: row.get(5)?,
+                        album: row.get(6)?,
+                        track_number: row.get(7)?,
+                        disc_number: row.get(8)?,
+                        date: row.get(9)?,
+                        genre: row.get(10)?,
+                        duration: std::time::Duration::from_millis(row.get::<_, i64>(11)?.max(0) as u64),
+                    },
+                })
+            })?;
+            rows.collect()
+        })();
+        result.unwrap_or_else(|e| {
+            tracing::warn!("failed to load the media library: {e}");
+            Vec::new()
+        })
+    }
+
+    /// Adds or updates `upserts` and drops `removed`, in one transaction.
+    pub fn update_library(&self, upserts: &[LibraryTrack], removed: &[PathBuf]) {
+        let result = (|| -> rusqlite::Result<()> {
+            let tx = self.conn.unchecked_transaction()?;
+            {
+                let mut insert = tx.prepare(
+                    "INSERT OR REPLACE INTO library_tracks (path, modified, size, title, artist,
+                        album_artist, album, track, disc, date, genre, duration_ms)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                )?;
+                for track in upserts {
+                    let tags = &track.tags;
+                    insert.execute(params![
+                        track.path.to_string_lossy(),
+                        track.modified,
+                        track.size as i64,
+                        tags.title,
+                        tags.artist,
+                        tags.album_artist,
+                        tags.album,
+                        tags.track_number,
+                        tags.disc_number,
+                        tags.date,
+                        tags.genre,
+                        tags.duration.as_millis() as i64,
+                    ])?;
+                }
+                let mut delete = tx.prepare("DELETE FROM library_tracks WHERE path = ?1")?;
+                for path in removed {
+                    delete.execute(params![path.to_string_lossy()])?;
+                }
+            }
+            tx.commit()
+        })();
+        if let Err(e) = result {
+            tracing::warn!("failed to update the media library: {e}");
         }
     }
 

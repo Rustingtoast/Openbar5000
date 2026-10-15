@@ -3,6 +3,7 @@ mod discord_presence;
 mod equalizer;
 mod layout;
 mod lyrics;
+mod media_library;
 mod media_keys;
 mod platform;
 mod playlist_rows;

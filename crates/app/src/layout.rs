@@ -49,7 +49,7 @@ pub enum PanelKind {
     Lyrics,
     /// Artist biography -- placeholder until there's a source for it.
     Biography,
-    /// Media library browser -- placeholder until the library exists.
+    /// The media library browser (see `crate::media_library`).
     Library,
     /// The equalizer as a vintage hardware unit with a VFD (issue #7).
     Equalizer,

@@ -250,6 +250,7 @@ fn handle_command(
             state.pipeline.set_volume(state.volume);
         }
         EngineCommand::LoadPlaylist(paths) => load_playlist(state, paths, event_tx),
+        EngineCommand::AppendToPlaylist(paths) => append_to_playlist(state, paths, event_tx),
         EngineCommand::LoadFolder(dir) => {
             let paths = scan_audio_files(&dir);
             if paths.is_empty() {
@@ -359,6 +360,31 @@ fn load_playlist(
     state.samples_played = 0;
     state.queue.clear();
     rebuild_shuffle_order(state, None);
+    send_playlist_update(state, event_tx);
+}
+
+fn append_to_playlist(
+    state: &mut EngineState,
+    paths: Vec<std::path::PathBuf>,
+    event_tx: &Sender<EngineEvent>,
+) {
+    if paths.is_empty() {
+        return;
+    }
+    let metadata = load_metadata_with_progress(&paths, event_tx);
+    let current = state.playlist.current_index();
+    let mut tracks = state.playlist.tracks().to_vec();
+    tracks.extend(
+        paths
+            .into_iter()
+            .zip(metadata)
+            .map(|(path, metadata)| Track { path, metadata }),
+    );
+    state.playlist = Playlist::from_tracks(tracks);
+    if let Some(index) = current {
+        state.playlist.set_current_index(index);
+    }
+    rebuild_shuffle_order(state, current);
     send_playlist_update(state, event_tx);
 }
 

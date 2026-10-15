@@ -18,7 +18,8 @@ pub use dsp::{EqualizerSettings, EQ_BANDS_HZ, EQ_BAND_COUNT, EQ_MAX_DB};
 pub use events::{EngineEvent, PlaybackState};
 pub use library::{scan_audio_files, AUDIO_EXTENSIONS};
 pub use metadata::{
-    load_cover_art, load_metadata, read_lyrics, write_lyrics, COVER_THUMBNAIL_SIZE,
+    load_cover_art, load_metadata, read_library_tags, read_lyrics, write_lyrics, LibraryTags,
+    COVER_THUMBNAIL_SIZE,
 };
 pub use playback_engine::PlaybackEngine;
 pub use playlist::{CoverThumbnail, Playlist, Track, TrackMetadata};

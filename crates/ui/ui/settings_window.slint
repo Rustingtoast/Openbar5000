@@ -158,6 +158,13 @@ export component SettingsWindow inherits Window {
     in property <[string]> eq-preset-names;
     in property <int> eq-preset-index;
     in property <string> eq-status;
+    // Media Library tab, driven by `app::media_library`.
+    in property <[string]> library-folders: [];
+    in property <string> library-status;
+    callback library-add-folder-clicked();
+    callback library-remove-folder-clicked(int);
+    callback library-rescan-clicked();
+
     callback eq-band-changed(int, int);
     callback eq-enabled-toggled(bool);
     callback eq-zero-all-clicked();
@@ -393,6 +400,65 @@ export component SettingsWindow inherits Window {
                     load-preset-clicked => { root.eq-load-preset-clicked(); }
                     save-preset-clicked => { root.eq-save-preset-clicked(); }
                     preset-chosen(index) => { root.eq-preset-chosen(index); }
+                }
+            }
+
+            Tab {
+                title: "Media Library";
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 8px;
+
+                    SectionHeading { text: "Music folders"; }
+                    HintText { text: "Everything in these folders shows up in the LIB panel. They're watched, so added, changed and removed files are picked up automatically."; }
+                    Rectangle {
+                        vertical-stretch: 1;
+                        min-height: 120px;
+                        border-width: 1px;
+                        border-radius: 4px;
+                        border-color: Theme.text-muted.transparentize(0.6);
+                        background: Theme.bg-sunken;
+                        if root.library-folders.length == 0: Text {
+                            text: "No music folders yet.";
+                            color: Theme.text-muted;
+                        }
+                        ScrollView {
+                            VerticalLayout {
+                                padding: 4px;
+                                spacing: 2px;
+                                alignment: start;
+                                for folder[i] in root.library-folders: HorizontalLayout {
+                                    spacing: 8px;
+                                    padding-left: 6px;
+                                    Text {
+                                        horizontal-stretch: 1;
+                                        text: folder;
+                                        overflow: elide;
+                                        vertical-alignment: center;
+                                        color: Theme.text-primary;
+                                    }
+                                    Button {
+                                        text: "Remove";
+                                        clicked => { root.library-remove-folder-clicked(i); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Button { text: "Add Folder..."; clicked => { root.library-add-folder-clicked(); } }
+                        Button { text: "Rescan"; clicked => { root.library-rescan-clicked(); } }
+                        Text {
+                            horizontal-stretch: 1;
+                            text: root.library-status;
+                            vertical-alignment: center;
+                            horizontal-alignment: right;
+                            overflow: elide;
+                            font-size: 11px;
+                            color: Theme.text-muted;
+                        }
+                    }
                 }
             }
 
