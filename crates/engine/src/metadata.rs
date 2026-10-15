@@ -1,6 +1,7 @@
 use crate::playlist::{CoverThumbnail, TrackMetadata};
 use lofty::file::{FileType, TaggedFileExt};
 use lofty::prelude::{Accessor, AudioFile};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,6 +34,35 @@ pub const COVER_THUMBNAIL_SIZE: u32 = 96;
 /// fit `COVER_THUMBNAIL_SIZE`. `None` if it doesn't decode.
 fn cover_thumbnail(bytes: &[u8]) -> Option<CoverThumbnail> {
     scaled_cover(bytes, COVER_THUMBNAIL_SIZE)
+}
+
+/// Thumbnails already made, by a hash of the embedded image's bytes: an
+/// album's tracks usually all embed the same cover, and decoding a large
+/// JPEG/PNG is by far the slowest part of reading a track (~97% of loading
+/// a playlist of tagged albums), so each distinct cover is decoded once.
+/// Each entry is a `OnceLock` so loader threads that meet the same new
+/// cover at once wait for one decode instead of all doing it.
+type CoverSlot = Arc<std::sync::OnceLock<Option<Arc<CoverThumbnail>>>>;
+static COVER_CACHE: std::sync::Mutex<Option<HashMap<u64, CoverSlot>>> = std::sync::Mutex::new(None);
+/// Distinct covers kept (at ~37 KB each) before the cache starts over.
+const COVER_CACHE_LIMIT: usize = 4096;
+
+fn shared_cover_thumbnail(bytes: &[u8]) -> Option<Arc<CoverThumbnail>> {
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        bytes.hash(&mut hasher);
+        hasher.finish()
+    };
+    let slot = {
+        let mut cache = COVER_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        let cache = cache.get_or_insert_with(HashMap::new);
+        if cache.len() >= COVER_CACHE_LIMIT && !cache.contains_key(&key) {
+            cache.clear();
+        }
+        cache.entry(key).or_default().clone()
+    };
+    slot.get_or_init(|| cover_thumbnail(bytes).map(Arc::new)).clone()
 }
 
 /// Reads `path`'s embedded cover art at up to `max_size` px on its longest
@@ -462,6 +492,7 @@ pub fn load_metadata(path: &Path) -> TrackMetadata {
     };
     let genre = tag.and_then(|tag| tag.genre()).map(|g| g.trim().to_string()).unwrap_or_default();
     let composer = text(lofty::tag::ItemKey::Composer);
+    let album_artist = text(lofty::tag::ItemKey::AlbumArtist);
     let bpm = [lofty::tag::ItemKey::IntegerBpm, lofty::tag::ItemKey::Bpm]
         .into_iter()
         .find_map(|key| tag?.get_string(key)?.trim().parse::<f32>().ok())
@@ -479,9 +510,7 @@ pub fn load_metadata(path: &Path) -> TrackMetadata {
             tag.track(),
             tag.disk(),
             tag.date().map(|d| d.to_string()).unwrap_or_default(),
-            first_picture(&tagged_file)
-                .and_then(cover_thumbnail)
-                .map(Arc::new),
+            first_picture(&tagged_file).and_then(shared_cover_thumbnail),
         ),
         None => (
             fallback_title,
@@ -497,6 +526,7 @@ pub fn load_metadata(path: &Path) -> TrackMetadata {
     TrackMetadata {
         title,
         artist,
+        album_artist,
         album,
         track_number,
         disc_number,

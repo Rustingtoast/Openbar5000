@@ -20,6 +20,9 @@ pub struct Settings {
     pub spectrum: SpectrumConfig,
     pub playback_mode: PlaybackMode,
     pub playlist_grouping: PlaylistGrouping,
+    /// Smart grouping (Preferences > Appearance): albums matched loosely and
+    /// their tracks gathered together (see `playlist_rows::smart_order`).
+    pub playlist_smart_grouping: bool,
     /// The Sorting menu's kept sort order.
     pub playlist_sort: SortMode,
     /// Plain song list instead of album groups (Preferences > Appearance).
@@ -65,6 +68,7 @@ impl Default for Settings {
             playlist_grouping: PlaylistGrouping::default(),
             playlist_list_view: false,
             playlist_sort: SortMode::Manual,
+            playlist_smart_grouping: true,
             visualization_fps: 60,
             discord_presence_enabled: false,
             discord_client_id: String::new(),
@@ -218,6 +222,9 @@ impl Settings {
         if let Some(v) = get("playback_mode") {
             settings.playback_mode = playback_mode_from_str(&v);
         }
+        if let Some(v) = get("playlist_smart_grouping") {
+            settings.playlist_smart_grouping = v == "true";
+        }
         if let Some(v) = get("playlist_sort") {
             settings.playlist_sort = SortMode::from_str(&v);
         }
@@ -312,6 +319,7 @@ impl Settings {
                 playback_mode_to_str(self.playback_mode).to_string(),
             ),
             ("playlist_sort", self.playlist_sort.as_str().to_string()),
+            ("playlist_smart_grouping", self.playlist_smart_grouping.to_string()),
             (
                 "playlist_view",
                 if self.playlist_list_view { "list" } else { "album" }.to_string(),

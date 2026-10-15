@@ -96,6 +96,8 @@ export component SettingsWindow inherits Window {
     in-out property <int> visualization-fps-index: 1;
     /// 0: album view, 1: list view.
     in-out property <int> playlist-view-index: 0;
+    in property <bool> playlist-smart-grouping: true;
+    callback playlist-smart-grouping-toggled(bool);
     callback playlist-view-changed(int);
     /// How the window is drawn (see `app::wiring::report_renderer`).
     in property <string> renderer-info: "\u{2014}";
@@ -218,6 +220,12 @@ export component SettingsWindow inherits Window {
                         }
                     }
                     HintText { text: "Album view groups songs under album headers with cover art; list view shows every song as a plain row with artist and album columns."; }
+                    CheckBox {
+                        text: "Smart grouping";
+                        checked: root.playlist-smart-grouping;
+                        toggled => { root.playlist-smart-grouping-toggled(self.checked); }
+                    }
+                    HintText { text: "Keeps an album together even when its files are tagged inconsistently: \u{201c}feat.\u{201d} credits and small differences in the album name are ignored, files without an album tag group by folder, and an album's tracks are moved next to each other in track order when they're added."; }
 
                     Rectangle { height: 8px; }
                     SectionHeading { text: "Theme"; }

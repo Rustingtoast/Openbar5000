@@ -1,0 +1,40 @@
+import { Theme } from "theme.slint";
+
+/// A ring of dots with a bright head running around it: "still loading",
+/// so a cover on its way isn't mistaken for a missing one. Fades in only
+/// once `active` has been on for a moment, so fast loads don't flicker.
+export component Spinner inherits Rectangle {
+    in property <bool> active;
+    in property <color> dot-color: Theme.text-primary;
+
+    property <length> size: Math.min(self.width, self.height);
+    // 0..8: where the bright dot is, one lap per 0.9s.
+    property <float> head: Math.mod(animation-tick() / 1ms, 900) / 900 * 8;
+
+    opacity: 0;
+    states [
+        spinning when root.active: {
+            opacity: 1;
+            in { animate opacity { duration: 150ms; delay: 200ms; } }
+            out { animate opacity { duration: 100ms; } }
+        }
+    ]
+
+    if root.active: Rectangle {
+        // A soft disc behind, so the dots read on any cover.
+        width: root.size;
+        height: root.size;
+        border-radius: root.size / 2;
+        background: Theme.bg-base.transparentize(0.35);
+    }
+    for i in (root.active ? 8 : 0): Rectangle {
+        width: root.size * 0.14;
+        height: self.width;
+        border-radius: self.width / 2;
+        x: (root.width - self.width) / 2 + Math.cos(i * 45deg) * root.size * 0.32;
+        y: (root.height - self.height) / 2 + Math.sin(i * 45deg) * root.size * 0.32;
+        background: root.dot-color;
+        // Brightest at the head, fading along the trail behind it.
+        opacity: 1 - 0.85 * Math.mod(root.head - i + 8, 8) / 8;
+    }
+}

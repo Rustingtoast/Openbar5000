@@ -317,6 +317,43 @@ fn builtin_entries() -> Vec<ThemeEntry> {
                 spectrum_bar: rgb(0x3f, 0xb9, 0x50),
             },
         },
+        // Clair Obscur: Expedition 33: Belle Époque/Art Deco -- warm
+        // near-black, ivory text, gold ornament, and the Paintress's crimson
+        // in the spectrum, flaring into gold as it gets loud.
+        ThemeEntry {
+            id: "clair_obscur".into(),
+            label: "Clair Obscur: Expedition 33".into(),
+            is_custom: false,
+            colors: ThemeColors {
+                bg_base: rgb(0x0d, 0x0b, 0x0a),
+                bg_raised: rgb(0x17, 0x13, 0x11),
+                bg_sunken: rgb(0x08, 0x07, 0x06),
+                text_primary: rgb(0xec, 0xe3, 0xd0),
+                text_muted: rgb(0x8c, 0x82, 0x73),
+                accent: rgb(0xc9, 0xa4, 0x5c),
+                accent_text: rgb(0x0d, 0x0b, 0x0a),
+                waveform_unplayed: rgb(0x3a, 0x30, 0x2a),
+                spectrum_bar: rgb(0x8e, 0x1f, 0x26),
+            },
+        },
+        // Fallout's Pip-Boy: everything in one green phosphor on a dark CRT,
+        // brighter where it matters.
+        ThemeEntry {
+            id: "pip_boy".into(),
+            label: "Pip-Boy".into(),
+            is_custom: false,
+            colors: ThemeColors {
+                bg_base: rgb(0x07, 0x12, 0x0a),
+                bg_raised: rgb(0x0b, 0x1b, 0x0f),
+                bg_sunken: rgb(0x04, 0x0b, 0x06),
+                text_primary: rgb(0x3c, 0xff, 0x7a),
+                text_muted: rgb(0x2a, 0x9a, 0x4c),
+                accent: rgb(0x3c, 0xff, 0x7a),
+                accent_text: rgb(0x04, 0x10, 0x0a),
+                waveform_unplayed: rgb(0x14, 0x38, 0x1f),
+                spectrum_bar: rgb(0x1b, 0x5c, 0x30),
+            },
+        },
     ]
 }
 

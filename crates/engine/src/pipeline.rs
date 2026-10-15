@@ -102,6 +102,8 @@ pub struct Pipeline {
     plugin_dsp_chain: Vec<Box<dyn Dsp>>,
     equalizer: EqualizerDsp,
     gain: GainDsp,
+    /// Kept to hand to a replacement sink (see `replace_sink`).
+    volume: f32,
     sink: Box<dyn OutputSink>,
     channels: u16,
     sample_rate: u32,
@@ -120,6 +122,7 @@ impl Pipeline {
             plugin_dsp_chain: Vec::new(),
             equalizer: EqualizerDsp::new(),
             gain: GainDsp::new(1.0),
+            volume: 1.0,
             sink,
             channels: 2,
             sample_rate: 44_100,
@@ -131,8 +134,20 @@ impl Pipeline {
         }
     }
 
+    /// In the sink when it can (heard at once), else on the samples.
     pub fn set_volume(&mut self, volume: f32) {
-        self.gain.set_volume(volume);
+        self.volume = volume;
+        if self.sink.set_volume(volume) {
+            self.gain.set_volume(1.0);
+        } else {
+            self.gain.set_volume(volume);
+        }
+    }
+
+    /// Drops the audio queued in the sink but not yet heard.
+    pub fn flush(&mut self) {
+        self.sink.flush();
+        self.history.clear();
     }
 
     pub fn set_equalizer(&mut self, settings: EqualizerSettings) {
@@ -203,6 +218,7 @@ impl Pipeline {
         }
         self.sink = sink;
         self.history.clear();
+        self.set_volume(self.volume);
         Ok(())
     }
 
@@ -292,6 +308,60 @@ impl Pipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
+
+    /// Records what reaches it; "plays" nothing, so writes just queue.
+    #[derive(Default)]
+    struct RecordingSink {
+        queued: Arc<Mutex<Vec<f32>>>,
+        volume: Arc<Mutex<Option<f32>>>,
+    }
+
+    impl OutputSink for RecordingSink {
+        fn configure(&mut self, _: u32, _: u16) -> Result<(), OutputError> {
+            Ok(())
+        }
+        fn write(&mut self, samples: &[f32]) -> Result<(), OutputError> {
+            self.queued.lock().unwrap().extend_from_slice(samples);
+            Ok(())
+        }
+        fn queued_samples(&self) -> usize {
+            self.queued.lock().unwrap().len()
+        }
+        fn flush(&mut self) {
+            self.queued.lock().unwrap().clear();
+        }
+        fn set_volume(&mut self, volume: f32) -> bool {
+            *self.volume.lock().unwrap() = Some(volume);
+            true
+        }
+    }
+
+    #[test]
+    fn flushing_drops_unheard_audio_and_volume_is_applied_on_the_way_out() {
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/test_tone.wav");
+        let first_chunk = |volume_setting: f32| {
+            let sink = RecordingSink::default();
+            let (queued, volume) = (sink.queued.clone(), sink.volume.clone());
+            let mut pipeline = Pipeline::new(Box::new(sink));
+            pipeline
+                .open_track(Box::new(crate::decoders::SymphoniaDecoder::new()), &fixture)
+                .unwrap();
+            pipeline.set_volume(volume_setting);
+            assert_eq!(*volume.lock().unwrap(), Some(volume_setting));
+            pipeline.process_chunk().unwrap();
+            let samples = queued.lock().unwrap().clone();
+            (pipeline, samples)
+        };
+        // The sink takes the volume, so samples are written unscaled.
+        let (_, full) = first_chunk(1.0);
+        let (mut pipeline, quiet) = first_chunk(0.25);
+        assert_eq!(full, quiet, "samples were scaled before reaching the sink");
+
+        assert!(pipeline.queued_samples() > 0);
+        pipeline.flush();
+        assert_eq!(pipeline.queued_samples(), 0);
+    }
 
     fn window(history: &SampleHistory, skip: usize, len: usize) -> Vec<f32> {
         let mut out = Vec::new();

@@ -220,8 +220,14 @@ fn handle_command(
                 set_playback_state(state, PlaybackState::Playing, event_tx);
             }
         }
-        EngineCommand::Pause => set_playback_state(state, PlaybackState::Paused, event_tx),
+        EngineCommand::Pause => {
+            if state.playback_state == PlaybackState::Playing {
+                drop_queued_audio(state, true);
+            }
+            set_playback_state(state, PlaybackState::Paused, event_tx);
+        }
         EngineCommand::Stop => {
+            drop_queued_audio(state, false);
             set_playback_state(state, PlaybackState::Stopped, event_tx);
             state.samples_played = 0;
         }
@@ -229,6 +235,7 @@ fn handle_command(
         // nothing to seek, and no error worth showing.
         EngineCommand::Seek(_) if state.playlist.current().is_none() => {}
         EngineCommand::Seek(pos) => {
+            drop_queued_audio(state, false);
             if let Err(e) = state.pipeline.seek(pos) {
                 let _ = event_tx.send(EngineEvent::Error(e.to_string()));
             } else {
@@ -237,8 +244,12 @@ fn handle_command(
                 send_position_update(state, event_tx);
             }
         }
-        EngineCommand::Next => advance_to_next_track(state, event_tx),
+        EngineCommand::Next => {
+            drop_queued_audio(state, false);
+            advance_to_next_track(state, event_tx);
+        }
         EngineCommand::Previous => {
+            drop_queued_audio(state, false);
             // Shuffle has its own notion of "previous" (back one step in
             // its randomized order); RepeatAll wraps to the last track;
             // Normal/RepeatOne just step the index down and stop at 0.
@@ -287,6 +298,7 @@ fn handle_command(
             }
         }
         EngineCommand::PlayIndex(index) => {
+            drop_queued_audio(state, false);
             load_track(state, index, event_tx);
             set_playback_state(state, PlaybackState::Playing, event_tx);
             // Re-anchor the shuffle cycle on the track the user just picked
@@ -569,6 +581,29 @@ fn set_playback_state(
     if state.playback_state != new_state {
         state.playback_state = new_state;
         let _ = event_tx.send(EngineEvent::PlaybackStateChanged(new_state));
+    }
+}
+
+/// Drops the audio queued in the output but not heard yet, so a pause,
+/// seek or track change takes effect at once instead of after it. With
+/// `resume_here` the decoder steps back to what was last heard, so playing
+/// on continues from exactly there.
+fn drop_queued_audio(state: &mut EngineState, resume_here: bool) {
+    let queued = state.pipeline.queued_samples() as u64;
+    if queued == 0 {
+        return;
+    }
+    let channels = state.channels.max(1) as u64;
+    let audible = state.samples_played.saturating_sub(queued) / channels * channels;
+    state.pipeline.flush();
+    if resume_here && state.playlist.current().is_some() {
+        let frames = audible / channels;
+        let position = Duration::from_secs_f64(frames as f64 / state.sample_rate.max(1) as f64);
+        if state.pipeline.seek(position).is_ok() {
+            state.samples_played = audible;
+        }
+    } else {
+        state.samples_played = audible;
     }
 }
 

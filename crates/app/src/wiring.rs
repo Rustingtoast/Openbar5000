@@ -10,7 +10,7 @@ use crate::lyrics::Lyrics;
 use crate::media_keys::{MediaAction, MediaKeys};
 use crate::platform;
 use crate::playlist_rows::{
-    all_group_keys, build_grouped_rows, build_list_rows, group_key_of, sort_order, sorted_order, CoverCache,
+    all_group_keys, build_grouped_rows, build_list_rows, group_key_of, smart_order, sort_order, sorted_order, CoverCache,
     PlaylistGrouping, PlaylistSort, SortMode,
 };
 use crate::settings::{
@@ -80,6 +80,8 @@ struct PlaylistViewState {
     covers: CoverCache,
     /// Plain song list instead of album groups.
     list_view: bool,
+    /// Albums matched loosely and gathered (see `playlist_rows::smart_order`).
+    smart_grouping: bool,
 }
 
 /// Wires every UI callback to an [`EngineCommand`] and starts the timer that
@@ -95,6 +97,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         search_query: String::new(),
         grouping: PlaylistGrouping::default(),
         list_view: false,
+        smart_grouping: true,
         collapsed: HashSet::new(),
         covers: CoverCache::default(),
     }));
@@ -105,8 +108,10 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
 
     let restored_paths = store.load_playlist();
     if !restored_paths.is_empty() {
+        let count = restored_paths.len();
         engine.send(EngineCommand::LoadPlaylist(restored_paths));
         window.set_status_text("Restoring playlist\u{2026}".into());
+        show_loading(window, "Restoring playlist\u{2026}", 0, count);
     }
 
     let properties_window = PropertiesWindow::new().expect("failed to create properties window");
@@ -185,6 +190,32 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
 
     playlist_view_state.borrow_mut().grouping = settings.borrow().playlist_grouping;
     playlist_view_state.borrow_mut().list_view = settings.borrow().playlist_list_view;
+    playlist_view_state.borrow_mut().smart_grouping = settings.borrow().playlist_smart_grouping;
+    settings_window.set_playlist_smart_grouping(settings.borrow().playlist_smart_grouping);
+    {
+        let settings = settings.clone();
+        let store = store.clone();
+        let engine = engine.clone();
+        let playlist_model = playlist_model.clone();
+        let playlist_view_state = playlist_view_state.clone();
+        settings_window.on_playlist_smart_grouping_toggled(move |on| {
+            settings.borrow_mut().playlist_smart_grouping = on;
+            settings.borrow().save(&store);
+            {
+                let mut state = playlist_view_state.borrow_mut();
+                state.smart_grouping = on;
+                // Group keys mean something else now.
+                state.collapsed.clear();
+            }
+            refresh_playlist_rows(&playlist_model, &playlist_view_state);
+            let state = playlist_view_state.borrow();
+            if on && settings.borrow().playlist_sort == SortMode::Manual {
+                if let Some(order) = smart_order(&state.tracks, state.grouping) {
+                    engine.send(EngineCommand::ReorderPlaylist(order));
+                }
+            }
+        });
+    }
     window.set_playlist_list_view(settings.borrow().playlist_list_view);
     settings_window.set_playlist_view_index(settings.borrow().playlist_list_view as i32);
     {
@@ -835,9 +866,11 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             else {
                 return;
             };
+            let count = paths.len();
             engine.send(EngineCommand::LoadPlaylist(paths));
             if let Some(window) = window_weak.upgrade() {
                 window.set_status_text("Loading playlist\u{2026}".into());
+                show_loading(&window, "Loading playlist\u{2026}", 0, count);
             }
         });
     }
@@ -854,6 +887,8 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             engine.send(EngineCommand::LoadFolder(dir));
             if let Some(window) = window_weak.upgrade() {
                 window.set_status_text("Loading playlist\u{2026}".into());
+                // No total until the folder has been searched.
+                show_loading(&window, "Scanning folder\u{2026}", 0, 0);
             }
         });
     }
@@ -981,7 +1016,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         window.on_collapse_all_clicked(move || {
             {
                 let mut state = playlist_view_state.borrow_mut();
-                state.collapsed = all_group_keys(&state.tracks, state.grouping);
+                state.collapsed = all_group_keys(&state.tracks, state.grouping, state.smart_grouping);
             }
             refresh_playlist_rows(&playlist_model, &playlist_view_state);
         });
@@ -1000,6 +1035,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         let settings = settings.clone();
         let store = store.clone();
         let window_weak = window.as_weak();
+        let engine = engine.clone();
         window.on_grouping_clicked(move |id| {
             let grouping = PlaylistGrouping::from_str(&id);
             {
@@ -1013,6 +1049,13 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                 window.set_playlist_grouping(grouping.as_str().into());
             }
             refresh_playlist_rows(&playlist_model, &playlist_view_state);
+            // Smart grouping gathers by the new grouping's groups.
+            let state = playlist_view_state.borrow();
+            if state.smart_grouping && settings.borrow().playlist_sort == SortMode::Manual {
+                if let Some(order) = smart_order(&state.tracks, grouping) {
+                    engine.send(EngineCommand::ReorderPlaylist(order));
+                }
+            }
         });
     }
     // The Sorting menu's mode, kept applied (see the event poll below).
@@ -1070,7 +1113,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                 let Some(current) = state.current_index else {
                     return;
                 };
-                if let Some(key) = group_key_of(&state.tracks, current, state.grouping) {
+                if let Some(key) = group_key_of(&state.tracks, current, state.grouping, state.smart_grouping) {
                     state.collapsed.remove(&key);
                 }
             }
@@ -1243,6 +1286,8 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     }
 
     report_renderer(window, &settings_window);
+    // Which files are in the playlist, to tell additions from reorders.
+    let playlist_fingerprint = Cell::new(0u64);
     let audio_output_events = audio_output.clone();
 
     // Minimized, nothing is seen: stop the spectrum's FFT and don't push
@@ -1301,7 +1346,26 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         // Tracks added or loaded: put them where the kept sort says. The
         // reorder comes back as one more update, already in order.
         if playlist_changed {
-            if let Some(order) = sorted_order(&playlist_view_state.borrow().tracks, sort_mode.get()) {
+            let state = playlist_view_state.borrow();
+            // Smart grouping gathers albums when tracks come or go -- not
+            // after a reorder the user asked for (e.g. Randomize).
+            let mut paths: Vec<&std::path::Path> = state.tracks.iter().map(|t| t.path.as_path()).collect();
+            paths.sort_unstable();
+            let fingerprint = {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                paths.hash(&mut hasher);
+                hasher.finish()
+            };
+            let tracks_changed = playlist_fingerprint.replace(fingerprint) != fingerprint;
+            let order = if sort_mode.get() != SortMode::Manual {
+                sorted_order(&state.tracks, sort_mode.get())
+            } else if state.smart_grouping && !state.list_view && tracks_changed {
+                smart_order(&state.tracks, state.grouping)
+            } else {
+                None
+            };
+            if let Some(order) = order {
                 engine.send(EngineCommand::ReorderPlaylist(order));
             }
         }
@@ -1954,9 +2018,13 @@ impl AlbumArtLoader {
             if let Some(window) = self.window.upgrade() {
                 window.set_has_album_art(false);
                 window.set_album_art(slint::Image::default());
+                window.set_album_art_loading(false);
             }
             return;
         };
+        if let Some(window) = self.window.upgrade() {
+            window.set_album_art_loading(true);
+        }
         let window = self.window.clone();
         let latest = self.generation.clone();
         std::thread::Builder::new()
@@ -1971,6 +2039,7 @@ impl AlbumArtLoader {
                     if latest.load(Ordering::SeqCst) != generation {
                         return;
                     }
+                    window.set_album_art_loading(false);
                     match art {
                         Some(art) => {
                             window.set_album_art(cover_image_from_rgba(art.width, art.height, &art.rgba));
@@ -1984,10 +2053,15 @@ impl AlbumArtLoader {
     }
 }
 
-/// The closed outline of one channel's waveform as SVG path commands, in a
-/// `bucket count` x [-1, 1] space (y down, so peaks are negated): along the
-/// top edge (maxima) left to right, then back along the bottom (minima) --
-/// the stroked shape the reference UI draws per channel.
+/// Shows (or updates) the loading card over the window; `total` 0 while
+/// the number of tracks isn't known yet.
+fn show_loading(window: &MainWindow, title: &str, done: usize, total: usize) {
+    window.set_loading_title(title.into());
+    window.set_loading_done(done as i32);
+    window.set_loading_total(total as i32);
+    window.set_loading_active(true);
+}
+
 /// Fills the Sorting menu with `selected` checked -- always as a new model,
 /// so the menu items are rebuilt rather than keeping a check mark their
 /// own activation toggled.
@@ -2043,6 +2117,10 @@ fn report_renderer(window: &MainWindow, settings_window: &SettingsWindow) {
     }
 }
 
+/// The closed outline of one channel's waveform as SVG path commands, in a
+/// `bucket count` x [-1, 1] space (y down, so peaks are negated): along the
+/// top edge (maxima) left to right, then back along the bottom (minima) --
+/// the stroked shape the reference UI draws per channel.
 fn waveform_outline_path(channel: &engine::WaveformChannel) -> String {
     use std::fmt::Write;
     let mut path = String::with_capacity(channel.max.len() * 24);
@@ -2667,6 +2745,7 @@ fn refresh_playlist_rows(
     playlist_model: &Rc<VecModel<PlaylistRow>>,
     playlist_view_state: &Rc<RefCell<PlaylistViewState>>,
 ) {
+    let started = std::time::Instant::now();
     let mut state = playlist_view_state.borrow_mut();
     let state = &mut *state;
     let rows = if state.list_view {
@@ -2677,11 +2756,16 @@ fn refresh_playlist_rows(
             state.current_index,
             &state.search_query,
             state.grouping,
+            state.smart_grouping,
             &state.collapsed,
             &mut state.covers,
         )
     };
-    playlist_model.set_vec(rows);
+    let count = rows.len();
+    // Row by row: a track change then touches two rows (the old and new
+    // "playing" one) instead of replacing every row the list shows.
+    sync_model(playlist_model, rows);
+    tracing::debug!("playlist rows refreshed: {count} in {:.2?}", started.elapsed());
 }
 
 /// Pixel offset of the now-playing track row from the top of the playlist.
@@ -2853,6 +2937,7 @@ fn apply_event(
             }
         }
         EngineEvent::Error(message) => {
+            window.set_loading_active(false);
             window.set_status_text(format!("Error: {message}").into());
         }
         EngineEvent::Underrun => {
@@ -2862,15 +2947,25 @@ fn apply_event(
             tracks,
             current_index,
         } => {
+            window.set_loading_active(false);
             let track_count = tracks.len();
-            store.save_playlist(&tracks.iter().map(|t| t.path.clone()).collect::<Vec<_>>());
+            // Only when the playlist's contents or order changed.
+            let same_paths = {
+                let state = playlist_view_state.borrow();
+                state.tracks.len() == tracks.len()
+                    && state.tracks.iter().zip(&tracks).all(|(a, b)| a.path == b.path)
+            };
+            if !same_paths {
+                store.save_playlist(&tracks.iter().map(|t| t.path.clone()).collect::<Vec<_>>());
+            }
             *current_track.borrow_mut() = current_index.and_then(|i| tracks.get(i).cloned());
             {
                 let mut state = playlist_view_state.borrow_mut();
                 state.tracks = tracks;
                 state.current_index = current_index;
-                // Covers may have changed (new playlist, Refresh playlist).
-                state.covers.clear();
+                // Keep the images of covers still in use; drop the rest.
+                let state = &mut *state;
+                state.covers.retain_used(&state.tracks);
             }
             refresh_playlist_rows(playlist_model, playlist_view_state);
             window.set_status_text(format!("{track_count} track(s) loaded").into());
@@ -2878,6 +2973,13 @@ fn apply_event(
         }
         EngineEvent::LoadProgress { done, total } => {
             window.set_status_text(format!("Loading playlist\u{2026} {done}/{total}").into());
+            // Also covers loads started elsewhere (the media library).
+            let title = if window.get_loading_active() && window.get_loading_title() != "Scanning folder\u{2026}" {
+                window.get_loading_title().to_string()
+            } else {
+                "Loading playlist\u{2026}".to_string()
+            };
+            show_loading(window, &title, done, total);
         }
         EngineEvent::WaveformReady { index, channels } => {
             if playlist_view_state.borrow().current_index == Some(index) {

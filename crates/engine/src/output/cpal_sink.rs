@@ -3,6 +3,8 @@ use cpal::{Stream, StreamConfig};
 use plugin_api::{OutputError, OutputSink};
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::HeapRb;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
 
 /// The built-in [`OutputSink`], backed by `cpal`. Decoding/DSP happen on the
 /// engine's control thread; this only ever *produces* into a lock-free ring
@@ -15,6 +17,12 @@ pub struct CpalSink {
     device_name: String,
     stream: Option<Stream>,
     producer: Option<ringbuf::HeapProd<f32>>,
+    /// Set to have the audio callback drop everything queued; it clears
+    /// the flag once it has.
+    flush_requested: Arc<AtomicBool>,
+    /// Applied in the audio callback (f32 bits), so changes are heard at
+    /// once instead of after the queued audio.
+    volume: Arc<AtomicU32>,
     configured_rate: u32,
     configured_channels: u16,
 }
@@ -92,6 +100,8 @@ impl CpalSink {
             device,
             stream: None,
             producer: None,
+            flush_requested: Arc::new(AtomicBool::new(false)),
+            volume: Arc::new(AtomicU32::new(1.0f32.to_bits())),
             configured_rate: 0,
             configured_channels: 0,
         })
@@ -115,9 +125,10 @@ impl OutputSink for CpalSink {
             return Ok(());
         }
 
-        // ~0.5s of buffering: enough to absorb decode-thread jitter without
-        // adding noticeable output latency.
-        let capacity = (sample_rate as usize) * (channels as usize) / 2;
+        // ~0.3s of buffering: enough to absorb decode-thread jitter. (Pause,
+        // seek and track changes flush it, and volume is applied on the way
+        // out, so only effects like the EQ wait for it.)
+        let capacity = (sample_rate as usize) * (channels as usize) * 3 / 10;
         let ring = HeapRb::<f32>::new(capacity.max(1024));
         let (producer, mut consumer) = ring.split();
 
@@ -128,13 +139,26 @@ impl OutputSink for CpalSink {
         };
 
         let err_fn = |err| tracing::error!("cpal output stream error: {err}");
+        let flush_requested = self.flush_requested.clone();
+        flush_requested.store(false, Ordering::Release);
+        let volume = self.volume.clone();
 
         let stream = self
             .device
             .build_output_stream(
                 config,
                 move |data: &mut [f32], _info| {
+                    if flush_requested.load(Ordering::Acquire) {
+                        consumer.clear();
+                        flush_requested.store(false, Ordering::Release);
+                    }
                     let written = consumer.pop_slice(data);
+                    let gain = f32::from_bits(volume.load(Ordering::Relaxed));
+                    if gain != 1.0 {
+                        for sample in &mut data[..written] {
+                            *sample *= gain;
+                        }
+                    }
                     for sample in &mut data[written..] {
                         *sample = 0.0;
                     }
@@ -182,5 +206,23 @@ impl OutputSink for CpalSink {
 
     fn queued_samples(&self) -> usize {
         self.producer.as_ref().map_or(0, |p| p.occupied_len())
+    }
+
+    fn flush(&mut self) {
+        if self.stream.is_none() {
+            return;
+        }
+        self.flush_requested.store(true, Ordering::Release);
+        // The callback runs every few milliseconds; wait for it so the
+        // queue is really empty (and `queued_samples` says so) on return.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(100);
+        while self.flush_requested.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    fn set_volume(&mut self, volume: f32) -> bool {
+        self.volume.store(volume.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+        true
     }
 }

@@ -10,7 +10,9 @@ const RAW_CHUNK_FRAMES: usize = 2048;
 
 /// Tracks shorter than this aren't worth splitting across threads.
 const MIN_PARALLEL_DURATION: Duration = Duration::from_secs(20);
-const MAX_WORKERS: usize = 8;
+/// At most half the cores (and 4): a track change shouldn't saturate the
+/// machine and make the UI stutter just to draw the waveform sooner.
+const MAX_WORKERS: usize = 4;
 
 /// One channel's waveform outline: per bucket, the highest and lowest
 /// sample value, each in `[-1.0, 1.0]` (so `max >= 0 >= min` for audio
@@ -66,9 +68,9 @@ pub fn compute_peaks_cancellable(
     cancel: &AtomicBool,
 ) -> Result<Option<Vec<WaveformChannel>>, DecodeError> {
     let workers = std::thread::available_parallelism()
-        .map(|n| n.get())
+        .map(|n| n.get() / 2)
         .unwrap_or(1)
-        .min(MAX_WORKERS);
+        .clamp(1, MAX_WORKERS);
     let info = SymphoniaDecoder::new().open(path)?;
     let known_duration = info.duration_ms != u64::MAX && info.duration_ms > 0;
     if bucket_count == 0
