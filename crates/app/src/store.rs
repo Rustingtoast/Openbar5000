@@ -77,6 +77,16 @@ const MIGRATIONS: &[&str] = &[
         duration_ms  INTEGER NOT NULL
     );
     "#,
+    // v4: playback statistics for the Properties window (issue #34).
+    // Times are Unix seconds.
+    r#"
+    CREATE TABLE play_stats (
+        path         TEXT PRIMARY KEY,
+        count        INTEGER NOT NULL,
+        first_played INTEGER NOT NULL,
+        last_played  INTEGER NOT NULL
+    );
+    "#,
 ];
 
 /// The playlist every database starts with (migration v1).
@@ -310,6 +320,30 @@ impl Store {
         }
     }
 
+    // --- playback statistics (issue #34) --------------------------------
+
+    /// Counts a play of `path` at `when` (Unix seconds).
+    pub fn record_play(&self, path: &Path, when: i64) {
+        if let Err(e) = self.conn.execute(
+            "INSERT INTO play_stats (path, count, first_played, last_played) VALUES (?1, 1, ?2, ?2)
+             ON CONFLICT(path) DO UPDATE SET count = count + 1, last_played = excluded.last_played",
+            params![path.to_string_lossy(), when],
+        ) {
+            tracing::warn!("failed to record a play: {e}");
+        }
+    }
+
+    pub fn play_stats(&self, path: &Path) -> Option<PlayStats> {
+        self.conn
+            .query_row(
+                "SELECT count, first_played, last_played FROM play_stats WHERE path = ?1",
+                params![path.to_string_lossy()],
+                |row| Ok(PlayStats { count: row.get::<_, i64>(0)? as u64, first_played: row.get(1)?, last_played: row.get(2)? }),
+            )
+            .optional()
+            .unwrap_or(None)
+    }
+
     // --- playlists: named, ordered lists of paths (issue #33) ----------
 
     /// Every playlist, oldest first, with how many tracks it holds.
@@ -407,6 +441,14 @@ impl Store {
             tracing::warn!("failed to save playlist: {e}");
         }
     }
+}
+
+/// How often and when a file was played (times are Unix seconds).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlayStats {
+    pub count: u64,
+    pub first_played: i64,
+    pub last_played: i64,
 }
 
 /// A playlist as the Playlist Manager lists it.
@@ -521,6 +563,16 @@ mod tests {
 
         assert_eq!(loaded, vec![b.clone(), a.clone()]);
         assert_eq!(all, vec![b, missing, a]);
+    }
+
+    #[test]
+    fn plays_are_counted_with_first_and_last_times() {
+        let store = Store::open_in_memory().unwrap();
+        let song = Path::new("/m/song.flac");
+        assert_eq!(store.play_stats(song), None);
+        store.record_play(song, 100);
+        store.record_play(song, 250);
+        assert_eq!(store.play_stats(song), Some(PlayStats { count: 2, first_played: 100, last_played: 250 }));
     }
 
     #[test]

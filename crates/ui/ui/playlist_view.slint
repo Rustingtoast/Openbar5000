@@ -47,13 +47,17 @@ export component PlaylistView inherits Rectangle {
     /// The playlists, for the summary bar's menu (issue #33).
     in property <[PlaylistChoice]> playlists: [];
     in property <string> playlist-name;
-    /// Plays the track (double-click, or the menu's Play).
+    /// Plays the track (a plain click, or the menu's Play).
     callback row-clicked(int);
     /// Selects the track: plain, `range` (Shift) or `toggle` (Ctrl/Cmd).
     callback row-selected(int, bool, bool);
     callback playlist-chosen(int);
     callback new-playlist-clicked();
     callback playlist-manager-clicked();
+    /// Right-click > Send to Playlist: (track, playlist index), or to a new
+    /// playlist.
+    callback send-to-playlist(int, int);
+    callback send-to-new-playlist(int);
     callback row-properties-clicked(int);
     callback row-open-folder-clicked(int);
     callback row-remove-clicked(int);
@@ -139,8 +143,10 @@ export component PlaylistView inherits Rectangle {
 
                 // One menu for both row kinds, mirroring the reference UI's
                 // playlist context menu; track-only entries are hidden on
-                // group headers, where they'd be ambiguous.
-                ContextMenuArea {
+                // group headers, where they'd be ambiguous. The rows'
+                // TouchAreas open it themselves: a TouchArea takes every
+                // mouse button, so the right-click never reaches this area.
+                row-menu := ContextMenuArea {
                     Menu {
                         MenuItem { title: "Show now playing"; activated => { root.show-now-playing-clicked(); } }
                         MenuItem { title: "Refresh playlist"; activated => { root.refresh-playlist-clicked(); } }
@@ -186,12 +192,26 @@ export component PlaylistView inherits Rectangle {
                         if !row.is-header: MenuItem { title: "Add to playback queue"; activated => { root.row-enqueue-clicked(row.track-index); } }
                         MenuItem { title: "Play"; activated => { root.row-clicked(row.track-index); } }
                         MenuItem { title: "Open containing folder"; activated => { root.row-open-folder-clicked(row.track-index); } }
+                        Menu {
+                            title: "Send to Playlist";
+                            for choice[p] in root.playlists: MenuItem {
+                                title: choice.title;
+                                activated => { root.send-to-playlist(row.track-index, p); }
+                            }
+                            MenuSeparator {}
+                            MenuItem { title: "New Playlist"; activated => { root.send-to-new-playlist(row.track-index); } }
+                        }
                         if !row.is-header: MenuSeparator {}
                         if !row.is-header: MenuItem { title: "Properties"; activated => { root.row-properties-clicked(row.track-index); } }
                     }
 
                     if row.is-header: TouchArea {
                         clicked => { root.group-toggle-clicked(row.group-key); }
+                        pointer-event(event) => {
+                            if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
+                                row-menu.show({ x: self.mouse-x, y: self.mouse-y });
+                            }
+                        }
                         HorizontalLayout {
                             padding: 8px;
                             spacing: 10px;
@@ -247,12 +267,21 @@ export component PlaylistView inherits Rectangle {
                     }
 
                     if !row.is-header: TouchArea {
+                        // A plain click plays the song (and selects just it);
+                        // Shift/Ctrl/Cmd+click only change the selection.
                         pointer-event(event) => {
+                            if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
+                                row-menu.show({ x: self.mouse-x, y: self.mouse-y });
+                            }
                             if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
-                                root.row-selected(row.track-index, event.modifiers.shift, event.modifiers.control || event.modifiers.meta);
+                                if event.modifiers.shift || event.modifiers.control || event.modifiers.meta {
+                                    root.row-selected(row.track-index, event.modifiers.shift, event.modifiers.control || event.modifiers.meta);
+                                } else {
+                                    root.row-selected(row.track-index, false, false);
+                                    root.row-clicked(row.track-index);
+                                }
                             }
                         }
-                        double-clicked => { root.row-clicked(row.track-index); }
                         if root.list-view: HorizontalLayout {
                             padding-left: 8px;
                             padding-right: 4px;

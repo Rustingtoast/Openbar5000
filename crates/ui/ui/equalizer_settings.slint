@@ -1,4 +1,4 @@
-import { Button, CheckBox, ComboBox, Switch } from "std-widgets.slint";
+import { Button, CheckBox, ComboBox, LineEdit, Switch } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Vfd } from "vintage_equalizer.slint";
 
@@ -90,6 +90,24 @@ component BandSlider inherits Rectangle {
     }
 }
 
+/// A colour to click; outlined when it's the one in use.
+component ColorSwatch inherits Rectangle {
+    in property <color> swatch;
+    in property <bool> current;
+    callback clicked();
+
+    width: 22px;
+    height: 22px;
+    border-radius: 4px;
+    background: root.swatch;
+    border-width: root.current ? 2px : 1px;
+    border-color: root.current ? Theme.text-primary : Theme.text-muted.transparentize(0.6);
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
 /// The equalizer's tab in Preferences (issue #7): 18 bands of ±20 dB,
 /// presets as foobar2000 `.feq` files. Changes are heard as they are made.
 /// "Vintage look" puts the faders on a hardware faceplate under the same
@@ -108,6 +126,9 @@ export component EqualizerSettingsPage inherits VerticalLayout {
     in property <string> lit-dots;
     in property <string> half-dots;
     in property <string> dim-dots;
+    /// The vintage display's colour (issue #35), and its hex text.
+    in property <color> vfd-color;
+    in property <string> vfd-color-hex;
 
     callback band-changed(int, int);
     callback enabled-toggled(bool);
@@ -117,6 +138,8 @@ export component EqualizerSettingsPage inherits VerticalLayout {
     callback load-preset-clicked();
     callback save-preset-clicked();
     callback preset-chosen(int);
+    callback vfd-color-chosen(color);
+    callback vfd-color-edited(string);
 
     property <length> scale-width: 46px;
 
@@ -152,7 +175,7 @@ export component EqualizerSettingsPage inherits VerticalLayout {
     // The bands: plain, or on the faceplate.
     Rectangle {
         vertical-stretch: 1;
-        min-height: root.vintage ? 230px : 150px;
+        min-height: root.vintage ? 190px : 120px;
         border-radius: root.vintage ? 4px : 0;
         border-width: root.vintage ? 1px : 0;
         border-color: #000000;
@@ -192,7 +215,7 @@ export component EqualizerSettingsPage inherits VerticalLayout {
 
             // The display, its columns over the faders.
             if root.vintage: Rectangle {
-                height: 64px;
+                height: 52px;
                 background: Vfd.glass;
                 border-radius: 3px;
                 border-width: 1px;
@@ -227,7 +250,7 @@ export component EqualizerSettingsPage inherits VerticalLayout {
             // Faders with the dB scale on the right.
             HorizontalLayout {
                 vertical-stretch: 1;
-                min-height: 100px;
+                min-height: 70px;
                 spacing: 6px;
                 sliders := HorizontalLayout {
                     opacity: root.enabled || root.vintage ? 1 : 0.55;
@@ -278,5 +301,31 @@ export component EqualizerSettingsPage inherits VerticalLayout {
             color: Theme.text-muted;
             font-size: 11px;
         }
+    }
+
+    // The vintage display's colour: the Vintage Equalizer panel and the
+    // vintage look above.
+    HorizontalLayout {
+        spacing: 6px;
+        Text {
+            text: "Display color";
+            vertical-alignment: center;
+            color: Theme.text-muted;
+        }
+        Rectangle { width: 4px; }
+        for swatch in [#6fd6ff, #2fe6c8, #6dff6d, #ffb340, #ff4d4d, #c38bff, #e9f6ff]: ColorSwatch {
+            y: (parent.height - self.height) / 2;
+            swatch: swatch;
+            current: swatch == root.vfd-color;
+            clicked => { root.vfd-color-chosen(swatch); }
+        }
+        Rectangle { width: 4px; }
+        LineEdit {
+            width: 90px;
+            text: root.vfd-color-hex;
+            placeholder-text: "#6fd6ff";
+            accepted(text) => { root.vfd-color-edited(text); }
+        }
+        Rectangle { horizontal-stretch: 1; }
     }
 }

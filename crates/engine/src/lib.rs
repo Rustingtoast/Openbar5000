@@ -11,6 +11,7 @@ mod playback_engine;
 mod playlist;
 mod shuffle;
 mod spectrum;
+mod tag_editor;
 mod waveform;
 
 pub use commands::{EngineCommand, PlaybackMode};
@@ -25,6 +26,10 @@ pub use metadata::{
 pub use playback_engine::PlaybackEngine;
 pub use playlist::{CoverThumbnail, Playlist, Track, TrackMetadata};
 pub use spectrum::{SpectrumChannelMode, SpectrumConfig};
+pub use tag_editor::{
+    edit_tags, read_details, read_pictures, read_tag_fields, FileDetails, PictureInfo, PictureKind, TagEdit,
+    TagField,
+};
 pub use waveform::{compute_peaks, WaveformChannel};
 
 pub use plugin_api::{AudioInfo, DecodeError, Decoder, Dsp, OutputError, OutputSink};

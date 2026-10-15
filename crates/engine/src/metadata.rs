@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-fn format_label(file_type: FileType) -> String {
+pub(crate) fn format_label(file_type: FileType) -> String {
     match file_type {
         FileType::Aac => "AAC",
         FileType::Aiff => "AIFF",
@@ -89,11 +89,11 @@ fn lyrics_key(name: &str) -> bool {
 }
 
 /// The audio container of `path`, sniffed from its content.
-fn file_type(path: &Path) -> Option<lofty::file::FileType> {
+pub(crate) fn file_type(path: &Path) -> Option<lofty::file::FileType> {
     lofty::probe::Probe::open(path).ok()?.guess_file_type().ok()?.file_type()
 }
 
-fn open_for_tags(path: &Path) -> Result<std::fs::File, String> {
+pub(crate) fn open_for_tags(path: &Path) -> Result<std::fs::File, String> {
     std::fs::File::open(path).map_err(|e| format!("couldn't open the file: {e}"))
 }
 
@@ -323,7 +323,7 @@ pub fn write_lyrics(path: &Path, lyrics: &str) -> Result<(), String> {
 /// e.g. a FLAC whose Vorbis comments are blank while a stray ID3v2 block
 /// (which lofty reads, warning that it couldn't *write* it back) holds the
 /// title and artist (issue #20).
-fn best_tag(tagged_file: &lofty::file::TaggedFile) -> Option<&lofty::tag::Tag> {
+pub(crate) fn best_tag(tagged_file: &lofty::file::TaggedFile) -> Option<&lofty::tag::Tag> {
     let has_text = |tag: &&lofty::tag::Tag| tag.title().is_some() || tag.artist().is_some();
     tagged_file
         .primary_tag()
@@ -342,7 +342,7 @@ fn first_picture(tagged_file: &lofty::file::TaggedFile) -> Option<&[u8]> {
         .map(|picture| picture.data())
 }
 
-fn scaled_cover(bytes: &[u8], max_size: u32) -> Option<CoverThumbnail> {
+pub(crate) fn scaled_cover(bytes: &[u8], max_size: u32) -> Option<CoverThumbnail> {
     let decoded = image::load_from_memory(bytes).ok()?;
     // `thumbnail` only ever shrinks; small art stays as it is.
     let scaled = if decoded.width().max(decoded.height()) > max_size {

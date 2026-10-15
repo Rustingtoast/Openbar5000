@@ -92,7 +92,7 @@ export component LibraryView inherits Rectangle {
                 height: row.is-group && row.depth == 0 ? 24px : 21px;
                 background: i == root.selected ? Theme.accent : touch.has-hover ? Theme.text-muted.transparentize(0.9) : transparent;
 
-                ContextMenuArea {
+                row-menu := ContextMenuArea {
                     Menu {
                         MenuItem { title: "Play"; activated => { root.row-activated(i); } }
                         MenuItem { title: "Add to playlist"; activated => { root.row-add-clicked(i); } }
@@ -115,6 +115,13 @@ export component LibraryView inherits Rectangle {
                             }
                         }
                         double-clicked => { root.row-activated(i); }
+                        // A TouchArea takes every button: open the menu here.
+                        pointer-event(event) => {
+                            if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
+                                root.row-clicked(i);
+                                row-menu.show({ x: self.mouse-x, y: self.mouse-y });
+                            }
+                        }
                     }
                     HorizontalLayout {
                         padding-left: 6px + row.depth * 14px;

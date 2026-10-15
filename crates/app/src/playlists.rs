@@ -210,6 +210,34 @@ impl Playlists {
         self.refresh();
     }
 
+    /// Adds `paths` to the end of the playlist at `index`.
+    pub fn send_to(&self, index: i32, paths: Vec<PathBuf>) {
+        let Some(id) = self.id_at(index) else { return };
+        if paths.is_empty() {
+            return;
+        }
+        if id == self.active.get() {
+            // Shown: through the engine, which saves it as usual.
+            self.engine.send(EngineCommand::AppendToPlaylist(paths));
+        } else {
+            let mut all = self.store.playlist_paths(id, true);
+            all.extend(paths);
+            self.store.save_playlist(id, &all);
+            self.refresh();
+        }
+    }
+
+    /// A new playlist holding `paths`, shown at once.
+    pub fn send_to_new(&self, paths: Vec<PathBuf>) {
+        if paths.is_empty() {
+            return;
+        }
+        let name = unique_name("New Playlist", &self.names());
+        let id = self.store.create_playlist(&name, &paths);
+        self.refresh();
+        self.activate(id);
+    }
+
     fn open_manager(&self) {
         self.refresh();
         let active = self.list.borrow().iter().position(|p| p.id == self.active.get());

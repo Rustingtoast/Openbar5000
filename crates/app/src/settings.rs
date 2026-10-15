@@ -57,6 +57,8 @@ pub struct Settings {
     pub equalizer: EqualizerSettings,
     /// Shows the Equalizer tab in Preferences as a hardware faceplate.
     pub equalizer_vintage_look: bool,
+    /// The vintage display's colour, as hex (issue #35).
+    pub equalizer_vfd_color: String,
     /// The media library's music folders (see `media_library`).
     pub library_folders: Vec<PathBuf>,
     /// How the LIB panel groups the library (`media_library::Grouping` id).
@@ -89,6 +91,7 @@ impl Default for Settings {
             output_device_name: String::new(),
             equalizer: EqualizerSettings::default(),
             equalizer_vintage_look: false,
+            equalizer_vfd_color: DEFAULT_VFD_COLOR.to_string(),
             library_folders: Vec::new(),
             library_grouping: "artist-album".to_string(),
         }
@@ -115,6 +118,9 @@ fn playback_mode_from_str(value: &str) -> PlaybackMode {
         _ => PlaybackMode::Normal,
     }
 }
+
+/// The vintage equalizer display's original blue-cyan.
+pub const DEFAULT_VFD_COLOR: &str = "#6fd6ff";
 
 /// Notes the spectrum's range can be set to: C0 (MIDI 12) to G9 (127).
 pub const LOWEST_NOTE: u8 = 12;
@@ -290,6 +296,9 @@ impl Settings {
         if let Some(v) = get("library_grouping") {
             settings.library_grouping = v;
         }
+        if let Some(v) = get("eq_vfd_color").filter(|v| crate::theme::parse_hex_color(v).is_some()) {
+            settings.equalizer_vfd_color = v;
+        }
         if let Some(v) = get("eq_vintage_look") {
             settings.equalizer_vintage_look = v == "true";
         }
@@ -363,6 +372,7 @@ impl Settings {
             ("output_device_name", self.output_device_name.clone()),
             ("eq_enabled", self.equalizer.enabled.to_string()),
             ("eq_vintage_look", self.equalizer_vintage_look.to_string()),
+            ("eq_vfd_color", self.equalizer_vfd_color.clone()),
             (
                 "library_folders",
                 serde_json::to_string(&self.library_folders).unwrap_or_else(|_| "[]".into()),

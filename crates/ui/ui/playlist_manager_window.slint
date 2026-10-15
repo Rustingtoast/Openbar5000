@@ -100,7 +100,7 @@ export component PlaylistManagerWindow inherits Window {
                         background: i == root.selected ? Theme.accent.transparentize(0.6)
                             : Math.mod(i, 2) == 1 ? Theme.bg-raised.transparentize(0.5) : transparent;
 
-                        ContextMenuArea {
+                        row-menu := ContextMenuArea {
                             Menu {
                                 MenuItem { title: "Activate"; enabled: !row.active; activated => { root.activate(i); } }
                                 MenuItem { title: "Rename"; activated => { root.selected = i; root.renaming = i; } }
@@ -116,6 +116,11 @@ export component PlaylistManagerWindow inherits Window {
                                     if event.kind == PointerEventKind.down {
                                         root.selected = i;
                                         keys.focus();
+                                    }
+                                    // A TouchArea takes every button: open the
+                                    // row's menu here.
+                                    if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
+                                        row-menu.show({ x: self.mouse-x, y: self.mouse-y });
                                     }
                                 }
                                 double-clicked => { root.activate(i); }

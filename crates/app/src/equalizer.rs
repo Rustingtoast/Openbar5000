@@ -11,7 +11,7 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use std::cell::{Cell, RefCell};
 use std::fmt::Write as _;
 use std::rc::Rc;
-use ui::{MainWindow, SettingsWindow};
+use ui::{MainWindow, SettingsWindow, Vfd};
 
 pub type Gains = [i32; EQ_BAND_COUNT];
 
@@ -276,6 +276,31 @@ impl Equalizer {
         window.set_eq_gains(ModelRc::from(eq.gains_model.clone()));
         window.set_eq_max_db(EQ_MAX_DB);
         window.set_eq_vintage(eq.settings.borrow().equalizer_vintage_look);
+        let saved_color = eq.settings.borrow().equalizer_vfd_color.clone();
+        eq.show_vfd_color(&saved_color);
+        {
+            let weak = Rc::downgrade(&eq);
+            window.on_eq_vfd_color_chosen(move |color| {
+                if let Some(eq) = weak.upgrade() {
+                    eq.set_vfd_color(&crate::theme::color_to_hex(color));
+                }
+            });
+        }
+        {
+            let weak = Rc::downgrade(&eq);
+            window.on_eq_vfd_color_edited(move |text| {
+                let Some(eq) = weak.upgrade() else { return };
+                let text = text.trim();
+                let hex = if text.starts_with('#') { text.to_string() } else { format!("#{text}") };
+                if crate::theme::parse_hex_color(&hex).is_some() {
+                    eq.set_vfd_color(&hex.to_lowercase());
+                } else {
+                    eq.window.set_eq_status(format!("\u{201c}{text}\u{201d} isn\u{2019}t a color. Use hex, like #6fd6ff.").into());
+                    let current = eq.settings.borrow().equalizer_vfd_color.clone();
+                    eq.show_vfd_color(&current);
+                }
+            });
+        }
         let mut names = vec!["Custom"];
         names.extend(PRESETS.iter().map(|(name, _)| *name));
         window.set_eq_preset_names(labels(&names));
@@ -387,6 +412,28 @@ impl Equalizer {
             self.engine.send(EngineCommand::SetEqualizer(new));
         }
         self.refresh();
+    }
+
+    /// Saves and shows the vintage display's colour.
+    fn set_vfd_color(&self, hex: &str) {
+        self.settings.borrow_mut().equalizer_vfd_color = hex.to_string();
+        self.settings.borrow().save(&self.store);
+        self.window.set_eq_status(SharedString::new());
+        self.show_vfd_color(hex);
+    }
+
+    /// Paints `hex` into both windows' display (their `Vfd` globals are
+    /// separate) and the picker.
+    fn show_vfd_color(&self, hex: &str) {
+        let color = crate::theme::parse_hex_color(hex)
+            .or_else(|| crate::theme::parse_hex_color(crate::settings::DEFAULT_VFD_COLOR))
+            .expect("the default colour parses");
+        self.window.global::<Vfd>().set_glow(color);
+        self.window.set_eq_vfd_color(color);
+        self.window.set_eq_vfd_color_hex(hex.into());
+        if let Some(main) = self.main.upgrade() {
+            main.global::<Vfd>().set_glow(color);
+        }
     }
 
     /// Playback > Equalizer > Equalizer Settings…: Preferences, on the

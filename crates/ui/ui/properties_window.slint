@@ -1,29 +1,43 @@
-import { Button, Palette } from "std-widgets.slint";
+import { Button, LineEdit, ListView, Palette, TabWidget } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 
-component PropertyRow inherits HorizontalLayout {
-    in property <string> label;
-    in property <string> value;
-    spacing: 8px;
-    Text {
-        text: root.label + ":";
-        width: 120px;
-        font-weight: 600;
-        color: Theme.text-muted;
-    }
-    Text {
-        text: root.value;
-        horizontal-stretch: 1;
-        color: Theme.text-primary;
-        overflow: elide;
-    }
+/// One editable tag field.
+export struct PropertyField {
+    label: string,
+    value: string,
+    /// The selected tracks disagree: shown empty with a hint, and only
+    /// written if edited.
+    multiple: bool,
 }
 
+/// A line of the Details tab: a section heading, or a name and value.
+export struct DetailRow {
+    label: string,
+    value: string,
+    is-section: bool,
+}
+
+/// One picture slot of the Artwork tab.
+export struct ArtworkRow {
+    label: string,
+    present: bool,
+    picture: image,
+    /// "13.1 KB · 500×500 · JPEG", or "not present".
+    info: string,
+}
+
+/// Properties of one or more tracks (issue #34): edit their tags, add,
+/// change or remove pictures, and see the file's details and playback
+/// statistics. OK and Apply write into the files.
 export component PropertiesWindow inherits Window {
-    title: "Properties";
+    title: "Properties \u{2014} " + root.subject;
     icon: Theme.logo;
-    preferred-width: 440px;
-    preferred-height: 380px;
+    preferred-width: 760px;
+    preferred-height: 620px;
+    min-width: 520px;
+    min-height: 420px;
+    max-width: 100000px;
+    max-height: 100000px;
     background: Theme.bg-raised;
 
     // See MainWindow for why each top-level window syncs this itself --
@@ -37,37 +51,184 @@ export component PropertiesWindow inherits Window {
         Palette.color-scheme = root.theme-is-dark ? ColorScheme.dark : ColorScheme.light;
     }
 
-    in property <string> file-path: "";
-    in property <string> prop-title: "";
-    in property <string> prop-artist: "";
-    in property <string> prop-album: "";
-    in property <string> prop-track-number: "";
-    in property <string> prop-duration: "";
-    in property <string> prop-sample-rate: "";
-    in property <string> prop-channels: "";
-    in property <string> prop-bits-per-sample: "";
+    /// The track's title, or "3 tracks".
+    in property <string> subject;
+    in property <[PropertyField]> fields;
+    in property <[DetailRow]> details;
+    in property <[ArtworkRow]> artwork;
+    /// "Saving…", "Saved", what went wrong -- or "".
+    in property <string> status;
+    in property <bool> busy;
+    /// Something was changed and isn't saved yet.
+    in property <bool> dirty;
 
-    callback close-clicked();
+    callback field-edited(int, string);
+    callback artwork-add(int);
+    callback artwork-remove(int);
+    callback ok-clicked();
+    callback cancel-clicked();
+    callback apply-clicked();
 
     VerticalLayout {
-        padding: 14px;
+        padding: 10px;
         spacing: 8px;
 
-        PropertyRow { label: "File"; value: root.file-path; }
-        PropertyRow { label: "Title"; value: root.prop-title; }
-        PropertyRow { label: "Artist"; value: root.prop-artist; }
-        PropertyRow { label: "Album"; value: root.prop-album; }
-        PropertyRow { label: "Track #"; value: root.prop-track-number; }
-        PropertyRow { label: "Duration"; value: root.prop-duration; }
-        PropertyRow { label: "Sample rate"; value: root.prop-sample-rate; }
-        PropertyRow { label: "Channels"; value: root.prop-channels; }
-        PropertyRow { label: "Bits per sample"; value: root.prop-bits-per-sample; }
+        TabWidget {
+            vertical-stretch: 1;
 
-        Rectangle { vertical-stretch: 1; }
+            Tab {
+                title: "Metadata";
+                VerticalLayout {
+                    Rectangle {
+                        height: 22px;
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            Text { text: "Name"; width: 170px; font-size: 11px; vertical-alignment: center; color: Theme.text-muted; }
+                            Text { text: "Value"; font-size: 11px; vertical-alignment: center; color: Theme.text-muted; }
+                        }
+                    }
+                    ListView {
+                        vertical-stretch: 1;
+                        for field[i] in root.fields: Rectangle {
+                            height: 34px;
+                            background: Math.mod(i, 2) == 1 ? Theme.bg-sunken.transparentize(0.5) : transparent;
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                padding-right: 8px;
+                                spacing: 8px;
+                                Text {
+                                    text: field.label;
+                                    width: 162px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                    color: Theme.text-primary;
+                                }
+                                LineEdit {
+                                    horizontal-stretch: 1;
+                                    text: field.value;
+                                    placeholder-text: field.multiple ? "\u{2039}multiple values\u{203a}" : "";
+                                    edited(text) => { root.field-edited(i, text); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Tab {
+                title: "Details";
+                ListView {
+                    for row in root.details: Rectangle {
+                        height: row.is-section ? 34px : 24px;
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 8px;
+                            if row.is-section: Text {
+                                text: row.label;
+                                font-size: 15px;
+                                font-weight: 700;
+                                vertical-alignment: bottom;
+                                color: Theme.accent;
+                            }
+                            if !row.is-section: Text {
+                                text: row.label;
+                                width: 150px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                                color: Theme.text-primary;
+                            }
+                            if !row.is-section: Text {
+                                text: row.value;
+                                horizontal-stretch: 1;
+                                vertical-alignment: center;
+                                overflow: elide;
+                                color: Theme.text-primary;
+                            }
+                        }
+                    }
+                }
+            }
+
+            Tab {
+                title: "Artwork";
+                ListView {
+                    for slot[i] in root.artwork: Rectangle {
+                        height: 96px;
+                        background: Math.mod(i, 2) == 1 ? Theme.bg-sunken.transparentize(0.5) : transparent;
+                        HorizontalLayout {
+                            padding: 8px;
+                            spacing: 12px;
+                            Text {
+                                text: slot.label;
+                                width: 100px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                                color: Theme.text-primary;
+                            }
+                            Rectangle {
+                                width: 80px;
+                                border-radius: 4px;
+                                background: Theme.bg-sunken;
+                                clip: true;
+                                if slot.present: Image {
+                                    width: parent.width;
+                                    height: parent.height;
+                                    source: slot.picture;
+                                    image-fit: contain;
+                                }
+                                if !slot.present: Text {
+                                    text: "+";
+                                    font-size: 28px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                    color: Theme.text-muted;
+                                }
+                                TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.artwork-add(i); }
+                                }
+                            }
+                            Text {
+                                horizontal-stretch: 1;
+                                text: slot.info;
+                                vertical-alignment: center;
+                                color: slot.present ? Theme.text-primary : Theme.text-muted;
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    Button {
+                                        text: slot.present ? "Replace\u{2026}" : "Add\u{2026}";
+                                        clicked => { root.artwork-add(i); }
+                                    }
+                                    Button {
+                                        text: "\u{00d7}";
+                                        enabled: slot.present;
+                                        clicked => { root.artwork-remove(i); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         HorizontalLayout {
-            alignment: end;
-            Button { text: "Close"; clicked => { root.close-clicked(); } }
+            spacing: 6px;
+            Text {
+                horizontal-stretch: 1;
+                text: root.status;
+                vertical-alignment: center;
+                overflow: elide;
+                font-size: 12px;
+                color: Theme.text-muted;
+            }
+            Button { text: "OK"; width: 80px; primary: true; enabled: !root.busy; clicked => { root.ok-clicked(); } }
+            Button { text: "Cancel"; width: 80px; clicked => { root.cancel-clicked(); } }
+            Button { text: "Apply"; width: 80px; enabled: root.dirty && !root.busy; clicked => { root.apply-clicked(); } }
         }
     }
 }

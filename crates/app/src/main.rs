@@ -10,6 +10,7 @@ mod media_keys;
 mod platform;
 mod playlist_rows;
 mod playlists;
+mod properties;
 mod settings;
 mod store;
 mod theme;

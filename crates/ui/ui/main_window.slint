@@ -7,12 +7,12 @@ import { StatusBar } from "status_bar.slint";
 import { WaveformSeekbar } from "waveform_seekbar.slint";
 import { SpectrumView, SpectrumNote } from "spectrum_view.slint";
 import { NowPlayingBar, AlbumArtView } from "now_playing.slint";
-import { PropertiesWindow } from "properties_window.slint";
+import { PropertiesWindow, PropertyField, DetailRow, ArtworkRow } from "properties_window.slint";
 import { AboutWindow } from "about_window.slint";
 import { SettingsWindow, ThemeListEntry } from "settings_window.slint";
 import { ThemeEditorWindow } from "theme_editor_window.slint";
 import { LyricsEditorWindow } from "lyrics_editor_window.slint";
-import { VintageEqualizer } from "vintage_equalizer.slint";
+import { VintageEqualizer, Vfd } from "vintage_equalizer.slint";
 import { LibraryView, LibraryRow } from "library_view.slint";
 import { LoadingOverlay } from "loading_overlay.slint";
 import { PlaylistManagerWindow, PlaylistManagerRow } from "playlist_manager_window.slint";
@@ -79,7 +79,7 @@ export struct PanelChoice {
     label: string,
 }
 
-export { LibraryRow, PlaylistManagerWindow, PlaylistManagerRow, PlaylistRow, PropertiesWindow, AboutWindow, SettingsWindow, ThemeListEntry, ThemeEditorWindow, LyricsEditorWindow, Theme }
+export { Vfd, PropertyField, DetailRow, ArtworkRow, LibraryRow, PlaylistManagerWindow, PlaylistManagerRow, PlaylistRow, PropertiesWindow, AboutWindow, SettingsWindow, ThemeListEntry, ThemeEditorWindow, LyricsEditorWindow, Theme }
 
 export component MainWindow inherits Window {
     // Set from Cargo.toml's version at startup (see `app::wiring`).
@@ -213,6 +213,8 @@ export component MainWindow inherits Window {
     callback playlist-chosen(int);
     callback new-playlist-clicked();
     callback playlist-manager-clicked();
+    callback send-to-playlist(int, int);
+    callback send-to-new-playlist(int);
 
     // The playlist lives inside a panel slot, where it can't be addressed
     // by id; bumping the serial asks whichever playlist panel exists to
@@ -387,6 +389,8 @@ export component MainWindow inherits Window {
                 playlist-chosen(i) => { root.playlist-chosen(i); }
                 new-playlist-clicked => { root.new-playlist-clicked(); }
                 playlist-manager-clicked => { root.playlist-manager-clicked(); }
+                send-to-playlist(track, playlist) => { root.send-to-playlist(track, playlist); }
+                send-to-new-playlist(track) => { root.send-to-new-playlist(track); }
                 scroll-serial: root.playlist-scroll-serial;
                 scroll-y: root.playlist-scroll-y;
                 row-clicked(i) => { root.row-clicked(i); }

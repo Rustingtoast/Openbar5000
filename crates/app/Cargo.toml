@@ -34,8 +34,17 @@ tracing-subscriber.workspace = true
 # OS media keys / now-playing integration (issue #17). On Linux it talks
 # MPRIS over the pure-Rust zbus instead of libdbus, so building needs no
 # extra system packages.
-[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+[target.'cfg(target_os = "windows")'.dependencies]
 souvlaki = { version = "0.8", default-features = false }
+
+# macOS talks to MediaPlayer.framework directly through the maintained
+# objc2 bindings: souvlaki's macOS side still uses `cocoa`/`block` 0.1,
+# which future Rust versions will reject.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSDictionary", "NSValue", "NSObject"] }
+objc2-media-player = { version = "0.3", default-features = false, features = ["std", "block2", "MPRemoteCommandCenter", "MPRemoteCommand", "MPRemoteCommandEvent", "MPNowPlayingInfoCenter", "MPMediaItem", "MPMediaEntity"] }
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 souvlaki = { version = "0.8", default-features = false, features = ["use_zbus"] }

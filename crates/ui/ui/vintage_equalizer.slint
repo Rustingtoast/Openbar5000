@@ -4,12 +4,13 @@
 // The display's dots are built on the Rust side (`app::equalizer`) as path
 // strings in grid units, so they stay crisp at any panel size.
 
-// Fixed hardware colours: this mimics a physical device, so it looks the
-// same in every theme.
+// Hardware colours: this mimics a physical device, so it looks the same in
+// every theme. The display's colour can be picked in Preferences >
+// Equalizer (issue #35); half-lit and unlit dots follow it.
 export global Vfd {
-    out property <color> glow: #6fd6ff;
-    out property <color> half: #6fd6ff.transparentize(0.55);
-    out property <color> dim: #6fd6ff.transparentize(0.9);
+    in-out property <color> glow: #6fd6ff;
+    out property <color> half: self.glow.transparentize(0.55);
+    out property <color> dim: self.glow.transparentize(0.9);
     out property <color> glass: #03080b;
     out property <color> body-top: #2b2b2b;
     out property <color> body-bottom: #151515;

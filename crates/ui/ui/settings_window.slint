@@ -73,7 +73,7 @@ export component SettingsWindow inherits Window {
     icon: Theme.logo;
     preferred-width: 680px;
     // Tall enough for the Spectrum Analyzer tab, the tallest.
-    preferred-height: 600px;
+    preferred-height: 660px;
     min-width: 560px;
     min-height: 420px;
     // See MainWindow: an explicit max keeps the window resizable.
@@ -172,6 +172,10 @@ export component SettingsWindow inherits Window {
     in property <string> eq-lit-dots;
     in property <string> eq-half-dots;
     in property <string> eq-dim-dots;
+    in property <color> eq-vfd-color: #6fd6ff;
+    in property <string> eq-vfd-color-hex;
+    callback eq-vfd-color-chosen(color);
+    callback eq-vfd-color-edited(string);
     callback eq-vintage-toggled(bool);
     in property <[string]> eq-preset-names;
     in property <int> eq-preset-index;
@@ -470,6 +474,10 @@ export component SettingsWindow inherits Window {
                     lit-dots: root.eq-lit-dots;
                     half-dots: root.eq-half-dots;
                     dim-dots: root.eq-dim-dots;
+                    vfd-color: root.eq-vfd-color;
+                    vfd-color-hex: root.eq-vfd-color-hex;
+                    vfd-color-chosen(c) => { root.eq-vfd-color-chosen(c); }
+                    vfd-color-edited(text) => { root.eq-vfd-color-edited(text); }
                     vintage-toggled(on) => { root.eq-vintage-toggled(on); }
                     preset-names: root.eq-preset-names;
                     preset-index: root.eq-preset-index;

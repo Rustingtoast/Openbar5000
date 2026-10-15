@@ -7,6 +7,7 @@ use crate::audio_output::AudioOutput;
 use crate::equalizer::Equalizer;
 use crate::media_library::MediaLibrary;
 use crate::playlists::Playlists;
+use crate::properties::PropertiesEditor;
 use crate::lyrics::Lyrics;
 use crate::media_keys::{MediaAction, MediaKeys};
 use crate::platform;
@@ -21,7 +22,7 @@ use crate::settings::{
 use crate::store::Store;
 use crate::theme::{self, ThemeColors, ThemeRegistry};
 use engine::{
-    AudioInfo, EngineCommand, EngineEvent, PlaybackEngine, PlaybackMode, PlaybackState, Track,
+    EngineCommand, EngineEvent, PlaybackEngine, PlaybackMode, PlaybackState, Track,
 };
 use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel};
 use std::cell::{Cell, RefCell};
@@ -69,6 +70,7 @@ pub struct UiHandles {
     pub playlist_manager_window: PlaylistManagerWindow,
     pub playlists: Rc<Playlists>,
     pub media_keys_timer: Rc<Timer>,
+    pub properties_editor: Rc<PropertiesEditor>,
 }
 
 /// Shared UI-thread state kept in sync with the engine's playlist, so any
@@ -134,14 +136,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
 
 
     let properties_window = PropertiesWindow::new().expect("failed to create properties window");
-    {
-        let properties_window_weak = properties_window.as_weak();
-        properties_window.on_close_clicked(move || {
-            if let Some(window) = properties_window_weak.upgrade() {
-                window.hide().expect("failed to hide properties window");
-            }
-        });
-    }
+    let properties_editor = PropertiesEditor::wire(&properties_window, engine.clone(), store.clone());
 
     window.set_app_version(APP_VERSION.into());
     let about_window = AboutWindow::new().expect("failed to create about window");
@@ -355,6 +350,22 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         store.clone(),
         settings.clone(),
     );
+    {
+        let playlists = playlists.clone();
+        let playlist_view_state = playlist_view_state.clone();
+        window.on_send_to_playlist(move |track, playlist| {
+            let paths = selected_track_paths(&playlist_view_state.borrow(), track as usize);
+            playlists.send_to(playlist, paths);
+        });
+    }
+    {
+        let playlists = playlists.clone();
+        let playlist_view_state = playlist_view_state.clone();
+        window.on_send_to_new_playlist(move |track| {
+            let paths = selected_track_paths(&playlist_view_state.borrow(), track as usize);
+            playlists.send_to_new(paths);
+        });
+    }
     if restored > 0 {
         window.set_status_text("Restoring playlist\u{2026}".into());
         show_loading(window, "Restoring playlist\u{2026}", 0, restored);
@@ -1010,34 +1021,30 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
 
     {
         let current_track = current_track.clone();
-        let properties_window_weak = properties_window.as_weak();
+        let properties_editor = properties_editor.clone();
         window.on_properties_clicked(move || {
             let Some(track) = current_track.borrow().clone() else {
                 return;
             };
-            let Some(properties_window) = properties_window_weak.upgrade() else {
-                return;
-            };
-            show_properties(&properties_window, &track);
+            properties_editor.open(vec![(track.path, track.metadata.title)]);
         });
     }
 
     {
+        // The selection, if the clicked track is in it (issue #34).
         let playlist_view_state = playlist_view_state.clone();
-        let properties_window_weak = properties_window.as_weak();
+        let properties_editor = properties_editor.clone();
         window.on_row_properties_clicked(move |index| {
-            let Some(track) = playlist_view_state
-                .borrow()
-                .tracks
-                .get(index as usize)
-                .cloned()
-            else {
-                return;
+            let tracks: Vec<(PathBuf, String)> = {
+                let state = playlist_view_state.borrow();
+                state
+                    .targets(index as usize)
+                    .iter()
+                    .filter_map(|&i| state.tracks.get(i))
+                    .map(|t| (t.path.clone(), t.metadata.title.clone()))
+                    .collect()
             };
-            let Some(properties_window) = properties_window_weak.upgrade() else {
-                return;
-            };
-            show_properties(&properties_window, &track);
+            properties_editor.open(tracks);
         });
     }
 
@@ -1444,6 +1451,11 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     }
 
     report_renderer(window, &settings_window);
+    // Playback statistics (issue #34): a play counts once the song reaches
+    // half its length or four minutes, whichever is first -- the usual
+    // scrobbling rule -- once per time it's started.
+    let play_count: RefCell<Option<(PathBuf, Duration, bool)>> = RefCell::new(None);
+    let play_count_store = store.clone();
     let playlists_for_poll = playlists.clone();
     // Which files are in the playlist, to tell additions from reorders.
     let playlist_fingerprint = Cell::new(0u64);
@@ -1478,6 +1490,12 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                     if matches!(event, EngineEvent::TrackChanged { .. }) {
                         // Belongs to the previous track.
                         latest_position = None;
+                    }
+                    if let EngineEvent::TrackChanged { track, .. } = &event {
+                        let threshold = (track.metadata.duration / 2)
+                            .min(Duration::from_secs(240))
+                            .max(Duration::from_secs(1));
+                        *play_count.borrow_mut() = Some((track.path.clone(), threshold, false));
                     }
                     if let Some(media) = media_keys.borrow_mut().as_mut() {
                         match &event {
@@ -1530,6 +1548,17 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                 engine.send(EngineCommand::ReorderPlaylist(order));
             }
         }
+        if let Some(EngineEvent::PositionUpdate { position, .. }) = &latest_position {
+            if let Some((path, threshold, counted)) = play_count.borrow_mut().as_mut() {
+                if !*counted && *position >= *threshold {
+                    *counted = true;
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_secs() as i64);
+                    play_count_store.record_play(path, now);
+                }
+            }
+        }
         if let Some(event) = latest_position {
             apply_event(
                 &window,
@@ -1571,6 +1600,19 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         }
     });
 
+    // Right-click menus drawn by Slint instead of the OS: a native context
+    // menu on macOS/Windows runs its own modal loop, freezing the spectrum,
+    // seekbar and every other timer while it's open. Slint reads this switch
+    // when a menu opens, but decides native-or-not for the top menu bar
+    // once, when it's first built -- so setting it after the window is up
+    // keeps the native menu bar (and macOS's app menu) as it is.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    Timer::single_shot(Duration::from_secs(1), || {
+        if std::env::var_os("SLINT_NO_MUDA").is_none() {
+            std::env::set_var("SLINT_NO_MUDA", "1");
+        }
+    });
+
     UiHandles {
         event_poll_timer,
         properties_window,
@@ -1585,6 +1627,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         playlist_manager_window,
         playlists,
         media_keys_timer,
+        properties_editor,
     }
 }
 
@@ -2953,6 +2996,11 @@ fn current_row_offset(playlist_model: &VecModel<PlaylistRow>) -> Option<f32> {
     None
 }
 
+/// The files a row action on `index` applies to (see `targets`).
+fn selected_track_paths(state: &PlaylistViewState, index: usize) -> Vec<PathBuf> {
+    state.targets(index).iter().filter_map(|&i| state.tracks.get(i)).map(|t| t.path.clone()).collect()
+}
+
 /// The paths a Copy/Cut on `index` takes, one per line.
 fn selected_paths(state: &PlaylistViewState, index: usize) -> String {
     state
@@ -3231,44 +3279,6 @@ fn spectrum_channel_from_label(label: &str) -> engine::SpectrumChannelMode {
     }
 }
 
-fn show_properties(properties_window: &PropertiesWindow, track: &Track) {
-    properties_window.set_file_path(track.path.display().to_string().into());
-    properties_window.set_prop_title(track.metadata.title.clone().into());
-    properties_window.set_prop_artist(track.metadata.artist.clone().into());
-    properties_window.set_prop_album(track.metadata.album.clone().into());
-    properties_window.set_prop_track_number(
-        track
-            .metadata
-            .track_number
-            .map(|n| n.to_string())
-            .unwrap_or_default()
-            .into(),
-    );
-    properties_window.set_prop_duration(format_duration(track.metadata.duration).into());
-
-    match engine::probe_audio_info(&track.path) {
-        Ok(AudioInfo {
-            sample_rate,
-            channels,
-            bits_per_sample,
-            ..
-        }) => {
-            properties_window.set_prop_sample_rate(format!("{sample_rate} Hz").into());
-            properties_window.set_prop_channels(channels.to_string().into());
-            properties_window.set_prop_bits_per_sample(bits_per_sample.to_string().into());
-        }
-        Err(e) => {
-            properties_window.set_prop_sample_rate("unknown".into());
-            properties_window.set_prop_channels("unknown".into());
-            properties_window.set_prop_bits_per_sample("unknown".into());
-            tracing::warn!("failed to probe audio info for properties view: {e}");
-        }
-    }
-
-    properties_window
-        .show()
-        .expect("failed to show properties window");
-}
 
 #[cfg(test)]
 mod tests {
