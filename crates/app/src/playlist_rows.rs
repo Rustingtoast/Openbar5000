@@ -145,6 +145,85 @@ pub fn sort_order(tracks: &[Track], sort: PlaylistSort) -> Vec<usize> {
     order
 }
 
+/// The Sorting menu's choice: kept applied, so tracks added later land in
+/// order too. `Manual` leaves the playlist as it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SortMode {
+    #[default]
+    Manual,
+    Artist,
+    Album,
+    Title,
+    TrackNumber,
+    Date,
+    FilePath,
+}
+
+impl SortMode {
+    /// Every mode, in the Sorting menu's order, with its menu title.
+    pub const ALL: [(SortMode, &'static str); 7] = [
+        (Self::Manual, "Manual (no sorting)"),
+        (Self::Artist, "By Artist"),
+        (Self::Album, "By Album"),
+        (Self::Title, "By Title"),
+        (Self::TrackNumber, "By Track Number"),
+        (Self::Date, "By Date"),
+        (Self::FilePath, "By File Path"),
+    ];
+
+    /// Stable id shared by the settings store and the Slint menu.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Artist => "artist",
+            Self::Album => "album",
+            Self::Title => "title",
+            Self::TrackNumber => "track-number",
+            Self::Date => "date",
+            Self::FilePath => "path",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Self {
+        match value {
+            "artist" => Self::Artist,
+            "album" => Self::Album,
+            "title" => Self::Title,
+            "track-number" => Self::TrackNumber,
+            "date" => Self::Date,
+            "path" => Self::FilePath,
+            _ => Self::Manual,
+        }
+    }
+
+    /// The sorts applied in turn, least significant first: each is stable,
+    /// so e.g. "by artist" keeps every artist's albums together and their
+    /// tracks in disc/track order.
+    fn keys(self) -> &'static [PlaylistSort] {
+        use PlaylistSort::*;
+        match self {
+            Self::Manual => &[],
+            Self::Artist => &[TrackNumber, Album, Artist],
+            Self::Album => &[TrackNumber, Album],
+            Self::Title => &[Title],
+            Self::TrackNumber => &[TrackNumber],
+            Self::Date => &[TrackNumber, Album, Date],
+            Self::FilePath => &[FilePath],
+        }
+    }
+}
+
+/// The order `mode` puts `tracks` in, as for [`sort_order`]; `None` when
+/// they already are (or `mode` is `Manual`), so nothing needs reordering.
+pub fn sorted_order(tracks: &[Track], mode: SortMode) -> Option<Vec<usize>> {
+    let mut order: Vec<usize> = (0..tracks.len()).collect();
+    for &key in mode.keys() {
+        let current: Vec<Track> = order.iter().map(|&i| tracks[i].clone()).collect();
+        order = sort_order(&current, key).into_iter().map(|k| order[k]).collect();
+    }
+    (order.iter().enumerate().any(|(k, &i)| k != i)).then_some(order)
+}
+
 /// Builds the flat, display-ready row list the Slint playlist view iterates:
 /// a header row for each contiguous run of tracks sharing the same
 /// `grouping` key (mirroring the reference UI's grouped playlist), followed
@@ -414,6 +493,20 @@ mod tests {
             track("/m/a/1.flac", "Alpha", "One", "Yankee", 1),
             track("/m/b/1.flac", "Beta", "Two", "xray", 1),
         ]
+    }
+
+    #[test]
+    fn sort_modes_order_by_artist_then_album_then_track() {
+        let tracks = tracks();
+        let order = sorted_order(&tracks, SortMode::Artist).unwrap();
+        let titles: Vec<_> = order.iter().map(|&i| tracks[i].metadata.title.as_str()).collect();
+        assert_eq!(titles, ["Yankee", "xray", "zulu"]);
+        // Already sorted, or manual: nothing to do.
+        let sorted: Vec<Track> = order.iter().map(|&i| tracks[i].clone()).collect();
+        assert_eq!(sorted_order(&sorted, SortMode::Artist), None);
+        assert_eq!(sorted_order(&tracks, SortMode::Manual), None);
+        assert_eq!(SortMode::from_str(SortMode::TrackNumber.as_str()), SortMode::TrackNumber);
+        assert_eq!(SortMode::from_str("nonsense"), SortMode::Manual);
     }
 
     #[test]

@@ -66,6 +66,12 @@ export struct LayoutDivider {
 }
 
 /// An entry in a panel's "Replace with" menu -- the panel registry.
+export struct SortChoice {
+    id: string,
+    title: string,
+    checked: bool,
+}
+
 export struct PanelChoice {
     id: string,
     label: string,
@@ -192,6 +198,9 @@ export component MainWindow inherits Window {
     callback search-edited(string);
     in property <string> playlist-grouping: "artist-album-disc";
     in property <bool> playlist-list-view: false;
+    // The Sorting menu (see `app::playlist_rows::SortMode`).
+    in property <[SortChoice]> sort-choices: [];
+    callback sorting-chosen(string);
     in property <string> playlist-summary: "";
 
     // The playlist lives inside a panel slot, where it can't be addressed
@@ -304,6 +313,18 @@ export component MainWindow inherits Window {
                     activated => { root.eq-enabled-toggled(); }
                 }
                 MenuItem { title: "Equalizer Settings..."; activated => { root.eq-settings-clicked(); } }
+            }
+        }
+        Menu {
+            title: "Sorting";
+            // Rebuilt by the app after every choice: activating a checkable
+            // item toggles its own `checked`, which would otherwise leave
+            // stale check marks behind.
+            for choice in root.sort-choices: MenuItem {
+                title: choice.title;
+                checkable: true;
+                checked: choice.checked;
+                activated => { root.sorting-chosen(choice.id); }
             }
         }
         Menu {

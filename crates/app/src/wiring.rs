@@ -10,8 +10,8 @@ use crate::lyrics::Lyrics;
 use crate::media_keys::{MediaAction, MediaKeys};
 use crate::platform;
 use crate::playlist_rows::{
-    all_group_keys, build_grouped_rows, build_list_rows, group_key_of, sort_order, CoverCache, PlaylistGrouping,
-    PlaylistSort,
+    all_group_keys, build_grouped_rows, build_list_rows, group_key_of, sort_order, sorted_order, CoverCache,
+    PlaylistGrouping, PlaylistSort, SortMode,
 };
 use crate::settings::{
     note_from_name, note_name, normalize_fps, FPS_CHOICES, valid_note_range, Settings, A4_MAX_HZ, A4_MIN_HZ,
@@ -32,7 +32,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use ui::{
     cover_image_from_rgba, format_duration, AboutWindow, ArtistCandidate, DropPreview, InfoRow, LayoutDivider, LyricLine, SpectrumNote, TabStripSlot, MainWindow, PanelChoice, PanelSlot, PlaylistRow, PropertiesWindow, SettingsWindow,
-    LyricsEditorWindow, ThemeEditorWindow, ThemeListEntry,
+    LyricsEditorWindow, SortChoice, ThemeEditorWindow, ThemeListEntry,
 };
 
 /// The workspace version from `Cargo.toml` -- the one number the build
@@ -1015,15 +1015,46 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             refresh_playlist_rows(&playlist_model, &playlist_view_state);
         });
     }
+    // The Sorting menu's mode, kept applied (see the event poll below).
+    let sort_mode = Rc::new(Cell::new(settings.borrow().playlist_sort));
+    show_sort_choices(window, sort_mode.get());
+    let set_sort_mode = {
+        let sort_mode = sort_mode.clone();
+        let settings = settings.clone();
+        let store = store.clone();
+        let window_weak = window.as_weak();
+        Rc::new(move |mode: SortMode| {
+            sort_mode.set(mode);
+            settings.borrow_mut().playlist_sort = mode;
+            settings.borrow().save(&store);
+            if let Some(window) = window_weak.upgrade() {
+                show_sort_choices(&window, mode);
+            }
+        })
+    };
     {
         let playlist_view_state = playlist_view_state.clone();
         let engine = engine.clone();
+        let set_sort_mode = set_sort_mode.clone();
         window.on_sort_clicked(move |id| {
             let Some(sort) = PlaylistSort::from_str(&id) else {
                 return;
             };
+            // A one-off reorder: a kept sort would undo it.
+            set_sort_mode(SortMode::Manual);
             let order = sort_order(&playlist_view_state.borrow().tracks, sort);
             engine.send(EngineCommand::ReorderPlaylist(order));
+        });
+    }
+    {
+        let playlist_view_state = playlist_view_state.clone();
+        let engine = engine.clone();
+        window.on_sorting_chosen(move |id| {
+            let mode = SortMode::from_str(&id);
+            set_sort_mode(mode);
+            if let Some(order) = sorted_order(&playlist_view_state.borrow().tracks, mode) {
+                engine.send(EngineCommand::ReorderPlaylist(order));
+            }
         });
     }
     {
@@ -1230,6 +1261,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         // the newest of each is worth drawing.
         let mut latest_position = None;
         let mut latest_spectrum = None;
+        let mut playlist_changed = false;
         while let Some(event) = engine.try_recv_event() {
             match event {
                 EngineEvent::PositionUpdate { .. } => latest_position = Some(event),
@@ -1238,6 +1270,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                     audio_output_events.device_changed(&name, fallback);
                 }
                 event => {
+                    playlist_changed |= matches!(event, EngineEvent::PlaylistUpdated { .. });
                     if matches!(event, EngineEvent::TrackChanged { .. }) {
                         // Belongs to the previous track.
                         latest_position = None;
@@ -1263,6 +1296,13 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                         event,
                     );
                 }
+            }
+        }
+        // Tracks added or loaded: put them where the kept sort says. The
+        // reorder comes back as one more update, already in order.
+        if playlist_changed {
+            if let Some(order) = sorted_order(&playlist_view_state.borrow().tracks, sort_mode.get()) {
+                engine.send(EngineCommand::ReorderPlaylist(order));
             }
         }
         if let Some(event) = latest_position {
@@ -1948,6 +1988,21 @@ impl AlbumArtLoader {
 /// `bucket count` x [-1, 1] space (y down, so peaks are negated): along the
 /// top edge (maxima) left to right, then back along the bottom (minima) --
 /// the stroked shape the reference UI draws per channel.
+/// Fills the Sorting menu with `selected` checked -- always as a new model,
+/// so the menu items are rebuilt rather than keeping a check mark their
+/// own activation toggled.
+fn show_sort_choices(window: &MainWindow, selected: SortMode) {
+    let choices: Vec<SortChoice> = SortMode::ALL
+        .iter()
+        .map(|&(mode, title)| SortChoice {
+            id: mode.as_str().into(),
+            title: title.into(),
+            checked: mode == selected,
+        })
+        .collect();
+    window.set_sort_choices(ModelRc::from(Rc::new(VecModel::from(choices))));
+}
+
 /// Logs which renderer draws the window, and shows it in Preferences >
 /// Visualizations: Slint quietly falls back to its CPU-only software
 /// renderer when OpenGL can't be set up (e.g. a missing or broken GL

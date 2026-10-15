@@ -1,6 +1,6 @@
 use crate::artist_info::{LookupOptions, WIKIPEDIA_LANGUAGES};
 use crate::layout::Layout;
-use crate::playlist_rows::PlaylistGrouping;
+use crate::playlist_rows::{PlaylistGrouping, SortMode};
 use crate::store::Store;
 use engine::{EqualizerSettings, PlaybackMode, SpectrumChannelMode, SpectrumConfig, EQ_MAX_DB};
 use std::path::PathBuf;
@@ -20,6 +20,8 @@ pub struct Settings {
     pub spectrum: SpectrumConfig,
     pub playback_mode: PlaybackMode,
     pub playlist_grouping: PlaylistGrouping,
+    /// The Sorting menu's kept sort order.
+    pub playlist_sort: SortMode,
     /// Plain song list instead of album groups (Preferences > Appearance).
     pub playlist_list_view: bool,
     /// How often the spectrum/seekbar redraw while playing: 60 or 30 (caps
@@ -62,6 +64,7 @@ impl Default for Settings {
             playback_mode: PlaybackMode::Normal,
             playlist_grouping: PlaylistGrouping::default(),
             playlist_list_view: false,
+            playlist_sort: SortMode::Manual,
             visualization_fps: 60,
             discord_presence_enabled: false,
             discord_client_id: String::new(),
@@ -215,6 +218,9 @@ impl Settings {
         if let Some(v) = get("playback_mode") {
             settings.playback_mode = playback_mode_from_str(&v);
         }
+        if let Some(v) = get("playlist_sort") {
+            settings.playlist_sort = SortMode::from_str(&v);
+        }
         if let Some(v) = get("playlist_view") {
             settings.playlist_list_view = v == "list";
         }
@@ -305,6 +311,7 @@ impl Settings {
                 "playback_mode",
                 playback_mode_to_str(self.playback_mode).to_string(),
             ),
+            ("playlist_sort", self.playlist_sort.as_str().to_string()),
             (
                 "playlist_view",
                 if self.playlist_list_view { "list" } else { "album" }.to_string(),
