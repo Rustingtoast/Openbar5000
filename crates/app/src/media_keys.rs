@@ -68,6 +68,12 @@ impl MediaKeys {
     /// (only) on Windows. Failing is not fatal -- the player just won't
     /// react to media keys -- so this logs and returns `None`.
     pub fn new(hwnd: Option<*mut std::ffi::c_void>) -> Option<Self> {
+        // souvlaki *panics* on Windows without a window handle (issue #31)
+        // rather than returning an error -- never hand it `None` there.
+        if cfg!(windows) && hwnd.is_none() {
+            tracing::warn!("media keys unavailable: no window handle yet");
+            return None;
+        }
         let config = PlatformConfig {
             display_name: "Openbar5000",
             dbus_name: "openbar5000",

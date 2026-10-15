@@ -23,6 +23,15 @@ export struct PlaylistRow {
     duration: string,
     track-index: int,
     is-current: bool,
+    /// Selected (click, Shift+click, Ctrl/Cmd+click) -- what Remove, Cut
+    /// and Copy act on.
+    is-selected: bool,
+}
+
+/// One entry of the summary bar's playlist menu.
+export struct PlaylistChoice {
+    title: string,
+    checked: bool,
 }
 
 export component PlaylistView inherits Rectangle {
@@ -35,7 +44,16 @@ export component PlaylistView inherits Rectangle {
     /// List view (Preferences > Appearance): one plain row per song, with
     /// artist and album columns and no album headers.
     in property <bool> list-view: false;
+    /// The playlists, for the summary bar's menu (issue #33).
+    in property <[PlaylistChoice]> playlists: [];
+    in property <string> playlist-name;
+    /// Plays the track (double-click, or the menu's Play).
     callback row-clicked(int);
+    /// Selects the track: plain, `range` (Shift) or `toggle` (Ctrl/Cmd).
+    callback row-selected(int, bool, bool);
+    callback playlist-chosen(int);
+    callback new-playlist-clicked();
+    callback playlist-manager-clicked();
     callback row-properties-clicked(int);
     callback row-open-folder-clicked(int);
     callback row-remove-clicked(int);
@@ -68,16 +86,34 @@ export component PlaylistView inherits Rectangle {
     VerticalLayout {
         // Summary line on top, search box at the bottom, as in the
         // reference UI.
+        // Clicking it opens the playlist menu: switch, new, manager.
         Rectangle {
             height: 18px;
-            background: Theme.bg-raised;
+            background: summary-touch.has-hover ? Theme.bg-raised.brighter(0.15) : Theme.bg-raised;
             Text {
-                text: root.summary;
+                text: (root.playlist-name == "" ? "" : root.playlist-name + "  \u{00b7}  ") + root.summary + "  \u{25be}";
                 font-size: 11px;
-                color: Theme.text-muted;
+                color: summary-touch.has-hover ? Theme.text-primary : Theme.text-muted;
                 horizontal-alignment: center;
                 vertical-alignment: center;
                 overflow: elide;
+            }
+            playlist-menu := ContextMenuArea {
+                Menu {
+                    for choice[i] in root.playlists: MenuItem {
+                        title: choice.title;
+                        checkable: true;
+                        checked: choice.checked;
+                        activated => { root.playlist-chosen(i); }
+                    }
+                    MenuSeparator {}
+                    MenuItem { title: "New Playlist"; activated => { root.new-playlist-clicked(); } }
+                    MenuItem { title: "Playlist Manager..."; activated => { root.playlist-manager-clicked(); } }
+                }
+                summary-touch := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { playlist-menu.show({ x: self.mouse-x, y: self.mouse-y }); }
+                }
             }
         }
         if root.list-view: Rectangle {
@@ -99,7 +135,7 @@ export component PlaylistView inherits Rectangle {
             vertical-stretch: 1;
             for row[i] in root.rows: Rectangle {
                 height: row.is-header ? 64px : 22px;
-                background: row.is-current ? Theme.accent : transparent;
+                background: row.is-current ? Theme.accent : row.is-selected ? Theme.accent.transparentize(0.65) : transparent;
 
                 // One menu for both row kinds, mirroring the reference UI's
                 // playlist context menu; track-only entries are hidden on
@@ -211,7 +247,12 @@ export component PlaylistView inherits Rectangle {
                     }
 
                     if !row.is-header: TouchArea {
-                        clicked => { root.row-clicked(row.track-index); }
+                        pointer-event(event) => {
+                            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                                root.row-selected(row.track-index, event.modifiers.shift, event.modifiers.control || event.modifiers.meta);
+                            }
+                        }
+                        double-clicked => { root.row-clicked(row.track-index); }
                         if root.list-view: HorizontalLayout {
                             padding-left: 8px;
                             padding-right: 4px;

@@ -588,6 +588,7 @@ fn track_row(
         duration: format_duration(track.metadata.duration).into(),
         track_index: i as i32,
         is_current: current_index == Some(i),
+        is_selected: false,
     }
 }
 
@@ -672,6 +673,7 @@ fn header_row(
         // target (e.g. Play).
         track_index: group_start as i32,
         is_current,
+        is_selected: false,
     }
 }
 

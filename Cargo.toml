@@ -43,3 +43,5 @@ serde_json = "1"
 ureq = "3"
 # Watches the media library's music folders for changes.
 notify = "8"
+# Local date, for the holiday logos.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }

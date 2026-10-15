@@ -1,7 +1,7 @@
 use crate::store::Store;
 use slint::ComponentHandle;
 use ui::{
-    AboutWindow, LyricsEditorWindow, MainWindow, PropertiesWindow, SettingsWindow, Theme,
+    AboutWindow, LyricsEditorWindow, PlaylistManagerWindow, MainWindow, PropertiesWindow, SettingsWindow, Theme,
     ThemeEditorWindow,
 };
 
@@ -477,6 +477,7 @@ pub struct ThemedWindows {
     settings: slint::Weak<SettingsWindow>,
     theme_editor: slint::Weak<ThemeEditorWindow>,
     lyrics_editor: slint::Weak<LyricsEditorWindow>,
+    playlist_manager: slint::Weak<PlaylistManagerWindow>,
 }
 
 impl ThemedWindows {
@@ -487,6 +488,7 @@ impl ThemedWindows {
         settings: &SettingsWindow,
         theme_editor: &ThemeEditorWindow,
         lyrics_editor: &LyricsEditorWindow,
+        playlist_manager: &PlaylistManagerWindow,
     ) -> Self {
         Self {
             main: main.as_weak(),
@@ -495,6 +497,7 @@ impl ThemedWindows {
             settings: settings.as_weak(),
             theme_editor: theme_editor.as_weak(),
             lyrics_editor: lyrics_editor.as_weak(),
+            playlist_manager: playlist_manager.as_weak(),
         }
     }
 
@@ -508,7 +511,19 @@ impl ThemedWindows {
                 }
             )*};
         }
-        apply_to!(main, properties, about, settings, theme_editor, lyrics_editor);
+        apply_to!(main, properties, about, settings, theme_editor, lyrics_editor, playlist_manager);
+    }
+
+    /// Shows `logo` in every window (title bar, now-playing bar, About).
+    pub fn set_logo(&self, logo: &slint::Image) {
+        macro_rules! apply_to {
+            ($($window:ident),*) => {$(
+                if let Some(window) = self.$window.upgrade() {
+                    window.global::<Theme>().set_logo(logo.clone());
+                }
+            )*};
+        }
+        apply_to!(main, properties, about, settings, theme_editor, lyrics_editor, playlist_manager);
     }
 }
 

@@ -92,6 +92,8 @@ struct EngineState {
     waveform_cancel: Option<Arc<AtomicBool>>,
     /// The output device asked for (`None`: the system default).
     output_request: Option<String>,
+    /// The app's id for the playlist being held (see `SwitchPlaylist`).
+    playlist_id: i64,
     /// The device actually playing.
     output_device: Option<String>,
     last_output_check: Instant,
@@ -123,6 +125,7 @@ fn run(command_rx: Receiver<EngineCommand>, event_tx: Sender<EngineEvent>) {
         queue: VecDeque::new(),
         waveform_cancel: None,
         output_request: None,
+        playlist_id: 1,
         output_device,
         last_output_check: Instant::now(),
     };
@@ -306,13 +309,20 @@ fn handle_command(
             rebuild_shuffle_order(state, Some(index));
         }
         EngineCommand::RemoveIndex(index) => {
-            let removed_current = state.playlist.current_index() == Some(index);
-            state.playlist.remove(index);
-            state.queue.retain(|&i| i != index);
-            for queued in state.queue.iter_mut() {
-                if *queued > index {
-                    *queued -= 1;
-                }
+            if remove_index(state, index) {
+                set_playback_state(state, PlaybackState::Stopped, event_tx);
+                state.samples_played = 0;
+            }
+            rebuild_shuffle_order(state, state.playlist.current_index());
+            send_playlist_update(state, event_tx);
+        }
+        EngineCommand::RemoveIndices(mut indices) => {
+            // Highest first, so the remaining indices stay valid.
+            indices.sort_unstable_by(|a, b| b.cmp(a));
+            indices.dedup();
+            let mut removed_current = false;
+            for index in indices {
+                removed_current |= remove_index(state, index);
             }
             if removed_current {
                 set_playback_state(state, PlaybackState::Stopped, event_tx);
@@ -321,6 +331,7 @@ fn handle_command(
             rebuild_shuffle_order(state, state.playlist.current_index());
             send_playlist_update(state, event_tx);
         }
+        EngineCommand::SwitchPlaylist { id, paths } => switch_playlist(state, id, paths, event_tx),
         EngineCommand::ClearPlaylist => {
             state.playlist.clear();
             set_playback_state(state, PlaybackState::Stopped, event_tx);
@@ -403,6 +414,50 @@ fn load_playlist(
     send_playlist_update(state, event_tx);
 }
 
+/// Takes `index` out of the playlist and the queue; `true` if it was the
+/// track playing.
+fn remove_index(state: &mut EngineState, index: usize) -> bool {
+    let removed_current = state.playlist.current_index() == Some(index);
+    state.playlist.remove(index);
+    state.queue.retain(|&i| i != index);
+    for queued in state.queue.iter_mut() {
+        if *queued > index {
+            *queued -= 1;
+        }
+    }
+    removed_current
+}
+
+fn switch_playlist(
+    state: &mut EngineState,
+    id: i64,
+    paths: Vec<std::path::PathBuf>,
+    event_tx: &Sender<EngineEvent>,
+) {
+    let playing = state
+        .playlist
+        .current()
+        .filter(|_| state.playback_state != PlaybackState::Stopped)
+        .map(|track| track.path.clone());
+    let metadata = load_metadata_with_progress(&paths, event_tx);
+    let tracks: Vec<Track> = paths
+        .into_iter()
+        .zip(metadata)
+        .map(|(path, metadata)| Track { path, metadata })
+        .collect();
+    // The decoder keeps playing what it has; if that song is in the new
+    // playlist too, it's the current one there.
+    let current = playing.and_then(|path| tracks.iter().position(|t| t.path == path));
+    state.playlist = Playlist::from_tracks(tracks);
+    if let Some(index) = current {
+        state.playlist.set_current_index(index);
+    }
+    state.playlist_id = id;
+    state.queue.clear();
+    rebuild_shuffle_order(state, current);
+    send_playlist_update(state, event_tx);
+}
+
 fn append_to_playlist(
     state: &mut EngineState,
     paths: Vec<std::path::PathBuf>,
@@ -457,6 +512,7 @@ fn send_playlist_update(state: &EngineState, event_tx: &Sender<EngineEvent>) {
     let _ = event_tx.send(EngineEvent::PlaylistUpdated {
         tracks: state.playlist.tracks().to_vec(),
         current_index: state.playlist.current_index(),
+        playlist_id: state.playlist_id,
     });
 }
 

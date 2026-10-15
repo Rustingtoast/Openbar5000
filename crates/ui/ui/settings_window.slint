@@ -70,7 +70,7 @@ component HintText inherits Text {
 
 export component SettingsWindow inherits Window {
     title: "Preferences";
-    icon: @image-url("assets/icons/app-icon.svg");
+    icon: Theme.logo;
     preferred-width: 680px;
     // Tall enough for the Spectrum Analyzer tab, the tallest.
     preferred-height: 600px;
@@ -97,6 +97,13 @@ export component SettingsWindow inherits Window {
     /// 0: album view, 1: list view.
     in-out property <int> playlist-view-index: 0;
     in property <bool> playlist-smart-grouping: true;
+    // Holiday logos (see `app::holiday`).
+    in property <bool> holiday-logos: true;
+    in property <bool> holiday-special-mode: false;
+    /// "Christmas", "Bisexual flag", ... or "" on ordinary days.
+    in property <string> logo-occasion;
+    callback holiday-logos-toggled(bool);
+    callback holiday-special-mode-toggled(bool);
     callback playlist-smart-grouping-toggled(bool);
     callback playlist-view-changed(int);
     /// How the window is drawn (see `app::wiring::report_renderer`).
@@ -226,6 +233,35 @@ export component SettingsWindow inherits Window {
                         toggled => { root.playlist-smart-grouping-toggled(self.checked); }
                     }
                     HintText { text: "Keeps an album together even when its files are tagged inconsistently: \u{201c}feat.\u{201d} credits and small differences in the album name are ignored, files without an album tag group by folder, and an album's tracks are moved next to each other in track order when they're added."; }
+
+                    Rectangle { height: 8px; }
+                    SectionHeading { text: "Logo"; }
+                    HorizontalLayout {
+                        spacing: 14px;
+                        Image {
+                            source: Theme.logo;
+                            width: 56px;
+                            height: 56px;
+                        }
+                        VerticalLayout {
+                            spacing: 4px;
+                            alignment: center;
+                            CheckBox {
+                                text: "Holiday logos";
+                                checked: root.holiday-logos;
+                                toggled => { root.holiday-logos-toggled(self.checked); }
+                            }
+                            CheckBox {
+                                text: "Special holiday mode (a different pride flag each month)";
+                                checked: root.holiday-special-mode;
+                                toggled => { root.holiday-special-mode-toggled(self.checked); }
+                            }
+                            UnitText {
+                                text: root.logo-occasion == "" ? "Today: the regular logo" : "Today: " + root.logo-occasion;
+                            }
+                        }
+                    }
+                    HintText { text: "International Workers' Day (1 May), Pride Month (June, always shown), Christmas (24\u{2013}26 December and 6 January), New Year (31 December\u{2013}1 January) and Chinese New Year (15 January\u{2013}15 February). The launcher and Dock icons keep the regular logo."; }
 
                     Rectangle { height: 8px; }
                     SectionHeading { text: "Theme"; }

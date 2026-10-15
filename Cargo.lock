@@ -238,6 +238,7 @@ name = "app"
 version = "0.6.0"
 dependencies = [
  "arboard",
+ "chrono",
  "crossbeam-channel",
  "discord-rich-presence",
  "engine",

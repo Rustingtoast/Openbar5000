@@ -6,6 +6,7 @@ use crate::artist_info::{self, ArtistInfo, Candidate, Outcome, WIKIPEDIA_LANGUAG
 use crate::audio_output::AudioOutput;
 use crate::equalizer::Equalizer;
 use crate::media_library::MediaLibrary;
+use crate::playlists::Playlists;
 use crate::lyrics::Lyrics;
 use crate::media_keys::{MediaAction, MediaKeys};
 use crate::platform;
@@ -32,7 +33,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use ui::{
     cover_image_from_rgba, format_duration, AboutWindow, ArtistCandidate, DropPreview, InfoRow, LayoutDivider, LyricLine, SpectrumNote, TabStripSlot, MainWindow, PanelChoice, PanelSlot, PlaylistRow, PropertiesWindow, SettingsWindow,
-    LyricsEditorWindow, SortChoice, ThemeEditorWindow, ThemeListEntry,
+    LyricsEditorWindow, PlaylistManagerWindow, SortChoice, ThemeEditorWindow, ThemeListEntry,
 };
 
 /// The workspace version from `Cargo.toml` -- the one number the build
@@ -63,6 +64,11 @@ pub struct UiHandles {
     pub equalizer: Rc<Equalizer>,
     pub media_library: Rc<MediaLibrary>,
     pub audio_output: Rc<AudioOutput>,
+    /// Re-checks the date for the holiday logo.
+    pub logo_timer: Timer,
+    pub playlist_manager_window: PlaylistManagerWindow,
+    pub playlists: Rc<Playlists>,
+    pub media_keys_timer: Rc<Timer>,
 }
 
 /// Shared UI-thread state kept in sync with the engine's playlist, so any
@@ -82,6 +88,24 @@ struct PlaylistViewState {
     list_view: bool,
     /// Albums matched loosely and gathered (see `playlist_rows::smart_order`).
     smart_grouping: bool,
+    /// Selected tracks (playlist indices), and where a Shift+click range
+    /// starts.
+    selected: HashSet<usize>,
+    anchor: Option<usize>,
+}
+
+impl PlaylistViewState {
+    /// What a row action applies to: the selection if `index` is in it
+    /// (highest first), else just `index`.
+    fn targets(&self, index: usize) -> Vec<usize> {
+        let mut targets: Vec<usize> = if self.selected.contains(&index) {
+            self.selected.iter().copied().collect()
+        } else {
+            vec![index]
+        };
+        targets.sort_unstable();
+        targets
+    }
 }
 
 /// Wires every UI callback to an [`EngineCommand`] and starts the timer that
@@ -100,19 +124,14 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         smart_grouping: true,
         collapsed: HashSet::new(),
         covers: CoverCache::default(),
+        selected: HashSet::new(),
+        anchor: None,
     }));
     // The currently loaded track, if any -- used by the top-menu
     // "Properties" item, which (unlike the playlist's right-click one) isn't
     // tied to a specific row.
     let current_track: Rc<RefCell<Option<Track>>> = Rc::new(RefCell::new(None));
 
-    let restored_paths = store.load_playlist();
-    if !restored_paths.is_empty() {
-        let count = restored_paths.len();
-        engine.send(EngineCommand::LoadPlaylist(restored_paths));
-        window.set_status_text("Restoring playlist\u{2026}".into());
-        show_loading(window, "Restoring playlist\u{2026}", 0, count);
-    }
 
     let properties_window = PropertiesWindow::new().expect("failed to create properties window");
     {
@@ -149,6 +168,8 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         ThemeEditorWindow::new().expect("failed to create theme editor window");
     let lyrics_editor_window =
         LyricsEditorWindow::new().expect("failed to create lyrics editor window");
+    let playlist_manager_window =
+        PlaylistManagerWindow::new().expect("failed to create playlist manager window");
 
     // --- Theme setup -----------------------------------------------------
     let settings = Rc::new(RefCell::new(Settings::load(&store)));
@@ -180,8 +201,84 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         &settings_window,
         &theme_editor_window,
         &lyrics_editor_window,
+        &playlist_manager_window,
     );
     themed_windows.apply(&initial_colors);
+
+    // --- Holiday logos (issue #23) --------------------------------------
+    let logo_windows = Rc::new(theme::ThemedWindows::new(
+        window,
+        &properties_window,
+        &about_window,
+        &settings_window,
+        &theme_editor_window,
+        &lyrics_editor_window,
+        &playlist_manager_window,
+    ));
+    let show_logo = {
+        let settings = settings.clone();
+        let logo_windows = logo_windows.clone();
+        let settings_window_weak = settings_window.as_weak();
+        let shown = RefCell::new(None::<crate::holiday::LogoChoice>);
+        Rc::new(move || {
+            let (month, day) = crate::holiday::today();
+            let choice = {
+                let settings = settings.borrow();
+                crate::holiday::LogoChoice::for_date(
+                    month,
+                    day,
+                    settings.holiday_logos,
+                    settings.holiday_special_mode,
+                )
+            };
+            if shown.borrow().as_ref() == Some(&choice) {
+                return;
+            }
+            let logo = if choice.is_plain() {
+                // The built-in logo, as shipped.
+                slint::Image::load_from_svg_data(include_bytes!("../../ui/ui/assets/icons/app-icon.svg"))
+            } else {
+                slint::Image::load_from_svg_data(choice.svg().as_bytes())
+            };
+            match logo {
+                Ok(logo) => logo_windows.set_logo(&logo),
+                Err(e) => tracing::warn!("couldn't draw the holiday logo: {e:?}"),
+            }
+            if let Some(settings_window) = settings_window_weak.upgrade() {
+                settings_window.set_logo_occasion(choice.describe().into());
+            }
+            *shown.borrow_mut() = Some(choice);
+        })
+    };
+    show_logo();
+    // Hourly is plenty to switch on the right day.
+    let logo_timer = Timer::default();
+    {
+        let show_logo = show_logo.clone();
+        logo_timer.start(TimerMode::Repeated, Duration::from_secs(3600), move || show_logo());
+    }
+    settings_window.set_holiday_logos(settings.borrow().holiday_logos);
+    settings_window.set_holiday_special_mode(settings.borrow().holiday_special_mode);
+    {
+        let settings = settings.clone();
+        let store = store.clone();
+        let show_logo = show_logo.clone();
+        settings_window.on_holiday_logos_toggled(move |on| {
+            settings.borrow_mut().holiday_logos = on;
+            settings.borrow().save(&store);
+            show_logo();
+        });
+    }
+    {
+        let settings = settings.clone();
+        let store = store.clone();
+        let show_logo = show_logo.clone();
+        settings_window.on_holiday_special_mode_toggled(move |on| {
+            settings.borrow_mut().holiday_special_mode = on;
+            settings.borrow().save(&store);
+            show_logo();
+        });
+    }
     refresh_theme_list(
         &settings_window,
         &theme_registry.borrow(),
@@ -249,6 +346,19 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     );
 
     let audio_output = AudioOutput::wire(&settings_window, engine.clone(), store.clone(), settings.clone());
+
+    // Playlists (issue #33): shows -- and so restores -- the active one.
+    let (playlists, restored) = Playlists::wire(
+        window,
+        &playlist_manager_window,
+        engine.clone(),
+        store.clone(),
+        settings.clone(),
+    );
+    if restored > 0 {
+        window.set_status_text("Restoring playlist\u{2026}".into());
+        show_loading(window, "Restoring playlist\u{2026}", 0, restored);
+    }
 
     let media_library = MediaLibrary::wire(
         window,
@@ -942,8 +1052,10 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
 
     {
         let engine = engine.clone();
+        let playlist_view_state = playlist_view_state.clone();
         window.on_row_remove_clicked(move |index| {
-            engine.send(EngineCommand::RemoveIndex(index as usize));
+            let targets = playlist_view_state.borrow().targets(index as usize);
+            engine.send(EngineCommand::RemoveIndices(targets));
         });
     }
 
@@ -954,8 +1066,9 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         let playlist_view_state = playlist_view_state.clone();
         let clipboard = clipboard.clone();
         window.on_row_copy_clicked(move |index| {
-            if let Some(track) = playlist_view_state.borrow().tracks.get(index as usize) {
-                copy_to_clipboard(&clipboard, track.path.display().to_string());
+            let paths = selected_paths(&playlist_view_state.borrow(), index as usize);
+            if !paths.is_empty() {
+                copy_to_clipboard(&clipboard, paths);
             }
         });
     }
@@ -964,17 +1077,46 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         let clipboard = clipboard.clone();
         let engine = engine.clone();
         window.on_row_cut_clicked(move |index| {
-            let Some(path) = playlist_view_state
-                .borrow()
-                .tracks
-                .get(index as usize)
-                .map(|t| t.path.display().to_string())
-            else {
-                return;
+            let (paths, targets) = {
+                let state = playlist_view_state.borrow();
+                (selected_paths(&state, index as usize), state.targets(index as usize))
             };
-            if copy_to_clipboard(&clipboard, path) {
-                engine.send(EngineCommand::RemoveIndex(index as usize));
+            if !paths.is_empty() && copy_to_clipboard(&clipboard, paths) {
+                engine.send(EngineCommand::RemoveIndices(targets));
             }
+        });
+    }
+    {
+        let playlist_view_state = playlist_view_state.clone();
+        let playlist_model = playlist_model.clone();
+        window.on_row_selected(move |index, range, toggle| {
+            let index = index as usize;
+            {
+                let mut state = playlist_view_state.borrow_mut();
+                match (range, toggle, state.anchor) {
+                    // Shift: everything from the anchor to here (added to
+                    // the selection with Ctrl/Cmd too).
+                    (true, _, Some(anchor)) => {
+                        if !toggle {
+                            state.selected.clear();
+                        }
+                        state.selected.extend(anchor.min(index)..=anchor.max(index));
+                    }
+                    // Ctrl/Cmd: in or out.
+                    (_, true, _) => {
+                        if !state.selected.remove(&index) {
+                            state.selected.insert(index);
+                        }
+                        state.anchor = Some(index);
+                    }
+                    _ => {
+                        state.selected.clear();
+                        state.selected.insert(index);
+                        state.anchor = Some(index);
+                    }
+                }
+            }
+            refresh_playlist_rows(&playlist_model, &playlist_view_state);
         });
     }
     {
@@ -1275,17 +1417,34 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     // OS media keys (issue #17). Registered once the event loop runs: on
     // Windows it needs the native window, which only exists once shown.
     let media_keys: Rc<RefCell<Option<MediaKeys>>> = Rc::new(RefCell::new(None));
+    // On Windows the native window can appear a little after the event loop
+    // starts (issue #31): wait for it rather than register without one.
+    let media_keys_timer = Rc::new(Timer::default());
     {
         let media_keys = media_keys.clone();
         let window_weak = window.as_weak();
-        Timer::single_shot(Duration::ZERO, move || {
-            if let Some(window) = window_weak.upgrade() {
-                *media_keys.borrow_mut() = MediaKeys::new(native_window_handle(&window));
+        let attempts = Cell::new(0u32);
+        let timer = Rc::downgrade(&media_keys_timer);
+        media_keys_timer.start(TimerMode::Repeated, Duration::from_millis(250), move || {
+            let Some(window) = window_weak.upgrade() else { return };
+            let handle = native_window_handle(&window);
+            attempts.set(attempts.get() + 1);
+            let ready = handle.is_some() || !cfg!(windows);
+            if ready {
+                *media_keys.borrow_mut() = MediaKeys::new(handle);
+            } else if attempts.get() < 40 {
+                return; // try again in a moment
+            } else {
+                tracing::warn!("media keys unavailable: the window has no native handle");
+            }
+            if let Some(timer) = timer.upgrade() {
+                timer.stop();
             }
         });
     }
 
     report_renderer(window, &settings_window);
+    let playlists_for_poll = playlists.clone();
     // Which files are in the playlist, to tell additions from reorders.
     let playlist_fingerprint = Cell::new(0u64);
     let audio_output_events = audio_output.clone();
@@ -1346,6 +1505,8 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         // Tracks added or loaded: put them where the kept sort says. The
         // reorder comes back as one more update, already in order.
         if playlist_changed {
+            // Item counts in the playlist menu and manager.
+            playlists_for_poll.refresh();
             let state = playlist_view_state.borrow();
             // Smart grouping gathers albums when tracks come or go -- not
             // after a reorder the user asked for (e.g. Randomize).
@@ -1420,6 +1581,10 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         equalizer,
         media_library,
         audio_output,
+        logo_timer,
+        playlist_manager_window,
+        playlists,
+        media_keys_timer,
     }
 }
 
@@ -2761,6 +2926,13 @@ fn refresh_playlist_rows(
             &mut state.covers,
         )
     };
+    let rows: Vec<PlaylistRow> = rows
+        .into_iter()
+        .map(|mut row| {
+            row.is_selected = !row.is_header && state.selected.contains(&(row.track_index as usize));
+            row
+        })
+        .collect();
     let count = rows.len();
     // Row by row: a track change then touches two rows (the old and new
     // "playing" one) instead of replacing every row the list shows.
@@ -2779,6 +2951,17 @@ fn current_row_offset(playlist_model: &VecModel<PlaylistRow>) -> Option<f32> {
         y += if row.is_header { 64.0 } else { 22.0 };
     }
     None
+}
+
+/// The paths a Copy/Cut on `index` takes, one per line.
+fn selected_paths(state: &PlaylistViewState, index: usize) -> String {
+    state
+        .targets(index)
+        .iter()
+        .filter_map(|&i| state.tracks.get(i))
+        .map(|t| t.path.display().to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Puts `text` on the system clipboard, returning whether it worked.
@@ -2946,6 +3129,7 @@ fn apply_event(
         EngineEvent::PlaylistUpdated {
             tracks,
             current_index,
+            playlist_id,
         } => {
             window.set_loading_active(false);
             let track_count = tracks.len();
@@ -2956,13 +3140,18 @@ fn apply_event(
                     && state.tracks.iter().zip(&tracks).all(|(a, b)| a.path == b.path)
             };
             if !same_paths {
-                store.save_playlist(&tracks.iter().map(|t| t.path.clone()).collect::<Vec<_>>());
+                // To the playlist the engine says this is -- an update
+                // still in flight after a switch belongs to the old one.
+                store.save_playlist(playlist_id, &tracks.iter().map(|t| t.path.clone()).collect::<Vec<_>>());
             }
             *current_track.borrow_mut() = current_index.and_then(|i| tracks.get(i).cloned());
             {
                 let mut state = playlist_view_state.borrow_mut();
                 state.tracks = tracks;
                 state.current_index = current_index;
+                // Indices mean other tracks now.
+                state.selected.clear();
+                state.anchor = None;
                 // Keep the images of covers still in use; drop the rest.
                 let state = &mut *state;
                 state.covers.retain_used(&state.tracks);

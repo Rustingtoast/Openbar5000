@@ -26,6 +26,10 @@ pub enum EngineEvent {
     PlaylistUpdated {
         tracks: Vec<Track>,
         current_index: Option<usize>,
+        /// Which playlist this is (see `EngineCommand::SwitchPlaylist`), so
+        /// an update still in flight after a switch is saved to the right
+        /// one.
+        playlist_id: i64,
     },
     /// Sent periodically while a `LoadPlaylist`/`LoadFolder`/
     /// `RefreshMetadata` reads tags, so the UI can show progress; the load

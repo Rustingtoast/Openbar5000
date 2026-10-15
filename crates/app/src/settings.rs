@@ -23,6 +23,13 @@ pub struct Settings {
     /// Smart grouping (Preferences > Appearance): albums matched loosely and
     /// their tracks gathered together (see `playlist_rows::smart_order`).
     pub playlist_smart_grouping: bool,
+    /// Holiday logos (issue #23); Pride Month shows regardless.
+    pub holiday_logos: bool,
+    /// Special holiday mode: a different pride flag behind the logo each
+    /// month.
+    pub holiday_special_mode: bool,
+    /// The playlist shown (issue #33; see `playlists`).
+    pub active_playlist: i64,
     /// The Sorting menu's kept sort order.
     pub playlist_sort: SortMode,
     /// Plain song list instead of album groups (Preferences > Appearance).
@@ -68,6 +75,9 @@ impl Default for Settings {
             playlist_grouping: PlaylistGrouping::default(),
             playlist_list_view: false,
             playlist_sort: SortMode::Manual,
+            active_playlist: crate::store::DEFAULT_PLAYLIST_ID,
+            holiday_logos: true,
+            holiday_special_mode: false,
             playlist_smart_grouping: true,
             visualization_fps: 60,
             discord_presence_enabled: false,
@@ -222,6 +232,15 @@ impl Settings {
         if let Some(v) = get("playback_mode") {
             settings.playback_mode = playback_mode_from_str(&v);
         }
+        if let Some(v) = get("active_playlist").and_then(|v| v.parse().ok()) {
+            settings.active_playlist = v;
+        }
+        if let Some(v) = get("holiday_logos") {
+            settings.holiday_logos = v == "true";
+        }
+        if let Some(v) = get("holiday_special_mode") {
+            settings.holiday_special_mode = v == "true";
+        }
         if let Some(v) = get("playlist_smart_grouping") {
             settings.playlist_smart_grouping = v == "true";
         }
@@ -320,6 +339,9 @@ impl Settings {
             ),
             ("playlist_sort", self.playlist_sort.as_str().to_string()),
             ("playlist_smart_grouping", self.playlist_smart_grouping.to_string()),
+            ("holiday_logos", self.holiday_logos.to_string()),
+            ("active_playlist", self.active_playlist.to_string()),
+            ("holiday_special_mode", self.holiday_special_mode.to_string()),
             (
                 "playlist_view",
                 if self.playlist_list_view { "list" } else { "album" }.to_string(),

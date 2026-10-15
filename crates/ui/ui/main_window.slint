@@ -1,6 +1,6 @@
 import { Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { PlaylistView, PlaylistRow } from "playlist_view.slint";
+import { PlaylistView, PlaylistRow, PlaylistChoice } from "playlist_view.slint";
 import { TransportBar, PlaybackButtons, SeekBar, SeekSlider, PlaybackOptions } from "transport_bar.slint";
 import { InfoView, InfoRow, LyricsView, LyricLine, PlaceholderView, TabStripView, ArtistView, ArtistCandidate } from "side_panels.slint";
 import { StatusBar } from "status_bar.slint";
@@ -15,6 +15,7 @@ import { LyricsEditorWindow } from "lyrics_editor_window.slint";
 import { VintageEqualizer } from "vintage_equalizer.slint";
 import { LibraryView, LibraryRow } from "library_view.slint";
 import { LoadingOverlay } from "loading_overlay.slint";
+import { PlaylistManagerWindow, PlaylistManagerRow } from "playlist_manager_window.slint";
 
 /// One placed panel (see `app::layout`): which panel to draw and where,
 /// relative to the panel area below the menu bar.
@@ -78,13 +79,13 @@ export struct PanelChoice {
     label: string,
 }
 
-export { LibraryRow, PlaylistRow, PropertiesWindow, AboutWindow, SettingsWindow, ThemeListEntry, ThemeEditorWindow, LyricsEditorWindow, Theme }
+export { LibraryRow, PlaylistManagerWindow, PlaylistManagerRow, PlaylistRow, PropertiesWindow, AboutWindow, SettingsWindow, ThemeListEntry, ThemeEditorWindow, LyricsEditorWindow, Theme }
 
 export component MainWindow inherits Window {
     // Set from Cargo.toml's version at startup (see `app::wiring`).
     in property <string> app-version;
     title: root.app-version == "" ? "Openbar5000" : "Openbar5000 v" + root.app-version;
-    icon: @image-url("assets/icons/app-icon.svg");
+    icon: Theme.logo;
     preferred-width: 1400px;
     preferred-height: 700px;
     min-width: 760px;
@@ -204,6 +205,14 @@ export component MainWindow inherits Window {
     in property <[SortChoice]> sort-choices: [];
     callback sorting-chosen(string);
     in property <string> playlist-summary: "";
+    // Playlists (issue #33): the summary bar's menu, File > New Playlist,
+    // File > Playlist Manager.
+    in property <[PlaylistChoice]> playlist-choices: [];
+    in property <string> playlist-name;
+    callback row-selected(int, bool, bool);
+    callback playlist-chosen(int);
+    callback new-playlist-clicked();
+    callback playlist-manager-clicked();
 
     // The playlist lives inside a panel slot, where it can't be addressed
     // by id; bumping the serial asks whichever playlist panel exists to
@@ -293,6 +302,9 @@ export component MainWindow inherits Window {
             MenuItem { title: "Open Files..."; activated => { root.open-files-clicked(); } }
             MenuItem { title: "Open Folder..."; activated => { root.open-folder-clicked(); } }
             MenuSeparator {}
+            MenuItem { title: "New Playlist"; activated => { root.new-playlist-clicked(); } }
+            MenuItem { title: "Playlist Manager..."; activated => { root.playlist-manager-clicked(); } }
+            MenuSeparator {}
             MenuItem { title: "Preferences..."; activated => { root.settings-clicked(); } }
             MenuSeparator {}
             MenuItem { title: "Exit"; activated => { root.exit-clicked(); } }
@@ -369,6 +381,12 @@ export component MainWindow inherits Window {
                 grouping: root.playlist-grouping;
                 list-view: root.playlist-list-view;
                 summary: root.playlist-summary;
+                playlists: root.playlist-choices;
+                playlist-name: root.playlist-name;
+                row-selected(i, range, toggle) => { root.row-selected(i, range, toggle); }
+                playlist-chosen(i) => { root.playlist-chosen(i); }
+                new-playlist-clicked => { root.new-playlist-clicked(); }
+                playlist-manager-clicked => { root.playlist-manager-clicked(); }
                 scroll-serial: root.playlist-scroll-serial;
                 scroll-y: root.playlist-scroll-y;
                 row-clicked(i) => { root.row-clicked(i); }

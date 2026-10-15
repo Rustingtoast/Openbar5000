@@ -48,6 +48,13 @@ pub enum EngineCommand {
     PlayIndex(usize),
     /// Removes a single track from the playlist by index.
     RemoveIndex(usize),
+    /// Removes several tracks at once (indices into the current playlist).
+    RemoveIndices(Vec<usize>),
+    /// Shows another playlist (`id` is the app's, echoed back in
+    /// `PlaylistUpdated`). Unlike `LoadPlaylist`, playback isn't
+    /// interrupted: the song playing carries on, and the next one comes
+    /// from the new playlist.
+    SwitchPlaylist { id: i64, paths: Vec<std::path::PathBuf> },
     ClearPlaylist,
     /// Reorders the playlist so position `k` holds the track currently at
     /// `order[k]` (the playlist's Sort submenu). Ignored unless `order` is a
