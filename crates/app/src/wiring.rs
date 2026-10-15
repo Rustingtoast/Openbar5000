@@ -3,17 +3,18 @@ use crate::discord_presence::{
 };
 use crate::layout::{drop_at, drop_preview, Axis, DragStart, Drop, Layout, PanelKind, Placement, Side};
 use crate::artist_info::{self, ArtistInfo, Candidate, Outcome, WIKIPEDIA_LANGUAGES};
+use crate::audio_output::AudioOutput;
 use crate::equalizer::Equalizer;
 use crate::media_library::MediaLibrary;
 use crate::lyrics::Lyrics;
 use crate::media_keys::{MediaAction, MediaKeys};
 use crate::platform;
 use crate::playlist_rows::{
-    all_group_keys, build_grouped_rows, group_key_of, sort_order, CoverCache, PlaylistGrouping,
+    all_group_keys, build_grouped_rows, build_list_rows, group_key_of, sort_order, CoverCache, PlaylistGrouping,
     PlaylistSort,
 };
 use crate::settings::{
-    note_from_name, note_name, normalize_fps, valid_note_range, Settings, A4_MAX_HZ, A4_MIN_HZ,
+    note_from_name, note_name, normalize_fps, FPS_CHOICES, valid_note_range, Settings, A4_MAX_HZ, A4_MIN_HZ,
     HIGHEST_NOTE, LOWEST_NOTE,
 };
 use crate::store::Store;
@@ -61,6 +62,7 @@ pub struct UiHandles {
     pub lyrics_editor_window: LyricsEditorWindow,
     pub equalizer: Rc<Equalizer>,
     pub media_library: Rc<MediaLibrary>,
+    pub audio_output: Rc<AudioOutput>,
 }
 
 /// Shared UI-thread state kept in sync with the engine's playlist, so any
@@ -76,6 +78,8 @@ struct PlaylistViewState {
     /// the grouping changes, since the keys mean something else then.
     collapsed: HashSet<String>,
     covers: CoverCache,
+    /// Plain song list instead of album groups.
+    list_view: bool,
 }
 
 /// Wires every UI callback to an [`EngineCommand`] and starts the timer that
@@ -90,6 +94,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         current_index: None,
         search_query: String::new(),
         grouping: PlaylistGrouping::default(),
+        list_view: false,
         collapsed: HashSet::new(),
         covers: CoverCache::default(),
     }));
@@ -179,6 +184,29 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     );
 
     playlist_view_state.borrow_mut().grouping = settings.borrow().playlist_grouping;
+    playlist_view_state.borrow_mut().list_view = settings.borrow().playlist_list_view;
+    window.set_playlist_list_view(settings.borrow().playlist_list_view);
+    settings_window.set_playlist_view_index(settings.borrow().playlist_list_view as i32);
+    {
+        let settings = settings.clone();
+        let store = store.clone();
+        let window_weak = window.as_weak();
+        let playlist_model = playlist_model.clone();
+        let playlist_view_state = playlist_view_state.clone();
+        settings_window.on_playlist_view_changed(move |index| {
+            let list_view = index == 1;
+            if settings.borrow().playlist_list_view == list_view {
+                return;
+            }
+            settings.borrow_mut().playlist_list_view = list_view;
+            settings.borrow().save(&store);
+            playlist_view_state.borrow_mut().list_view = list_view;
+            if let Some(window) = window_weak.upgrade() {
+                window.set_playlist_list_view(list_view);
+            }
+            refresh_playlist_rows(&playlist_model, &playlist_view_state);
+        });
+    }
     window.set_playlist_grouping(settings.borrow().playlist_grouping.as_str().into());
 
     let equalizer = Equalizer::wire(
@@ -188,6 +216,8 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         store.clone(),
         settings.clone(),
     );
+
+    let audio_output = AudioOutput::wire(&settings_window, engine.clone(), store.clone(), settings.clone());
 
     let media_library = MediaLibrary::wire(
         window,
@@ -475,7 +505,10 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     }
     {
         let settings_window_weak = settings_window.as_weak();
+        let audio_output = audio_output.clone();
         window.on_settings_clicked(move || {
+            // Devices may have come and gone since it was last open.
+            audio_output.refresh();
             if let Some(window) = settings_window_weak.upgrade() {
                 window.show().expect("failed to show settings window");
             }
@@ -484,7 +517,12 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     // Created here (started at the end of `wire`) so the frame-rate setting
     // can retune it.
     let event_poll_timer = Rc::new(Timer::default());
-    settings_window.set_visualization_fps_index(if normalize_fps(settings.borrow().visualization_fps) == 30 { 1 } else { 0 });
+    settings_window.set_visualization_fps_index(
+        FPS_CHOICES
+            .iter()
+            .position(|&fps| fps == normalize_fps(settings.borrow().visualization_fps))
+            .unwrap_or(1) as i32,
+    );
     {
         let settings = settings.clone();
         let store = store.clone();
@@ -1174,6 +1212,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     }
 
     report_renderer(window, &settings_window);
+    let audio_output_events = audio_output.clone();
 
     // Minimized, nothing is seen: stop the spectrum's FFT and don't push
     // visualization frames (some Linux window managers still redraw a
@@ -1195,6 +1234,9 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             match event {
                 EngineEvent::PositionUpdate { .. } => latest_position = Some(event),
                 EngineEvent::SpectrumUpdate { bars, peaks } => latest_spectrum = Some((bars, peaks)),
+                EngineEvent::OutputDeviceChanged { name, fallback } => {
+                    audio_output_events.device_changed(&name, fallback);
+                }
                 event => {
                     if matches!(event, EngineEvent::TrackChanged { .. }) {
                         // Belongs to the previous track.
@@ -1273,6 +1315,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         lyrics_editor_window,
         equalizer,
         media_library,
+        audio_output,
     }
 }
 
@@ -2571,14 +2614,18 @@ fn refresh_playlist_rows(
 ) {
     let mut state = playlist_view_state.borrow_mut();
     let state = &mut *state;
-    let rows = build_grouped_rows(
-        &state.tracks,
-        state.current_index,
-        &state.search_query,
-        state.grouping,
-        &state.collapsed,
-        &mut state.covers,
-    );
+    let rows = if state.list_view {
+        build_list_rows(&state.tracks, state.current_index, &state.search_query, &mut state.covers)
+    } else {
+        build_grouped_rows(
+            &state.tracks,
+            state.current_index,
+            &state.search_query,
+            state.grouping,
+            &state.collapsed,
+            &mut state.covers,
+        )
+    };
     playlist_model.set_vec(rows);
 }
 
@@ -2787,7 +2834,7 @@ fn apply_event(
             }
         }
         // Coalesced and applied by the poll timer instead (see `wire`).
-        EngineEvent::SpectrumUpdate { .. } => {}
+        EngineEvent::SpectrumUpdate { .. } | EngineEvent::OutputDeviceChanged { .. } => {}
     }
 }
 

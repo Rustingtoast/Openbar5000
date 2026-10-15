@@ -10,25 +10,99 @@ use ringbuf::HeapRb;
 /// consumer and never locks, allocates, or blocks.
 pub struct CpalSink {
     device: cpal::Device,
+    /// The device's stable id (see [`OutputDeviceInfo::id`]), if it has one.
+    device_id: Option<String>,
+    device_name: String,
     stream: Option<Stream>,
     producer: Option<ringbuf::HeapProd<f32>>,
     configured_rate: u32,
     configured_channels: u16,
 }
 
+/// An audio output the user can pick (Preferences > Output).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputDeviceInfo {
+    /// Stable across runs and reconnects where the OS allows: what the
+    /// choice is saved as.
+    pub id: String,
+    /// Human-readable, e.g. "MacBook Pro Speakers".
+    pub name: String,
+}
+
+fn device_id(device: &cpal::Device) -> Option<String> {
+    device.id().ok().map(|id| id.to_string())
+}
+
+fn device_name(device: &cpal::Device) -> String {
+    device
+        .description()
+        .map(|description| description.name().to_string())
+        .unwrap_or_else(|_| "Unknown device".to_string())
+}
+
+/// Every output device the system currently offers.
+pub fn output_devices() -> Vec<OutputDeviceInfo> {
+    let host = cpal::default_host();
+    let Ok(devices) = host.output_devices() else {
+        return Vec::new();
+    };
+    devices
+        .filter_map(|device| {
+            Some(OutputDeviceInfo {
+                id: device_id(&device)?,
+                name: device_name(&device),
+            })
+        })
+        .collect()
+}
+
+/// The system's current default output.
+pub fn default_output_device() -> Option<OutputDeviceInfo> {
+    let device = cpal::default_host().default_output_device()?;
+    Some(OutputDeviceInfo {
+        id: device_id(&device)?,
+        name: device_name(&device),
+    })
+}
+
+/// The device with this id, if it's connected.
+fn find_device(id: &str) -> Option<cpal::Device> {
+    let id: cpal::DeviceId = id.parse().ok()?;
+    cpal::default_host().device_by_id(&id)
+}
+
 impl CpalSink {
     pub fn default_device() -> Result<Self, OutputError> {
-        let host = cpal::default_host();
-        let device = host
-            .default_output_device()
-            .ok_or_else(|| OutputError::DeviceUnavailable("no default output device".into()))?;
+        Self::open(None)
+    }
+
+    /// Opens the device with `id`, or the system default for `None` -- or
+    /// when that device isn't connected (see [`CpalSink::device_id`] to
+    /// tell which one was opened).
+    pub fn open(id: Option<&str>) -> Result<Self, OutputError> {
+        let device = match id.and_then(find_device) {
+            Some(device) => device,
+            None => cpal::default_host()
+                .default_output_device()
+                .ok_or_else(|| OutputError::DeviceUnavailable("no default output device".into()))?,
+        };
         Ok(Self {
+            device_id: device_id(&device),
+            device_name: device_name(&device),
             device,
             stream: None,
             producer: None,
             configured_rate: 0,
             configured_channels: 0,
         })
+    }
+
+    pub fn device_id(&self) -> Option<&str> {
+        self.device_id.as_deref()
+    }
+
+    pub fn device_name(&self) -> &str {
+        &self.device_name
     }
 }
 

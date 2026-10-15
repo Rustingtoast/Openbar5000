@@ -1,4 +1,5 @@
 mod artist_info;
+mod audio_output;
 mod discord_presence;
 mod equalizer;
 mod layout;

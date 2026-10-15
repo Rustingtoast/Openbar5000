@@ -73,4 +73,9 @@ pub enum EngineCommand {
     /// The graphic equalizer's bands and on/off switch (issue #7); takes
     /// effect from the next decoded chunk.
     SetEqualizer(EqualizerSettings),
+    /// Plays through the output device with this id (see
+    /// [`crate::output_devices`]), or `None` to follow the system default
+    /// -- including when it changes, e.g. headphones plugged in. A chosen
+    /// device that's unplugged falls back to the default until it returns.
+    SetOutputDevice(Option<String>),
 }

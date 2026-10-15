@@ -194,6 +194,18 @@ impl Pipeline {
         self.spectrum_enabled.then(|| self.spectrum.time_until_due())
     }
 
+    /// Swaps in another output (a different device), set up for the
+    /// current track's format if one is open. Whatever the old sink still
+    /// had queued is dropped.
+    pub fn replace_sink(&mut self, mut sink: Box<dyn OutputSink>) -> Result<(), PipelineError> {
+        if self.decoder.is_some() {
+            sink.configure(self.sample_rate, self.channels)?;
+        }
+        self.sink = sink;
+        self.history.clear();
+        Ok(())
+    }
+
     /// Samples written to the sink that haven't been heard yet.
     pub fn queued_samples(&self) -> usize {
         self.sink.queued_samples()

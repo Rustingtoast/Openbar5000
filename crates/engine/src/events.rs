@@ -48,6 +48,9 @@ pub enum EngineEvent {
         bars: Vec<f32>,
         peaks: Vec<f32>,
     },
+    /// Playback now goes to this device; `fallback` when it's the system
+    /// default standing in for a chosen device that isn't connected.
+    OutputDeviceChanged { name: String, fallback: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

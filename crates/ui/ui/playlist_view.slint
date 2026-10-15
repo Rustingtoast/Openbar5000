@@ -17,6 +17,9 @@ export struct PlaylistRow {
     is-collapsed: bool,
     track-number: string,
     title: string,
+    // Shown in list view only (album view has them in the header).
+    artist: string,
+    album: string,
     duration: string,
     track-index: int,
     is-current: bool,
@@ -29,6 +32,9 @@ export component PlaylistView inherits Rectangle {
     // Active Grouping submenu id (see `PlaylistGrouping::as_str`), for the
     // submenu's check mark.
     in property <string> grouping: "artist-album-disc";
+    /// List view (Preferences > Appearance): one plain row per song, with
+    /// artist and album columns and no album headers.
+    in property <bool> list-view: false;
     callback row-clicked(int);
     callback row-properties-clicked(int);
     callback row-open-folder-clicked(int);
@@ -74,6 +80,21 @@ export component PlaylistView inherits Rectangle {
                 overflow: elide;
             }
         }
+        if root.list-view: Rectangle {
+            height: 20px;
+            background: Theme.bg-raised;
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 4px;
+                spacing: 8px;
+                Text { text: "#"; width: 34px; font-size: 11px; vertical-alignment: center; color: Theme.text-muted; }
+                Text { text: "Title"; horizontal-stretch: 3; min-width: 0; preferred-width: 0; font-size: 11px; vertical-alignment: center; color: Theme.text-muted; }
+                Text { text: "Artist"; horizontal-stretch: 2; min-width: 0; preferred-width: 0; font-size: 11px; vertical-alignment: center; color: Theme.text-muted; }
+                Text { text: "Album"; horizontal-stretch: 2; min-width: 0; preferred-width: 0; font-size: 11px; vertical-alignment: center; color: Theme.text-muted; }
+                Text { text: "Length"; width: 52px; font-size: 11px; vertical-alignment: center; color: Theme.text-muted; }
+            }
+        }
+
         list := ListView {
             vertical-stretch: 1;
             for row[i] in root.rows: Rectangle {
@@ -93,7 +114,7 @@ export component PlaylistView inherits Rectangle {
                         if !row.is-header: MenuSeparator {}
                         if !row.is-header: MenuItem { title: "Remove"; activated => { root.row-remove-clicked(row.track-index); } }
                         if !row.is-header: MenuSeparator {}
-                        Menu {
+                        if !root.list-view: Menu {
                             title: "Collapse/Expand";
                             MenuItem {
                                 title: row.is-collapsed ? "Expand this group" : "Collapse this group";
@@ -103,7 +124,7 @@ export component PlaylistView inherits Rectangle {
                             MenuItem { title: "Collapse all"; activated => { root.collapse-all-clicked(); } }
                             MenuItem { title: "Expand all"; activated => { root.expand-all-clicked(); } }
                         }
-                        Menu {
+                        if !root.list-view: Menu {
                             title: "Grouping";
                             MenuItem { title: "Reset to default"; activated => { root.grouping-clicked("artist-album-disc"); } }
                             MenuSeparator {}
@@ -191,7 +212,17 @@ export component PlaylistView inherits Rectangle {
 
                     if !row.is-header: TouchArea {
                         clicked => { root.row-clicked(row.track-index); }
-                        HorizontalLayout {
+                        if root.list-view: HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 4px;
+                            spacing: 8px;
+                            Text { text: row.track-number; width: 34px; vertical-alignment: center; color: row.is-current ? Theme.accent-text : Theme.text-muted; }
+                            Text { text: row.title; horizontal-stretch: 3; min-width: 0; preferred-width: 0; vertical-alignment: center; color: row.is-current ? Theme.accent-text : Theme.text-primary; overflow: elide; }
+                            Text { text: row.artist; horizontal-stretch: 2; min-width: 0; preferred-width: 0; vertical-alignment: center; color: row.is-current ? Theme.accent-text : Theme.text-primary; overflow: elide; }
+                            Text { text: row.album; horizontal-stretch: 2; min-width: 0; preferred-width: 0; vertical-alignment: center; color: row.is-current ? Theme.accent-text : Theme.text-muted; overflow: elide; }
+                            Text { text: row.duration; width: 52px; vertical-alignment: center; color: row.is-current ? Theme.accent-text : Theme.text-primary; }
+                        }
+                        if !root.list-view: HorizontalLayout {
                             padding-left: 76px;
                             padding-right: 4px;
                             spacing: 4px;

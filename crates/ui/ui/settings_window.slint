@@ -93,7 +93,10 @@ export component SettingsWindow inherits Window {
     // the note-range boxes: a ComboBox overwrites a `current-value:`
     // binding the first time it syncs, so a value the app set after
     // startup never showed (issue #28).
-    in-out property <int> visualization-fps-index: 0;
+    in-out property <int> visualization-fps-index: 1;
+    /// 0: album view, 1: list view.
+    in-out property <int> playlist-view-index: 0;
+    callback playlist-view-changed(int);
     /// How the window is drawn (see `app::wiring::report_renderer`).
     in property <string> renderer-info: "\u{2014}";
     in property <[ThemeListEntry]> themes: [];
@@ -164,6 +167,14 @@ export component SettingsWindow inherits Window {
     in property <[string]> eq-preset-names;
     in property <int> eq-preset-index;
     in property <string> eq-status;
+    // Output tab, driven by `app::audio_output`. Index 0 is the system
+    // default; bound by index (see `visualization-fps-index`).
+    in property <[string]> output-devices: [];
+    in-out property <int> output-device-index: 0;
+    in property <string> output-status;
+    callback output-device-chosen(int);
+    callback output-refresh-clicked();
+
     // Media Library tab, driven by `app::media_library`.
     in property <[string]> library-folders: [];
     in property <string> library-status;
@@ -193,6 +204,22 @@ export component SettingsWindow inherits Window {
                     padding: 16px;
                     spacing: 8px;
 
+                    SectionHeading { text: "Playlist"; }
+                    GridLayout {
+                        spacing: 8px;
+                        Row {
+                            FieldLabel { text: "View:"; }
+                            ComboBox {
+                                model: ["Album view", "List view"];
+                                current-index <=> root.playlist-view-index;
+                                selected => { root.playlist-view-changed(self.current-index); }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                    }
+                    HintText { text: "Album view groups songs under album headers with cover art; list view shows every song as a plain row with artist and album columns."; }
+
+                    Rectangle { height: 8px; }
                     SectionHeading { text: "Theme"; }
                     HintText { text: "Pick a built-in theme or create your own. Changes apply immediately."; }
 
@@ -241,13 +268,13 @@ export component SettingsWindow inherits Window {
 
                     Rectangle { height: 8px; }
                     SectionHeading { text: "Performance"; }
-                    HintText { text: "How often the waveform, seekbar and spectrum redraw while playing. 30 fps draws fewer frames, which can help on slower machines or integrated graphics."; }
+                    HintText { text: "How often the waveform, seekbar and spectrum redraw while playing. 120 fps is smoother on 120 Hz and faster displays but costs about twice the CPU of 60; 30 and 15 fps draw fewer frames, which helps on slower machines or integrated graphics."; }
                     GridLayout {
                         spacing: 8px;
                         Row {
                             FieldLabel { text: "Frame rate:"; }
                             ComboBox {
-                                model: ["60 fps", "30 fps"];
+                                model: ["120 fps", "60 fps", "30 fps", "15 fps"];
                                 current-index <=> root.visualization-fps-index;
                                 selected(value) => { root.visualization-fps-changed(value); }
                             }
@@ -467,6 +494,35 @@ export component SettingsWindow inherits Window {
                             overflow: elide;
                             font-size: 11px;
                             color: Theme.text-muted;
+                        }
+                    }
+                }
+            }
+
+            Tab {
+                title: "Output";
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 8px;
+                    alignment: start;
+
+                    SectionHeading { text: "Audio device"; }
+                    HintText { text: "\u{201c}System default\u{201d} plays wherever your system sends sound, and follows it when that changes, e.g. when headphones are plugged in. A device you pick is used whenever it's connected; while it isn't, the system default stands in."; }
+                    GridLayout {
+                        spacing: 8px;
+                        Row {
+                            FieldLabel { text: "Device:"; }
+                            ComboBox {
+                                horizontal-stretch: 1;
+                                model: root.output-devices;
+                                current-index <=> root.output-device-index;
+                                selected => { root.output-device-chosen(self.current-index); }
+                            }
+                            Button { text: "Refresh"; clicked => { root.output-refresh-clicked(); } }
+                        }
+                        Row {
+                            FieldLabel { text: "Status:"; }
+                            UnitText { text: root.output-status; colspan: 2; wrap: word-wrap; }
                         }
                     }
                 }

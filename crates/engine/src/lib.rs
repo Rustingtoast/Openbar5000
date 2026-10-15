@@ -15,6 +15,7 @@ mod waveform;
 
 pub use commands::{EngineCommand, PlaybackMode};
 pub use dsp::{EqualizerSettings, EQ_BANDS_HZ, EQ_BAND_COUNT, EQ_MAX_DB};
+pub use output::{default_output_device, output_devices, OutputDeviceInfo};
 pub use events::{EngineEvent, PlaybackState};
 pub use library::{scan_audio_files, AUDIO_EXTENSIONS};
 pub use metadata::{

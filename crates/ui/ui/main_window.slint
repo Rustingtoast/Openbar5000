@@ -191,6 +191,7 @@ export component MainWindow inherits Window {
     callback refresh-playlist-clicked();
     callback search-edited(string);
     in property <string> playlist-grouping: "artist-album-disc";
+    in property <bool> playlist-list-view: false;
     in property <string> playlist-summary: "";
 
     // The playlist lives inside a panel slot, where it can't be addressed
@@ -337,6 +338,7 @@ export component MainWindow inherits Window {
                 height: parent.height;
                 rows: root.playlist-rows;
                 grouping: root.playlist-grouping;
+                list-view: root.playlist-list-view;
                 summary: root.playlist-summary;
                 scroll-serial: root.playlist-scroll-serial;
                 scroll-y: root.playlist-scroll-y;

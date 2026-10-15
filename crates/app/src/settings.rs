@@ -20,6 +20,8 @@ pub struct Settings {
     pub spectrum: SpectrumConfig,
     pub playback_mode: PlaybackMode,
     pub playlist_grouping: PlaylistGrouping,
+    /// Plain song list instead of album groups (Preferences > Appearance).
+    pub playlist_list_view: bool,
     /// How often the spectrum/seekbar redraw while playing: 60 or 30 (caps
     /// the redraw rate; see `wiring::poll_interval`).
     pub visualization_fps: u32,
@@ -35,6 +37,10 @@ pub struct Settings {
     pub artist_wikipedia_language: String,
     /// Playback volume, 0.0 to 1.0.
     pub volume: f32,
+    /// The chosen output device's id; `None` follows the system default.
+    pub output_device: Option<String>,
+    /// Its name, to show while it isn't connected.
+    pub output_device_name: String,
     /// The graphic equalizer (issue #7).
     pub equalizer: EqualizerSettings,
     /// Shows the Equalizer tab in Preferences as a hardware faceplate.
@@ -55,12 +61,15 @@ impl Default for Settings {
             spectrum: SpectrumConfig::default(),
             playback_mode: PlaybackMode::Normal,
             playlist_grouping: PlaylistGrouping::default(),
+            playlist_list_view: false,
             visualization_fps: 60,
             discord_presence_enabled: false,
             discord_client_id: String::new(),
             artist_wikipedia: true,
             artist_wikipedia_language: "en".to_string(),
             volume: 1.0,
+            output_device: None,
+            output_device_name: String::new(),
             equalizer: EqualizerSettings::default(),
             equalizer_vintage_look: false,
             library_folders: Vec::new(),
@@ -113,11 +122,15 @@ pub fn note_from_name(name: &str) -> Option<u8> {
     (LOWEST_NOTE..=HIGHEST_NOTE).find(|&note| note_name(note) == name)
 }
 
-/// Only 30 and 60 are offered; anything else (hand-edited or from a future
-/// build) falls back to 60.
+/// The visualization frame rates Preferences offers, in its dropdown's
+/// order.
+pub const FPS_CHOICES: [u32; 4] = [120, 60, 30, 15];
+
+/// Anything not offered (hand-edited, or from another build) falls back to
+/// 60.
 pub fn normalize_fps(fps: u32) -> u32 {
-    if fps == 30 {
-        30
+    if FPS_CHOICES.contains(&fps) {
+        fps
     } else {
         60
     }
@@ -202,6 +215,9 @@ impl Settings {
         if let Some(v) = get("playback_mode") {
             settings.playback_mode = playback_mode_from_str(&v);
         }
+        if let Some(v) = get("playlist_view") {
+            settings.playlist_list_view = v == "list";
+        }
         if let Some(v) = get("playlist_grouping") {
             settings.playlist_grouping = PlaylistGrouping::from_str(&v);
         }
@@ -226,6 +242,10 @@ impl Settings {
             if v.is_finite() {
                 settings.volume = v.clamp(0.0, 1.0);
             }
+        }
+        settings.output_device = get("output_device").filter(|id| !id.is_empty());
+        if let Some(v) = get("output_device_name") {
+            settings.output_device_name = v;
         }
         if let Some(v) = get("eq_enabled") {
             settings.equalizer.enabled = v == "true";
@@ -286,6 +306,10 @@ impl Settings {
                 playback_mode_to_str(self.playback_mode).to_string(),
             ),
             (
+                "playlist_view",
+                if self.playlist_list_view { "list" } else { "album" }.to_string(),
+            ),
+            (
                 "playlist_grouping",
                 self.playlist_grouping.as_str().to_string(),
             ),
@@ -298,6 +322,8 @@ impl Settings {
             ("artist_wikipedia", self.artist_wikipedia.to_string()),
             ("artist_wikipedia_language", self.artist_wikipedia_language.clone()),
             ("volume", self.volume.to_string()),
+            ("output_device", self.output_device.clone().unwrap_or_default()),
+            ("output_device_name", self.output_device_name.clone()),
             ("eq_enabled", self.equalizer.enabled.to_string()),
             ("eq_vintage_look", self.equalizer_vintage_look.to_string()),
             (
@@ -363,6 +389,10 @@ mod fps_tests {
         settings.save(&store);
         assert_eq!(Settings::load(&store).visualization_fps, 30);
 
+        for fps in [15, 120] {
+            store.set_settings(&[("visualization_fps", fps.to_string())]);
+            assert_eq!(Settings::load(&store).visualization_fps, fps);
+        }
         store.set_settings(&[("visualization_fps", "144".to_string())]);
         assert_eq!(Settings::load(&store).visualization_fps, 60);
     }

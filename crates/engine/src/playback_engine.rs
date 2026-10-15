@@ -14,11 +14,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// ~30 fps for the seekbar and waveform cursor.
-const POSITION_UPDATE_INTERVAL: Duration = Duration::from_millis(33);
+/// ~120 per second, so the seekbar and waveform cursor can move smoothly at
+/// the highest visualization frame rate (the UI keeps only the newest).
+const POSITION_UPDATE_INTERVAL: Duration = Duration::from_millis(8);
 
 const LOAD_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// How often to check whether the output should move to another device
+/// (the system default changed, or a chosen device came back).
+const OUTPUT_CHECK_INTERVAL: Duration = Duration::from_secs(2);
 /// Points per channel in the waveform outline -- about one per pixel of a
 /// full-width seekbar, so the outline stays smooth.
 const WAVEFORM_BUCKET_COUNT: usize = 1000;
@@ -86,11 +90,19 @@ struct EngineState {
     queue: VecDeque<usize>,
     /// Set to cancel the waveform being computed for the current track.
     waveform_cancel: Option<Arc<AtomicBool>>,
+    /// The output device asked for (`None`: the system default).
+    output_request: Option<String>,
+    /// The device actually playing.
+    output_device: Option<String>,
+    last_output_check: Instant,
 }
 
 fn run(command_rx: Receiver<EngineCommand>, event_tx: Sender<EngineEvent>) {
-    let sink = match CpalSink::default_device() {
-        Ok(sink) => Box::new(sink) as Box<dyn OutputSink>,
+    let (sink, output_device) = match CpalSink::default_device() {
+        Ok(sink) => {
+            let id = sink.device_id().map(str::to_string);
+            (Box::new(sink) as Box<dyn OutputSink>, id)
+        }
         Err(e) => {
             let _ = event_tx.send(EngineEvent::Error(e.to_string()));
             return;
@@ -110,6 +122,9 @@ fn run(command_rx: Receiver<EngineCommand>, event_tx: Sender<EngineEvent>) {
         shuffle: None,
         queue: VecDeque::new(),
         waveform_cancel: None,
+        output_request: None,
+        output_device,
+        last_output_check: Instant::now(),
     };
 
     let mut last_position_sent = Instant::now();
@@ -140,6 +155,15 @@ fn run(command_rx: Receiver<EngineCommand>, event_tx: Sender<EngineEvent>) {
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
+        }
+
+        if state.last_output_check.elapsed() >= OUTPUT_CHECK_INTERVAL {
+            state.last_output_check = Instant::now();
+            if let Some(target) = output_target(&state) {
+                if target != state.output_device {
+                    switch_output(&mut state, &event_tx);
+                }
+            }
         }
 
         if state.playback_state != PlaybackState::Playing {
@@ -329,6 +353,10 @@ fn handle_command(
         }
         EngineCommand::SetSpectrumConfig(config) => {
             state.pipeline.set_spectrum_config(config);
+        }
+        EngineCommand::SetOutputDevice(id) => {
+            state.output_request = id;
+            switch_output(state, event_tx);
         }
         EngineCommand::SetEqualizer(settings) => {
             state.pipeline.set_equalizer(settings);
@@ -542,6 +570,55 @@ fn set_playback_state(
         state.playback_state = new_state;
         let _ = event_tx.send(EngineEvent::PlaybackStateChanged(new_state));
     }
+}
+
+/// The device playback should be on right now: the chosen one if it's
+/// connected, otherwise the system default. `None` when that can't be
+/// told (no devices at all) -- leave things as they are.
+fn output_target(state: &EngineState) -> Option<Option<String>> {
+    if let Some(requested) = &state.output_request {
+        // Looked up even while playing on it, to notice it being unplugged.
+        if crate::output::output_devices().iter().any(|d| &d.id == requested) {
+            return Some(Some(requested.clone()));
+        }
+    }
+    crate::output::default_output_device().map(|device| Some(device.id))
+}
+
+/// Moves playback to the device `output_request` calls for, carrying on
+/// from what was audible: the old device's queued audio is dropped, so the
+/// decoder steps back to the heard position.
+fn switch_output(state: &mut EngineState, event_tx: &Sender<EngineEvent>) {
+    let sink = match CpalSink::open(state.output_request.as_deref()) {
+        Ok(sink) => sink,
+        Err(e) => {
+            let _ = event_tx.send(EngineEvent::Error(e.to_string()));
+            return;
+        }
+    };
+    let channels = state.channels.max(1) as u64;
+    let audible = state
+        .samples_played
+        .saturating_sub(state.pipeline.queued_samples() as u64)
+        / channels
+        * channels;
+    let id = sink.device_id().map(str::to_string);
+    let name = sink.device_name().to_string();
+    if let Err(e) = state.pipeline.replace_sink(Box::new(sink)) {
+        let _ = event_tx.send(EngineEvent::Error(e.to_string()));
+        return;
+    }
+    tracing::info!("audio output: {name}");
+    let fallback = state.output_request.is_some() && state.output_request != id;
+    state.output_device = id;
+    if state.playlist.current().is_some() && audible > 0 {
+        let frames = audible / channels;
+        let position = Duration::from_secs_f64(frames as f64 / state.sample_rate.max(1) as f64);
+        if state.pipeline.seek(position).is_ok() {
+            state.samples_played = audible;
+        }
+    }
+    let _ = event_tx.send(EngineEvent::OutputDeviceChanged { name, fallback });
 }
 
 fn send_position_update(state: &EngineState, event_tx: &Sender<EngineEvent>) {

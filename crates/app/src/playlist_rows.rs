@@ -220,6 +220,33 @@ pub fn build_grouped_rows(
     rows
 }
 
+/// List view: every matching track as a plain row, numbered by playlist
+/// position, with no album headers.
+pub fn build_list_rows(
+    tracks: &[Track],
+    current_index: Option<usize>,
+    query: &str,
+    covers: &mut CoverCache,
+) -> Vec<PlaylistRow> {
+    let query = query.trim().to_lowercase();
+    let blank_cover = covers.placeholder();
+    tracks
+        .iter()
+        .enumerate()
+        .filter(|(_, track)| {
+            query.is_empty()
+                || track.metadata.title.to_lowercase().contains(&query)
+                || track.metadata.artist.to_lowercase().contains(&query)
+                || track.metadata.album.to_lowercase().contains(&query)
+        })
+        .map(|(i, _)| {
+            let mut row = track_row(tracks, i, 0, "", current_index, &blank_cover);
+            row.track_number = (i + 1).to_string().into();
+            row
+        })
+        .collect()
+}
+
 /// Every group key in the playlist, for "Collapse all".
 pub fn all_group_keys(tracks: &[Track], grouping: PlaylistGrouping) -> HashSet<String> {
     tracks.iter().map(|t| grouping.key(t)).collect()
@@ -257,6 +284,8 @@ fn track_row(
         is_collapsed: false,
         track_number: track_number.into(),
         title: track.metadata.title.clone().into(),
+        artist: track.metadata.artist.clone().into(),
+        album: track.metadata.album.clone().into(),
         duration: format_duration(track.metadata.duration).into(),
         track_index: i as i32,
         is_current: current_index == Some(i),
@@ -321,6 +350,8 @@ fn header_row(
         is_collapsed,
         track_number: String::new().into(),
         title: String::new().into(),
+        artist: String::new().into(),
+        album: String::new().into(),
         duration: String::new().into(),
         // The group's first track, so header-row actions have a sensible
         // target (e.g. Play).

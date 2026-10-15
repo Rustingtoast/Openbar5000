@@ -170,6 +170,153 @@ fn builtin_entries() -> Vec<ThemeEntry> {
                 spectrum_bar: rgb(0x50, 0xfa, 0x7b),
             },
         },
+        // Inspired by Stellaris' interface: deep blue-black panels, teal
+        // highlights, and the gold its UI uses for what matters most -- here
+        // the loudest spectrum bars and peak markers blend into it.
+        ThemeEntry {
+            id: "stellaris".into(),
+            label: "Stellaris".into(),
+            is_custom: false,
+            colors: ThemeColors {
+                bg_base: rgb(0x0a, 0x14, 0x1b),
+                bg_raised: rgb(0x10, 0x21, 0x2b),
+                bg_sunken: rgb(0x06, 0x0d, 0x12),
+                text_primary: rgb(0xcf, 0xe7, 0xe9),
+                text_muted: rgb(0x6d, 0x8d, 0x94),
+                accent: rgb(0xd9, 0xa6, 0x40),
+                accent_text: rgb(0x0a, 0x14, 0x1b),
+                waveform_unplayed: rgb(0x1d, 0x3a, 0x44),
+                spectrum_bar: rgb(0x1f, 0x8f, 0x8c),
+            },
+        },
+        ThemeEntry {
+            id: "nord".into(),
+            label: "Nord".into(),
+            is_custom: false,
+            colors: ThemeColors {
+                bg_base: rgb(0x2e, 0x34, 0x40),
+                bg_raised: rgb(0x3b, 0x42, 0x52),
+                bg_sunken: rgb(0x27, 0x2c, 0x36),
+                text_primary: rgb(0xec, 0xef, 0xf4),
+                text_muted: rgb(0x7b, 0x88, 0xa1),
+                accent: rgb(0x88, 0xc0, 0xd0),
+                accent_text: rgb(0x2e, 0x34, 0x40),
+                waveform_unplayed: rgb(0x43, 0x4c, 0x5e),
+                spectrum_bar: rgb(0x81, 0xa1, 0xc1),
+            },
+        },
+        ThemeEntry {
+            id: "solarized_dark".into(),
+            label: "Solarized Dark".into(),
+            is_custom: false,
+            colors: ThemeColors {
+                bg_base: rgb(0x00, 0x2b, 0x36),
+                bg_raised: rgb(0x07, 0x36, 0x42),
+                bg_sunken: rgb(0x00, 0x21, 0x2b),
+                text_primary: rgb(0x93, 0xa1, 0xa1),
+                text_muted: rgb(0x58, 0x6e, 0x75),
+                accent: rgb(0x26, 0x8b, 0xd2),
+                accent_text: rgb(0xfd, 0xf6, 0xe3),
+                waveform_unplayed: rgb(0x1d, 0x4a, 0x55),
+                spectrum_bar: rgb(0x2a, 0xa1, 0x98),
+            },
+        },
+        ThemeEntry {
+            id: "solarized_light".into(),
+            label: "Solarized Light".into(),
+            is_custom: false,
+            colors: ThemeColors {
+                bg_base: rgb(0xfd, 0xf6, 0xe3),
+                bg_raised: rgb(0xee, 0xe8, 0xd5),
+                bg_sunken: rgb(0xe4, 0xdd, 0xc8),
+                text_primary: rgb(0x07, 0x36, 0x42),
+                text_muted: rgb(0x93, 0xa1, 0xa1),
+                accent: rgb(0x26, 0x8b, 0xd2),
+                accent_text: rgb(0xfd, 0xf6, 0xe3),
+                waveform_unplayed: rgb(0xd3, 0xcb, 0xb7),
+                spectrum_bar: rgb(0x2a, 0xa1, 0x98),
+            },
+        },
+        ThemeEntry {
+            id: "gruvbox_dark".into(),
+            label: "Gruvbox Dark".into(),
+            is_custom: false,
+            colors: ThemeColors {
+                bg_base: rgb(0x28, 0x28, 0x28),
+                bg_raised: rgb(0x32, 0x30, 0x2f),
+                bg_sunken: rgb(0x1d, 0x20, 0x21),
+                text_primary: rgb(0xeb, 0xdb, 0xb2),
+                text_muted: rgb(0xa8, 0x99, 0x84),
+                accent: rgb(0xfe, 0x80, 0x19),
+                accent_text: rgb(0x28, 0x28, 0x28),
+                waveform_unplayed: rgb(0x50, 0x49, 0x45),
+                spectrum_bar: rgb(0xb8, 0xbb, 0x26),
+            },
+        },
+        ThemeEntry {
+            id: "monokai".into(),
+            label: "Monokai".into(),
+            is_custom: false,
+            colors: ThemeColors {
+                bg_base: rgb(0x27, 0x28, 0x22),
+                bg_raised: rgb(0x2f, 0x30, 0x2a),
+                bg_sunken: rgb(0x1e, 0x1f, 0x1c),
+                text_primary: rgb(0xf8, 0xf8, 0xf2),
+                text_muted: rgb(0x75, 0x71, 0x5e),
+                accent: rgb(0xa6, 0xe2, 0x2e),
+                accent_text: rgb(0x27, 0x28, 0x22),
+                waveform_unplayed: rgb(0x49, 0x48, 0x3e),
+                spectrum_bar: rgb(0xf9, 0x26, 0x72),
+            },
+        },
+        ThemeEntry {
+            id: "catppuccin_mocha".into(),
+            label: "Catppuccin Mocha".into(),
+            is_custom: false,
+            colors: ThemeColors {
+                bg_base: rgb(0x1e, 0x1e, 0x2e),
+                bg_raised: rgb(0x26, 0x26, 0x37),
+                bg_sunken: rgb(0x18, 0x18, 0x25),
+                text_primary: rgb(0xcd, 0xd6, 0xf4),
+                text_muted: rgb(0x7f, 0x84, 0x9c),
+                accent: rgb(0xcb, 0xa6, 0xf7),
+                accent_text: rgb(0x1e, 0x1e, 0x2e),
+                waveform_unplayed: rgb(0x45, 0x47, 0x5a),
+                spectrum_bar: rgb(0x89, 0xb4, 0xfa),
+            },
+        },
+        ThemeEntry {
+            id: "tokyo_night".into(),
+            label: "Tokyo Night".into(),
+            is_custom: false,
+            colors: ThemeColors {
+                bg_base: rgb(0x1a, 0x1b, 0x26),
+                bg_raised: rgb(0x1f, 0x23, 0x35),
+                bg_sunken: rgb(0x16, 0x16, 0x1e),
+                text_primary: rgb(0xc0, 0xca, 0xf5),
+                text_muted: rgb(0x56, 0x5f, 0x89),
+                accent: rgb(0x7a, 0xa2, 0xf7),
+                accent_text: rgb(0x1a, 0x1b, 0x26),
+                waveform_unplayed: rgb(0x29, 0x2e, 0x42),
+                spectrum_bar: rgb(0xbb, 0x9a, 0xf7),
+            },
+        },
+        ThemeEntry {
+            id: "github_dark".into(),
+            label: "GitHub Dark".into(),
+            is_custom: false,
+            colors: ThemeColors {
+                bg_base: rgb(0x0d, 0x11, 0x17),
+                bg_raised: rgb(0x16, 0x1b, 0x22),
+                bg_sunken: rgb(0x01, 0x04, 0x09),
+                text_primary: rgb(0xe6, 0xed, 0xf3),
+                text_muted: rgb(0x7d, 0x85, 0x90),
+                accent: rgb(0x2f, 0x81, 0xf7),
+                accent_text: rgb(0xff, 0xff, 0xff),
+                waveform_unplayed: rgb(0x30, 0x36, 0x3d),
+                spectrum_bar: rgb(0x3f, 0xb9, 0x50),
+            },
+        },
     ]
 }
 
@@ -312,6 +459,29 @@ impl ThemedWindows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn builtin_themes_have_unique_ids_and_readable_text() {
+        let entries = builtin_entries();
+        let ids: std::collections::HashSet<_> = entries.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids.len(), entries.len(), "duplicate built-in theme id");
+        let luma = |c: slint::Color| {
+            0.299 * c.red() as f32 + 0.587 * c.green() as f32 + 0.114 * c.blue() as f32
+        };
+        for entry in &entries {
+            let colors = entry.colors;
+            for (what, fg, bg) in [
+                ("text", colors.text_primary, colors.bg_base),
+                ("accent text", colors.accent_text, colors.accent),
+            ] {
+                assert!(
+                    (luma(fg) - luma(bg)).abs() > 80.0,
+                    "{}: {what} too close to its background",
+                    entry.label
+                );
+            }
+        }
+    }
 
     #[test]
     fn hex_color_round_trips_through_parse_and_format() {
