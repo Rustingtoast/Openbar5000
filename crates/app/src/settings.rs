@@ -378,9 +378,16 @@ pub fn config_dir() -> PathBuf {
         .join("Openbar5000")
 }
 
+/// `$XDG_CONFIG_HOME/openbar5000`, normally `~/.config/openbar5000`. Inside
+/// a Flatpak, XDG_CONFIG_HOME is the app's own private config folder, the
+/// only place there it may write.
 #[cfg(all(unix, not(target_os = "macos")))]
 pub fn config_dir() -> PathBuf {
-    home_dir().join(".config/openbar5000")
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+        .unwrap_or_else(|| home_dir().join(".config"))
+        .join("openbar5000")
 }
 
 #[cfg(any(target_os = "macos", all(unix, not(target_os = "macos"))))]

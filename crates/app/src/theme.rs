@@ -354,6 +354,25 @@ fn builtin_entries() -> Vec<ThemeEntry> {
                 spectrum_bar: rgb(0x1b, 0x5c, 0x30),
             },
         },
+        // Cyberpunk 2077: near-black with a cold blue tint, cyan text,
+        // neon yellow for what's active, and the spectrum running from hot
+        // red into that yellow as it gets loud.
+        ThemeEntry {
+            id: "cyberpunk".into(),
+            label: "Cyberpunk 2077".into(),
+            is_custom: false,
+            colors: ThemeColors {
+                bg_base: rgb(0x0a, 0x0b, 0x10),
+                bg_raised: rgb(0x12, 0x14, 0x1d),
+                bg_sunken: rgb(0x05, 0x06, 0x09),
+                text_primary: rgb(0x5e, 0xf6, 0xff),
+                text_muted: rgb(0x4a, 0x7a, 0x86),
+                accent: rgb(0xfc, 0xee, 0x0a),
+                accent_text: rgb(0x0a, 0x0b, 0x10),
+                waveform_unplayed: rgb(0x26, 0x2a, 0x38),
+                spectrum_bar: rgb(0x8a, 0x0f, 0x2b),
+            },
+        },
     ]
 }
 

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Openbar5000
+Comment=Open-source, cross-platform alternative to foobar2000
+Exec=openbar5000
+Icon=io.github.rustingtoast.Openbar5000
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+Keywords=music;player;audio;foobar2000;playlist;

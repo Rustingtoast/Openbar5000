@@ -8,6 +8,7 @@ and copies the resulting binary to a predictable location — nothing magic.
 |---|---|---|
 | macOS | `./compile/build-macos.sh` | `dist/macos/openbar5000` + `dist/macos/Openbar5000.app` |
 | Linux | `./compile/build-linux.sh` | `dist/linux/openbar5000` + `dist/linux/openbar5000_<version>_<arch>.deb` |
+| Linux (any distro) | `./compile/build-flatpak.sh` | `dist/flatpak/Openbar5000-<version>-<arch>.flatpak` |
 | Windows | `.\compile\build-windows.ps1` | `dist\windows\openbar5000.exe` + `dist\windows\Openbar5000-Setup-<version>.msi` |
 
 ## Important: these build natively, not cross-platform
@@ -57,6 +58,49 @@ sudo apt-get install -f   # only needed if dpkg reports missing dependencies
 On non-Debian distros (Fedora, Arch, etc.) `dpkg-deb` won't be present, so
 this step is skipped automatically and only the raw binary is produced —
 that's expected, not an error.
+
+## Linux: Flatpak (any distribution)
+
+`build-flatpak.sh` packages Openbar5000 as a Flatpak, which installs and runs
+the same way on every distribution with Flatpak (Fedora, Arch, openSUSE,
+Debian/Ubuntu, Mint, ...). It sits next to `build-linux.sh` -- the raw
+binary and `.deb` are still built by that script as before.
+
+```bash
+./compile/build-flatpak.sh            # dist/flatpak/Openbar5000-<version>-<arch>.flatpak
+./compile/build-flatpak.sh --install  # ...and install it for the current user
+```
+
+It needs `flatpak`, `flatpak-builder` (or the `org.flatpak.Builder` Flatpak)
+and `cargo`. On first run it adds Flathub as a per-user remote and installs
+the freedesktop runtime/SDK 26.08 and the Rust SDK extension from there.
+Flatpak builds run without network, so the script first copies every Rust
+crate into `dist/flatpak/vendor` (`cargo vendor`) and points cargo at those
+copies.
+
+Install the bundle on any machine (the runtime comes from Flathub) and run it:
+
+```bash
+flatpak install --user Openbar5000-<version>-<arch>.flatpak
+flatpak run io.github.rustingtoast.Openbar5000
+```
+
+The packaging files live in `compile/flatpak/`: the manifest
+(`io.github.rustingtoast.Openbar5000.yml`), the desktop entry and the
+AppStream metadata (`.metainfo.xml` -- add a `<release>` line there for each
+new version; the script warns if the current one is missing).
+
+**Sandbox permissions** (`finish-args` in the manifest): Wayland/X11 and the
+GPU, PulseAudio/PipeWire for sound, network for artist info, read/write
+access to the Music folder (lyrics are saved into files) and read-only
+access to the rest of home and to external drives (`/media`, `/run/media`),
+MPRIS for media keys, and Discord's IPC socket for Rich Presence. Files
+chosen in the Open dialogs work from anywhere, through the desktop portal.
+Settings live in `~/.var/app/io.github.rustingtoast.Openbar5000/config/`,
+separate from a `.deb` install's `~/.config/openbar5000`.
+
+The bundle is built for the build machine's architecture (`x86_64` on a
+normal PC, `aarch64` on ARM).
 
 ## Windows: MSI packaging
 
