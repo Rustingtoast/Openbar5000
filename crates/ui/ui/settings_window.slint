@@ -94,6 +94,8 @@ export component SettingsWindow inherits Window {
     // binding the first time it syncs, so a value the app set after
     // startup never showed (issue #28).
     in-out property <int> visualization-fps-index: 0;
+    /// How the window is drawn (see `app::wiring::report_renderer`).
+    in property <string> renderer-info: "\u{2014}";
     in property <[ThemeListEntry]> themes: [];
     in property <bool> current-theme-is-custom: false;
 
@@ -250,6 +252,10 @@ export component SettingsWindow inherits Window {
                                 selected(value) => { root.visualization-fps-changed(value); }
                             }
                             Rectangle { horizontal-stretch: 1; }
+                        }
+                        Row {
+                            FieldLabel { text: "Renderer:"; }
+                            UnitText { text: root.renderer-info; colspan: 2; wrap: word-wrap; }
                         }
                     }
                 }

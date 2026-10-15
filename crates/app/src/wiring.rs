@@ -1173,6 +1173,13 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         });
     }
 
+    report_renderer(window, &settings_window);
+
+    // Minimized, nothing is seen: stop the spectrum's FFT and don't push
+    // visualization frames (some Linux window managers still redraw a
+    // minimized window's contents, issue #21).
+    let was_minimized = Cell::new(false);
+
     let window_weak = window.as_weak();
     let settings_window_weak = settings_window.as_weak();
     let initial_poll_interval = poll_interval(settings.borrow().visualization_fps);
@@ -1228,7 +1235,12 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                 event,
             );
         }
-        if let Some((bars, peaks)) = latest_spectrum {
+        let minimized = window.window().is_minimized();
+        if minimized != was_minimized.replace(minimized) {
+            let spectrum_shown = window.get_panel_slots().iter().any(|slot| slot.kind == "spectrum");
+            engine.send(EngineCommand::SetSpectrumEnabled(spectrum_shown && !minimized));
+        }
+        if let Some((bars, peaks)) = latest_spectrum.filter(|_| !minimized) {
             sync_model(&spectrum_bars, bars);
             sync_model(&spectrum_peaks, peaks);
         }
@@ -1893,6 +1905,46 @@ impl AlbumArtLoader {
 /// `bucket count` x [-1, 1] space (y down, so peaks are negated): along the
 /// top edge (maxima) left to right, then back along the bottom (minima) --
 /// the stroked shape the reference UI draws per channel.
+/// Logs which renderer draws the window, and shows it in Preferences >
+/// Visualizations: Slint quietly falls back to its CPU-only software
+/// renderer when OpenGL can't be set up (e.g. a missing or broken GL
+/// driver on Linux), which makes every frame far more expensive (issue
+/// #21). The software renderer is the one that can't take a rendering
+/// notifier.
+fn report_renderer(window: &MainWindow, settings_window: &SettingsWindow) {
+    let settings_window_weak = settings_window.as_weak();
+    let reported = Cell::new(false);
+    let result = window.window().set_rendering_notifier(move |state, api| {
+        if !matches!(state, slint::RenderingState::RenderingSetup) || reported.replace(true) {
+            return;
+        }
+        let label = match api {
+            slint::GraphicsAPI::NativeOpenGL { .. } => "OpenGL (GPU accelerated)",
+            _ => "GPU accelerated",
+        };
+        tracing::info!("renderer: {label}");
+        if let Some(settings_window) = settings_window_weak.upgrade() {
+            settings_window.set_renderer_info(label.into());
+        }
+    });
+    if result.is_err() {
+        if std::env::var_os("SLINT_BACKEND").is_some() {
+            tracing::info!("renderer: software (CPU only), as chosen by SLINT_BACKEND");
+            settings_window.set_renderer_info("Software (CPU only), chosen by SLINT_BACKEND".into());
+        } else {
+            tracing::warn!(
+                "renderer: software (CPU only) -- OpenGL couldn't be set up, so drawing uses \
+                 much more CPU; run with SLINT_BACKEND=winit-femtovg to see why"
+            );
+            settings_window.set_renderer_info(
+                "Software (CPU only) \u{2014} OpenGL couldn't be set up, so drawing uses much \
+                 more CPU. The 30 fps frame rate halves it."
+                    .into(),
+            );
+        }
+    }
+}
+
 fn waveform_outline_path(channel: &engine::WaveformChannel) -> String {
     use std::fmt::Write;
     let mut path = String::with_capacity(channel.max.len() * 24);
