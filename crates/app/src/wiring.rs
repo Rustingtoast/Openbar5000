@@ -29,7 +29,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use ui::{
     cover_image_from_rgba, format_duration, AboutWindow, ArtistCandidate, DropPreview, InfoRow, LayoutDivider, LyricLine, SpectrumNote, TabStripSlot, MainWindow, PanelChoice, PanelSlot, PlaylistRow, PropertiesWindow, SettingsWindow,
-    ThemeEditorWindow, ThemeListEntry,
+    LyricsEditorWindow, ThemeEditorWindow, ThemeListEntry,
 };
 
 /// The workspace version from `Cargo.toml` -- the one number the build
@@ -57,6 +57,7 @@ pub struct UiHandles {
     pub about_window: AboutWindow,
     pub settings_window: SettingsWindow,
     pub theme_editor_window: ThemeEditorWindow,
+    pub lyrics_editor_window: LyricsEditorWindow,
 }
 
 /// Shared UI-thread state kept in sync with the engine's playlist, so any
@@ -133,6 +134,8 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     let settings_window = SettingsWindow::new().expect("failed to create settings window");
     let theme_editor_window =
         ThemeEditorWindow::new().expect("failed to create theme editor window");
+    let lyrics_editor_window =
+        LyricsEditorWindow::new().expect("failed to create lyrics editor window");
 
     // --- Theme setup -----------------------------------------------------
     let settings = Rc::new(RefCell::new(Settings::load(&store)));
@@ -157,14 +160,15 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             .map(|entry| entry.colors)
             .expect("dark builtin theme must exist")
     };
-    theme::apply_theme(
+    let themed_windows = theme::ThemedWindows::new(
         window,
         &properties_window,
         &about_window,
         &settings_window,
         &theme_editor_window,
-        &initial_colors,
+        &lyrics_editor_window,
     );
+    themed_windows.apply(&initial_colors);
     refresh_theme_list(
         &settings_window,
         &theme_registry.borrow(),
@@ -210,6 +214,101 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             }
         });
     }
+    let lyrics_editor = Rc::new(LyricsEditor {
+        window: lyrics_editor_window.clone_strong(),
+        path: RefCell::new(None),
+        original: RefCell::new(String::new()),
+        close_after_save: Cell::new(false),
+        saves: crossbeam_channel::unbounded(),
+    });
+    {
+        let lyrics_editor = lyrics_editor.clone();
+        let track_panels = track_panels.clone();
+        let current_track = current_track.clone();
+        window.on_edit_lyrics_clicked(move || {
+            let (Some(path), Some(track)) = (
+                track_panels.track_path.borrow().clone(),
+                current_track.borrow().clone(),
+            ) else {
+                return;
+            };
+            let text = track_panels.lyrics_text.borrow().clone().unwrap_or_default();
+            lyrics_editor.open(path, &track.metadata.title, &text);
+        });
+    }
+    {
+        let editor = lyrics_editor_window.as_weak();
+        let window_weak = window.as_weak();
+        lyrics_editor_window.on_sync_clicked(move || {
+            let (Some(editor), Some(window)) = (editor.upgrade(), window_weak.upgrade()) else {
+                return;
+            };
+            let position = Duration::from_secs_f32(window.get_position_seconds().max(0.0));
+            let (text, cursor) =
+                crate::lyrics::sync_line(&editor.get_text(), editor.get_cursor().max(0) as usize, position);
+            editor.set_text(text.into());
+            editor.invoke_place_cursor(cursor as i32);
+        });
+    }
+    {
+        let editor = lyrics_editor_window.as_weak();
+        lyrics_editor_window.on_remove_timestamp_clicked(move || {
+            let Some(editor) = editor.upgrade() else {
+                return;
+            };
+            let (text, cursor) =
+                crate::lyrics::remove_timestamp(&editor.get_text(), editor.get_cursor().max(0) as usize);
+            editor.set_text(text.into());
+            editor.invoke_place_cursor(cursor as i32);
+        });
+    }
+    for (forward, step) in [(false, -5.0f32), (true, 5.0)] {
+        let window_weak = window.as_weak();
+        let seek = move || {
+            if let Some(window) = window_weak.upgrade() {
+                let target = (window.get_position_seconds() + step).clamp(0.0, window.get_duration_seconds().max(0.0));
+                window.invoke_seek_requested(target);
+            }
+        };
+        if forward {
+            lyrics_editor_window.on_seek_forward_clicked(seek);
+        } else {
+            lyrics_editor_window.on_seek_back_clicked(seek);
+        }
+    }
+    {
+        let window_weak = window.as_weak();
+        lyrics_editor_window.on_play_pause_clicked(move || {
+            if let Some(window) = window_weak.upgrade() {
+                window.invoke_play_pause_clicked();
+            }
+        });
+    }
+    {
+        let lyrics_editor = lyrics_editor.clone();
+        lyrics_editor_window.on_undo_clicked(move || {
+            let original = lyrics_editor.original.borrow().clone();
+            lyrics_editor.window.set_text(original.into());
+            lyrics_editor.window.set_status("Changes undone.".into());
+        });
+    }
+    {
+        let lyrics_editor = lyrics_editor.clone();
+        lyrics_editor_window.on_apply_clicked(move || lyrics_editor.save(false));
+    }
+    {
+        let lyrics_editor = lyrics_editor.clone();
+        lyrics_editor_window.on_ok_clicked(move || lyrics_editor.save(true));
+    }
+    {
+        let editor = lyrics_editor_window.as_weak();
+        lyrics_editor_window.on_cancel_clicked(move || {
+            if let Some(editor) = editor.upgrade() {
+                let _ = editor.hide();
+            }
+        });
+    }
+
     settings_window.set_artist_wikipedia(settings.borrow().artist_wikipedia);
     settings_window.set_wikipedia_languages(ModelRc::from(Rc::new(VecModel::from(
         WIKIPEDIA_LANGUAGES
@@ -518,11 +617,8 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         let theme_registry = theme_registry.clone();
         let settings = settings.clone();
         let store = store.clone();
-        let window_weak = window.as_weak();
-        let properties_window_weak = properties_window.as_weak();
-        let about_window_weak = about_window.as_weak();
+        let themed_windows = themed_windows.clone();
         let settings_window_weak = settings_window.as_weak();
-        let theme_editor_window_weak = theme_editor_window.as_weak();
         settings_window.on_theme_row_clicked(move |id| {
             let id = id.to_string();
             let Some(colors) = theme_registry.borrow().find(&id).map(|e| e.colors) else {
@@ -531,30 +627,11 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             settings.borrow_mut().theme_id = id.clone();
             settings.borrow().save(&store);
 
-            let (
-                Some(window),
-                Some(properties_window),
-                Some(about_window),
-                Some(settings_window),
-                Some(editor),
-            ) = (
-                window_weak.upgrade(),
-                properties_window_weak.upgrade(),
-                about_window_weak.upgrade(),
-                settings_window_weak.upgrade(),
-                theme_editor_window_weak.upgrade(),
-            )
+            themed_windows.apply(&colors);
+            let Some(settings_window) = settings_window_weak.upgrade()
             else {
                 return;
             };
-            theme::apply_theme(
-                &window,
-                &properties_window,
-                &about_window,
-                &settings_window,
-                &editor,
-                &colors,
-            );
             refresh_theme_list(&settings_window, &theme_registry.borrow(), &id);
         });
     }
@@ -618,9 +695,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         let store = store.clone();
         let draft_colors = draft_colors.clone();
         let draft_name = draft_name.clone();
-        let window_weak = window.as_weak();
-        let properties_window_weak = properties_window.as_weak();
-        let about_window_weak = about_window.as_weak();
+        let themed_windows = themed_windows.clone();
         let settings_window_weak = settings_window.as_weak();
         let theme_editor_window_weak = theme_editor_window.as_weak();
         theme_editor_window.on_save_clicked(move || {
@@ -635,30 +710,12 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             settings.borrow_mut().theme_id = new_id.clone();
             settings.borrow().save(&store);
 
-            let (
-                Some(window),
-                Some(properties_window),
-                Some(about_window),
-                Some(settings_window),
-                Some(editor),
-            ) = (
-                window_weak.upgrade(),
-                properties_window_weak.upgrade(),
-                about_window_weak.upgrade(),
-                settings_window_weak.upgrade(),
-                theme_editor_window_weak.upgrade(),
-            )
+            themed_windows.apply(&colors);
+            let (Some(settings_window), Some(editor)) =
+                (settings_window_weak.upgrade(), theme_editor_window_weak.upgrade())
             else {
                 return;
             };
-            theme::apply_theme(
-                &window,
-                &properties_window,
-                &about_window,
-                &settings_window,
-                &editor,
-                &colors,
-            );
             refresh_theme_list(&settings_window, &theme_registry.borrow(), &new_id);
             editor.hide().expect("failed to hide theme editor window");
         });
@@ -667,11 +724,8 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         let theme_registry = theme_registry.clone();
         let settings = settings.clone();
         let store = store.clone();
-        let window_weak = window.as_weak();
-        let properties_window_weak = properties_window.as_weak();
-        let about_window_weak = about_window.as_weak();
+        let themed_windows = themed_windows.clone();
         let settings_window_weak = settings_window.as_weak();
-        let theme_editor_window_weak = theme_editor_window.as_weak();
         settings_window.on_delete_theme_clicked(move || {
             let current_id = settings.borrow().theme_id.clone();
             let is_custom = theme_registry
@@ -695,30 +749,11 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             settings.borrow_mut().theme_id = fallback_id.clone();
             settings.borrow().save(&store);
 
-            let (
-                Some(window),
-                Some(properties_window),
-                Some(about_window),
-                Some(settings_window),
-                Some(editor),
-            ) = (
-                window_weak.upgrade(),
-                properties_window_weak.upgrade(),
-                about_window_weak.upgrade(),
-                settings_window_weak.upgrade(),
-                theme_editor_window_weak.upgrade(),
-            )
+            themed_windows.apply(&colors);
+            let Some(settings_window) = settings_window_weak.upgrade()
             else {
                 return;
             };
-            theme::apply_theme(
-                &window,
-                &properties_window,
-                &about_window,
-                &settings_window,
-                &editor,
-                &colors,
-            );
             refresh_theme_list(&settings_window, &theme_registry.borrow(), &fallback_id);
         });
     }
@@ -1151,6 +1186,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             sync_model(&spectrum_peaks, peaks);
         }
         track_panels.poll(&window);
+        lyrics_editor.poll(&window, &track_panels);
         let actions: Vec<MediaAction> = media_keys
             .borrow()
             .as_ref()
@@ -1175,6 +1211,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         about_window,
         settings_window,
         theme_editor_window,
+        lyrics_editor_window,
     }
 }
 
@@ -1199,6 +1236,9 @@ struct LayoutState {
 /// artist up on its own.
 const AUTO_LOOKUP_DELAY: Duration = Duration::from_millis(700);
 
+/// Lyrics read from a track's file: (path, lyrics).
+type LyricsResult = (PathBuf, Option<String>);
+
 /// A finished artist lookup: (cache key, artist, result).
 type ArtistResult = (String, String, Result<Outcome, String>);
 
@@ -1208,6 +1248,11 @@ struct TrackPanels {
     album_art: AlbumArtLoader,
     lyrics: RefCell<Option<Lyrics>>,
     lyric_line: Cell<i32>,
+    /// The playing track's file, and its lyrics exactly as stored (what
+    /// the editor opens).
+    track_path: RefCell<Option<PathBuf>>,
+    lyrics_text: RefCell<Option<String>>,
+    lyrics_results: (crossbeam_channel::Sender<LyricsResult>, crossbeam_channel::Receiver<LyricsResult>),
     store: Rc<Store>,
     settings: Rc<RefCell<Settings>>,
     /// The playing track's artist, if it has one, and its title (which
@@ -1238,6 +1283,9 @@ impl TrackPanels {
             album_art: AlbumArtLoader::new(window),
             lyrics: RefCell::new(None),
             lyric_line: Cell::new(-1),
+            track_path: RefCell::new(None),
+            lyrics_text: RefCell::new(None),
+            lyrics_results: crossbeam_channel::unbounded(),
             store,
             settings,
             artist: RefCell::new(None),
@@ -1262,15 +1310,30 @@ impl TrackPanels {
         *self.artist.borrow_mut() = artist;
         *self.title.borrow_mut() = track.metadata.title.clone();
         self.show_artist(window);
-        // No lyrics source exists yet; one would call `set_lyrics` here
-        // (or later, from a background lookup) with what it found.
-        self.set_lyrics(window, None, "No lyrics found for this track.");
+        // Read the file's own lyrics in the background (its tags include
+        // the cover art, which can be large); `poll` shows them.
+        *self.track_path.borrow_mut() = Some(track.path.clone());
+        *self.lyrics_text.borrow_mut() = None;
+        self.set_lyrics(window, None, "");
+        window.set_lyrics_editable(true);
+        let path = track.path.clone();
+        let results = self.lyrics_results.0.clone();
+        std::thread::Builder::new()
+            .name("openbar5000-lyrics".into())
+            .spawn(move || {
+                let lyrics = engine::read_lyrics(&path);
+                let _ = results.send((path, lyrics));
+            })
+            .expect("failed to spawn lyrics thread");
     }
 
     fn stopped(&self, window: &MainWindow) {
         window.set_now_playing_text("".into());
         window.set_track_info(ModelRc::default());
         self.album_art.show_track(None);
+        *self.track_path.borrow_mut() = None;
+        *self.lyrics_text.borrow_mut() = None;
+        window.set_lyrics_editable(false);
         self.artist_changed(None);
         *self.artist.borrow_mut() = None;
         self.show_artist(window);
@@ -1287,6 +1350,7 @@ impl TrackPanels {
                 text: line.text.clone().into(),
             })
             .collect();
+        window.set_lyrics_synced(lyrics.as_ref().is_some_and(Lyrics::is_synced));
         window.set_lyric_lines(ModelRc::from(Rc::new(VecModel::from(lines))));
         window.set_lyric_status(status.into());
         window.set_lyric_active_line(-1);
@@ -1474,9 +1538,23 @@ impl TrackPanels {
         window.set_artist_state("choose".into());
     }
 
+    /// Shows `text` as the playing track's lyrics if `path` is still that
+    /// track -- after reading them, or after the editor saved new ones.
+    fn lyrics_loaded(&self, window: &MainWindow, path: &std::path::Path, text: Option<String>) {
+        if self.track_path.borrow().as_deref() != Some(path) {
+            return;
+        }
+        let lyrics = text.as_deref().map(Lyrics::parse).filter(|l| !l.lines.is_empty());
+        self.set_lyrics(window, lyrics, "No Lyrics");
+        *self.lyrics_text.borrow_mut() = text;
+    }
+
     /// Takes finished lookups: caches them, and shows them if that artist
     /// is still the one playing.
     fn poll(&self, window: &MainWindow) {
+        while let Ok((path, text)) = self.lyrics_results.1.try_recv() {
+            self.lyrics_loaded(window, &path, text);
+        }
         while let Ok((key, artist, result)) = self.artist_results.1.try_recv() {
             if self.lookup_in_flight.borrow().as_deref() == Some(key.as_str()) {
                 *self.lookup_in_flight.borrow_mut() = None;
@@ -1538,15 +1616,25 @@ fn track_info_rows(track: &Track) -> Vec<InfoRow> {
         (Some(rate), None) => format!("{:.1} kHz", rate as f64 / 1000.0),
         _ => String::new(),
     };
+    let size = if m.file_size > 0 {
+        format!("{:.1} MB", m.file_size as f64 / 1_000_000.0)
+    } else {
+        String::new()
+    };
+    // The order issue #6 lists them in, then technical extras.
     [
         ("Title", m.title.clone()),
-        ("Artist", m.artist.clone()),
         ("Album", m.album.clone()),
-        ("Date", m.date.clone()),
         ("Track", m.track_number.map(|n| n.to_string()).unwrap_or_default()),
         ("Disc", m.disc_number.map(|n| n.to_string()).unwrap_or_default()),
-        ("Length", format_duration(m.duration)),
+        ("Artist", m.artist.clone()),
+        ("Composer", m.composer.clone()),
+        ("Year", m.date.clone()),
         ("Format", m.format_label.clone()),
+        ("Length", format_duration(m.duration)),
+        ("Size", size),
+        ("BPM", m.bpm.map(|bpm| bpm.to_string()).unwrap_or_default()),
+        ("Genre", m.genre.clone()),
         ("Bitrate", m.bitrate_kbps.map(|k| format!("{k} kbps")).unwrap_or_default()),
         ("Sample rate", quality),
         ("File", track.path.display().to_string()),
@@ -1601,6 +1689,79 @@ fn native_window_handle(window: &MainWindow) -> Option<*mut std::ffi::c_void> {
 #[cfg(not(windows))]
 fn native_window_handle(_window: &MainWindow) -> Option<*mut std::ffi::c_void> {
     None
+}
+
+/// A finished lyrics save: (file, the text saved, result).
+type SaveResult = (PathBuf, String, Result<(), String>);
+
+/// The lyrics editor window's state (issue #6): which file it edits --
+/// fixed when it opens, even if playback moves on -- and the text it
+/// opened with, for "Undo changes".
+struct LyricsEditor {
+    window: LyricsEditorWindow,
+    path: RefCell<Option<PathBuf>>,
+    original: RefCell<String>,
+    close_after_save: Cell<bool>,
+    saves: (
+        crossbeam_channel::Sender<SaveResult>,
+        crossbeam_channel::Receiver<SaveResult>,
+    ),
+}
+
+impl LyricsEditor {
+    fn open(&self, path: PathBuf, title: &str, text: &str) {
+        *self.path.borrow_mut() = Some(path);
+        *self.original.borrow_mut() = text.to_string();
+        self.window.set_track_title(title.into());
+        self.window.set_text(text.into());
+        self.window.set_status("".into());
+        self.window.set_busy(false);
+        let _ = self.window.show();
+        self.window.invoke_place_cursor(0);
+    }
+
+    /// Saves the text into the file on a background thread (it may copy a
+    /// large file); the result arrives in `poll`.
+    fn save(&self, close_after: bool) {
+        let Some(path) = self.path.borrow().clone() else {
+            return;
+        };
+        let text = self.window.get_text().to_string();
+        self.close_after_save.set(close_after);
+        self.window.set_busy(true);
+        self.window.set_status("Saving\u{2026}".into());
+        let saves = self.saves.0.clone();
+        std::thread::Builder::new()
+            .name("openbar5000-lyrics-save".into())
+            .spawn(move || {
+                let result = engine::write_lyrics(&path, &text);
+                let _ = saves.send((path, text, result));
+            })
+            .expect("failed to spawn lyrics save thread");
+    }
+
+    /// Finished saves, plus the live playback time while it's open.
+    fn poll(&self, main: &MainWindow, track_panels: &TrackPanels) {
+        if self.window.window().is_visible() {
+            self.window.set_playback_time(main.get_position_text());
+            self.window.set_is_playing(main.get_is_playing());
+        }
+        while let Ok((path, text, result)) = self.saves.1.try_recv() {
+            self.window.set_busy(false);
+            match result {
+                Ok(()) => {
+                    *self.original.borrow_mut() = text.clone();
+                    self.window.set_status("Saved to the file.".into());
+                    let saved = (!text.trim().is_empty()).then_some(text);
+                    track_panels.lyrics_loaded(main, &path, saved);
+                    if self.close_after_save.get() {
+                        let _ = self.window.hide();
+                    }
+                }
+                Err(e) => self.window.set_status(format!("Couldn't save: {e}").into()),
+            }
+        }
+    }
 }
 
 /// Longest edge (px) the album-art panel's cover is decoded at -- sharp at
@@ -2455,7 +2616,7 @@ fn apply_event(
             // didn't change), so this is the only reliable place to update
             // presence for a plain track-to-track advance.
             send_presence_for_track(presence, &track, Duration::ZERO, window.get_is_playing());
-            *current_track.borrow_mut() = Some(track);
+            *current_track.borrow_mut() = Some(*track);
             playlist_view_state.borrow_mut().current_index = Some(index);
             refresh_playlist_rows(playlist_model, playlist_view_state);
         }

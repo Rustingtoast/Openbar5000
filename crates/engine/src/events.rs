@@ -9,7 +9,9 @@ use std::time::Duration;
 pub enum EngineEvent {
     TrackChanged {
         index: usize,
-        track: Track,
+        /// Boxed: a track (with all its tags) is far larger than every
+        /// other event, which are sent many times a second.
+        track: Box<Track>,
     },
     PositionUpdate {
         position: Duration,

@@ -11,6 +11,7 @@ import { PropertiesWindow } from "properties_window.slint";
 import { AboutWindow } from "about_window.slint";
 import { SettingsWindow, ThemeListEntry } from "settings_window.slint";
 import { ThemeEditorWindow } from "theme_editor_window.slint";
+import { LyricsEditorWindow } from "lyrics_editor_window.slint";
 
 /// One placed panel (see `app::layout`): which panel to draw and where,
 /// relative to the panel area below the menu bar.
@@ -68,7 +69,7 @@ export struct PanelChoice {
     label: string,
 }
 
-export { PlaylistRow, PropertiesWindow, AboutWindow, SettingsWindow, ThemeListEntry, ThemeEditorWindow, Theme }
+export { PlaylistRow, PropertiesWindow, AboutWindow, SettingsWindow, ThemeListEntry, ThemeEditorWindow, LyricsEditorWindow, Theme }
 
 export component MainWindow inherits Window {
     // Set from Cargo.toml's version at startup (see `app::wiring`).
@@ -128,7 +129,11 @@ export component MainWindow inherits Window {
     in property <[InfoRow]> track-info: [];
     in property <[LyricLine]> lyric-lines: [];
     in property <int> lyric-active-line: -1;
+    in property <bool> lyrics-synced: false;
     in property <string> lyric-status: "Nothing playing";
+    // "Add lyrics…" / "Edit lyrics…" in the LYR panel (needs a track).
+    in property <bool> lyrics-editable: false;
+    callback edit-lyrics-clicked();
 
     // Artist information (BIO panel, see `app::artist_info`).
     in property <string> artist-state: "nothing";
@@ -409,7 +414,10 @@ export component MainWindow inherits Window {
                 height: parent.height;
                 lines: root.lyric-lines;
                 active-line: root.lyric-active-line;
+                synced: root.lyrics-synced;
                 status: root.lyric-status;
+                editable: root.lyrics-editable;
+                edit-clicked => { root.edit-lyrics-clicked(); }
             }
             if slot.kind == "biography": ArtistView {
                 width: parent.width;

@@ -12,6 +12,11 @@ pub struct TrackMetadata {
     /// Release/recording date exactly as tagged (often just a year, e.g.
     /// "2025", sometimes a full "2019-11-15") -- empty if untagged.
     pub date: String,
+    pub genre: String,
+    pub composer: String,
+    pub bpm: Option<u32>,
+    /// Size of the file on disk, in bytes.
+    pub file_size: u64,
     pub duration: Duration,
     /// Embedded cover art, already decoded and shrunk to playlist-thumbnail
     /// size at load time (off the UI thread). Full-size art is deliberately
