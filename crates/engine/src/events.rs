@@ -1,5 +1,6 @@
 use crate::playlist::Track;
 use crate::waveform::WaveformChannel;
+use std::time::Duration;
 
 /// Sent from the playback thread to the UI thread. The UI drains these via a
 /// timer on the Slint event loop (see `crates/app`) and never talks to the
@@ -11,6 +12,10 @@ pub enum EngineEvent {
         /// Boxed: a track (with all its tags) is far larger than every
         /// other event, which are sent many times a second.
         track: Box<Track>,
+    },
+    PositionUpdate {
+        position: Duration,
+        duration: Duration,
     },
     PlaybackStateChanged(PlaybackState),
     Error(String),
@@ -49,7 +54,10 @@ pub enum EngineEvent {
     },
     /// Playback now goes to this device; `fallback` when it's the system
     /// default standing in for a chosen device that isn't connected.
-    OutputDeviceChanged { name: String, fallback: bool },
+    OutputDeviceChanged {
+        name: String,
+        fallback: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
