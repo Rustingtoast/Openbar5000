@@ -2,13 +2,18 @@ use crate::discord_presence::{
     NowPlaying, PresenceClient, PresenceCommand, PresenceEvent, DEFAULT_CLIENT_ID,
 };
 use crate::layout::{drop_at, drop_preview, Axis, DragStart, Drop, Layout, PanelKind, Placement, Side};
+use crate::artist_info::{self, ArtistInfo, Candidate, Outcome, WIKIPEDIA_LANGUAGES};
 use crate::lyrics::Lyrics;
+use crate::media_keys::{MediaAction, MediaKeys};
 use crate::platform;
 use crate::playlist_rows::{
     all_group_keys, build_grouped_rows, group_key_of, sort_order, CoverCache, PlaylistGrouping,
     PlaylistSort,
 };
-use crate::settings::{normalize_fps, Settings};
+use crate::settings::{
+    note_from_name, note_name, normalize_fps, valid_note_range, Settings, A4_MAX_HZ, A4_MIN_HZ,
+    HIGHEST_NOTE, LOWEST_NOTE,
+};
 use crate::store::Store;
 use crate::theme::{self, ThemeColors, ThemeRegistry};
 use engine::{
@@ -23,7 +28,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use ui::{
-    cover_image_from_rgba, format_duration, AboutWindow, DropPreview, InfoRow, LayoutDivider, LyricLine, SpectrumNote, TabStripSlot, MainWindow, PanelChoice, PanelSlot, PlaylistRow, PropertiesWindow, SettingsWindow,
+    cover_image_from_rgba, format_duration, AboutWindow, ArtistCandidate, DropPreview, InfoRow, LayoutDivider, LyricLine, SpectrumNote, TabStripSlot, MainWindow, PanelChoice, PanelSlot, PlaylistRow, PropertiesWindow, SettingsWindow,
     ThemeEditorWindow, ThemeListEntry,
 };
 
@@ -169,7 +174,84 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     playlist_view_state.borrow_mut().grouping = settings.borrow().playlist_grouping;
     window.set_playlist_grouping(settings.borrow().playlist_grouping.as_str().into());
 
-    let track_panels = Rc::new(TrackPanels::new(window));
+    let track_panels = Rc::new(TrackPanels::new(window, store.clone(), settings.clone()));
+    {
+        let track_panels = track_panels.clone();
+        let window_weak = window.as_weak();
+        window.on_artist_lookup_clicked(move || {
+            if let Some(window) = window_weak.upgrade() {
+                track_panels.look_up_artist(&window, false);
+            }
+        });
+    }
+    {
+        let track_panels = track_panels.clone();
+        let window_weak = window.as_weak();
+        window.on_artist_candidate_clicked(move |index| {
+            if let Some(window) = window_weak.upgrade() {
+                track_panels.choose_artist(&window, index as usize);
+            }
+        });
+    }
+    {
+        let track_panels = track_panels.clone();
+        let window_weak = window.as_weak();
+        window.on_artist_none_of_these_clicked(move || {
+            if let Some(window) = window_weak.upgrade() {
+                track_panels.reject_candidates(&window);
+            }
+        });
+    }
+    {
+        let track_panels = track_panels.clone();
+        window.on_artist_link_clicked(move || {
+            if let Some(link) = track_panels.artist_link.borrow().as_deref() {
+                platform::open_url(link);
+            }
+        });
+    }
+    settings_window.set_artist_wikipedia(settings.borrow().artist_wikipedia);
+    settings_window.set_wikipedia_languages(ModelRc::from(Rc::new(VecModel::from(
+        WIKIPEDIA_LANGUAGES
+            .iter()
+            .map(|(_, label)| slint::SharedString::from(*label))
+            .collect::<Vec<_>>(),
+    ))));
+    settings_window.set_wikipedia_language_index(
+        WIKIPEDIA_LANGUAGES
+            .iter()
+            .position(|(code, _)| *code == settings.borrow().artist_wikipedia_language)
+            .unwrap_or(0) as i32,
+    );
+    {
+        let settings = settings.clone();
+        let store = store.clone();
+        let track_panels = track_panels.clone();
+        let window_weak = window.as_weak();
+        settings_window.on_artist_wikipedia_toggled(move |enabled| {
+            settings.borrow_mut().artist_wikipedia = enabled;
+            settings.borrow().save(&store);
+            if let Some(window) = window_weak.upgrade() {
+                track_panels.show_artist(&window);
+            }
+        });
+    }
+    {
+        let settings = settings.clone();
+        let store = store.clone();
+        let track_panels = track_panels.clone();
+        let window_weak = window.as_weak();
+        settings_window.on_wikipedia_language_changed(move |index| {
+            let Some((code, _)) = WIKIPEDIA_LANGUAGES.get(index as usize) else {
+                return;
+            };
+            settings.borrow_mut().artist_wikipedia_language = code.to_string();
+            settings.borrow().save(&store);
+            if let Some(window) = window_weak.upgrade() {
+                track_panels.show_artist(&window);
+            }
+        });
+    }
     wire_layout(window, &engine, &settings, &store, &track_panels);
 
     let initial_playback_mode = settings.borrow().playback_mode;
@@ -177,7 +259,21 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     engine.send(EngineCommand::SetPlaybackMode(initial_playback_mode));
 
     engine.send(EngineCommand::SetSpectrumConfig(settings.borrow().spectrum));
-    window.set_spectrum_notes(ModelRc::from(Rc::new(VecModel::from(spectrum_notes()))));
+    {
+        let spectrum = settings.borrow().spectrum;
+        window.set_spectrum_notes(ModelRc::from(Rc::new(VecModel::from(spectrum_notes(
+            spectrum.first_note,
+            spectrum.last_note,
+        )))));
+        settings_window.set_note_names(ModelRc::from(Rc::new(VecModel::from(
+            (LOWEST_NOTE..=HIGHEST_NOTE)
+                .map(|note| slint::SharedString::from(note_name(note)))
+                .collect::<Vec<_>>(),
+        ))));
+        settings_window.set_spectrum_first_note_index((spectrum.first_note - LOWEST_NOTE) as i32);
+        settings_window.set_spectrum_last_note_index((spectrum.last_note - LOWEST_NOTE) as i32);
+        settings_window.set_spectrum_a4_hz(spectrum.a4_hz.round() as i32);
+    }
     window.set_spectrum_min_db(settings.borrow().spectrum.min_db as i32);
     window.set_spectrum_max_db(settings.borrow().spectrum.max_db as i32);
     {
@@ -311,6 +407,51 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                 window.set_spectrum_max_db(v);
             }
             settings.borrow_mut().spectrum.max_db = v as f32;
+            settings.borrow().save(&store);
+            engine.send(EngineCommand::SetSpectrumConfig(settings.borrow().spectrum));
+        });
+    }
+    {
+        let settings = settings.clone();
+        let store = store.clone();
+        let engine = engine.clone();
+        let window_weak = window.as_weak();
+        let settings_window_weak = settings_window.as_weak();
+        settings_window.on_spectrum_note_range_changed(move |first, last| {
+            let (Some(mut first), Some(mut last)) = (note_from_name(&first), note_from_name(&last))
+            else {
+                return;
+            };
+            // Keep at least two notes, nudging whichever end can move.
+            if first >= last {
+                if first < HIGHEST_NOTE {
+                    last = first + 1;
+                } else {
+                    first = last - 1;
+                }
+            }
+            if !valid_note_range(first, last) {
+                return;
+            }
+            settings.borrow_mut().spectrum.first_note = first;
+            settings.borrow_mut().spectrum.last_note = last;
+            settings.borrow().save(&store);
+            engine.send(EngineCommand::SetSpectrumConfig(settings.borrow().spectrum));
+            if let Some(window) = window_weak.upgrade() {
+                window.set_spectrum_notes(ModelRc::from(Rc::new(VecModel::from(spectrum_notes(first, last)))));
+            }
+            if let Some(settings_window) = settings_window_weak.upgrade() {
+                settings_window.set_spectrum_first_note_index((first - LOWEST_NOTE) as i32);
+                settings_window.set_spectrum_last_note_index((last - LOWEST_NOTE) as i32);
+            }
+        });
+    }
+    {
+        let settings = settings.clone();
+        let store = store.clone();
+        let engine = engine.clone();
+        settings_window.on_spectrum_a4_changed(move |hz| {
+            settings.borrow_mut().spectrum.a4_hz = (hz as f32).clamp(A4_MIN_HZ, A4_MAX_HZ);
             settings.borrow().save(&store);
             engine.send(EngineCommand::SetSpectrumConfig(settings.borrow().spectrum));
         });
@@ -937,6 +1078,19 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     window.set_spectrum_bars(ModelRc::from(spectrum_bars.clone()));
     window.set_spectrum_peaks(ModelRc::from(spectrum_peaks.clone()));
 
+    // OS media keys (issue #17). Registered once the event loop runs: on
+    // Windows it needs the native window, which only exists once shown.
+    let media_keys: Rc<RefCell<Option<MediaKeys>>> = Rc::new(RefCell::new(None));
+    {
+        let media_keys = media_keys.clone();
+        let window_weak = window.as_weak();
+        Timer::single_shot(Duration::ZERO, move || {
+            if let Some(window) = window_weak.upgrade() {
+                *media_keys.borrow_mut() = MediaKeys::new(native_window_handle(&window));
+            }
+        });
+    }
+
     let window_weak = window.as_weak();
     let settings_window_weak = settings_window.as_weak();
     let initial_poll_interval = poll_interval(settings.borrow().visualization_fps);
@@ -956,6 +1110,16 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                     if matches!(event, EngineEvent::TrackChanged { .. }) {
                         // Belongs to the previous track.
                         latest_position = None;
+                    }
+                    if let Some(media) = media_keys.borrow_mut().as_mut() {
+                        match &event {
+                            EngineEvent::TrackChanged { track, .. } => media.set_track(track),
+                            EngineEvent::PlaybackStateChanged(state) => media.set_state(
+                                *state,
+                                Duration::from_secs_f32(window.get_position_seconds()),
+                            ),
+                            _ => {}
+                        }
                     }
                     apply_event(
                         &window,
@@ -985,6 +1149,15 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         if let Some((bars, peaks)) = latest_spectrum {
             sync_model(&spectrum_bars, bars);
             sync_model(&spectrum_peaks, peaks);
+        }
+        track_panels.poll(&window);
+        let actions: Vec<MediaAction> = media_keys
+            .borrow()
+            .as_ref()
+            .map(|media| std::iter::from_fn(|| media.try_recv()).collect())
+            .unwrap_or_default();
+        for action in actions {
+            apply_media_action(&window, action);
         }
         while let Some(event) = presence.try_recv_event() {
             if let Some(settings_window) = settings_window_weak.upgrade() {
@@ -1022,20 +1195,60 @@ struct LayoutState {
     spectrum_enabled: Option<bool>,
 }
 
+/// How long a track must stay current before the open BIO panel looks its
+/// artist up on its own.
+const AUTO_LOOKUP_DELAY: Duration = Duration::from_millis(700);
+
+/// A finished artist lookup: (cache key, artist, result).
+type ArtistResult = (String, String, Result<Outcome, String>);
+
 /// State behind the panels that describe the current track: album art,
-/// the Info table and lyrics.
+/// the Info table, lyrics and artist information.
 struct TrackPanels {
     album_art: AlbumArtLoader,
     lyrics: RefCell<Option<Lyrics>>,
     lyric_line: Cell<i32>,
+    store: Rc<Store>,
+    settings: Rc<RefCell<Settings>>,
+    /// The playing track's artist, if it has one, and its title (which
+    /// tells namesakes apart in a lookup).
+    artist: RefCell<Option<String>>,
+    title: RefCell<String>,
+    /// Namesakes offered in the BIO panel for the current artist.
+    candidates: RefCell<Vec<Candidate>>,
+    /// A namesake list waiting for the user's choice, by cache key -- so
+    /// re-opening the tab shows it again without searching again.
+    pending_choice: RefCell<Option<(String, Vec<Candidate>)>>,
+    /// Whether the BIO panel is on screen: artists are only looked up
+    /// online while it is.
+    biography_visible: Cell<bool>,
+    /// Cache key of the lookup in flight, so it isn't started twice.
+    lookup_in_flight: RefCell<Option<String>>,
+    /// Bumped when the artist changes; an automatic lookup still waiting
+    /// out `AUTO_LOOKUP_DELAY` for an older artist then gives up.
+    artist_generation: Arc<AtomicU64>,
+    /// Where the BIO panel's "Read more" link goes.
+    artist_link: RefCell<Option<String>>,
+    artist_results: (crossbeam_channel::Sender<ArtistResult>, crossbeam_channel::Receiver<ArtistResult>),
 }
 
 impl TrackPanels {
-    fn new(window: &MainWindow) -> Self {
+    fn new(window: &MainWindow, store: Rc<Store>, settings: Rc<RefCell<Settings>>) -> Self {
         Self {
             album_art: AlbumArtLoader::new(window),
             lyrics: RefCell::new(None),
             lyric_line: Cell::new(-1),
+            store,
+            settings,
+            artist: RefCell::new(None),
+            title: RefCell::new(String::new()),
+            candidates: RefCell::new(Vec::new()),
+            pending_choice: RefCell::new(None),
+            biography_visible: Cell::new(false),
+            lookup_in_flight: RefCell::new(None),
+            artist_generation: Arc::new(AtomicU64::new(0)),
+            artist_link: RefCell::new(None),
+            artist_results: crossbeam_channel::unbounded(),
         }
     }
 
@@ -1043,6 +1256,12 @@ impl TrackPanels {
         window.set_now_playing_text(now_playing_text(track).into());
         window.set_track_info(ModelRc::from(Rc::new(VecModel::from(track_info_rows(track)))));
         self.album_art.show_track(Some(track.path.clone()));
+        let artist = track.metadata.artist.trim();
+        let artist = (!artist.is_empty()).then(|| artist.to_string());
+        self.artist_changed(artist.as_deref());
+        *self.artist.borrow_mut() = artist;
+        *self.title.borrow_mut() = track.metadata.title.clone();
+        self.show_artist(window);
         // No lyrics source exists yet; one would call `set_lyrics` here
         // (or later, from a background lookup) with what it found.
         self.set_lyrics(window, None, "No lyrics found for this track.");
@@ -1052,6 +1271,9 @@ impl TrackPanels {
         window.set_now_playing_text("".into());
         window.set_track_info(ModelRc::default());
         self.album_art.show_track(None);
+        self.artist_changed(None);
+        *self.artist.borrow_mut() = None;
+        self.show_artist(window);
         self.set_lyrics(window, None, "Nothing playing");
     }
 
@@ -1072,6 +1294,221 @@ impl TrackPanels {
         *self.lyrics.borrow_mut() = lyrics;
     }
 
+    /// A new track's artist: unless it's the same one (next song of an
+    /// album), lookups still pending for the previous artist are dropped.
+    fn artist_changed(&self, artist: Option<&str>) {
+        let options = self.settings.borrow().artist_lookup();
+        let key = artist.map(|artist| options.cache_key(artist));
+        if self.lookup_in_flight.borrow().as_ref() != key.as_ref() {
+            *self.lookup_in_flight.borrow_mut() = None;
+            self.artist_generation.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    /// Called whenever the layout is placed: opening the BIO panel (e.g.
+    /// its tab) looks up the playing artist if that hasn't happened yet.
+    fn set_biography_visible(&self, window: &MainWindow, visible: bool) {
+        if self.biography_visible.replace(visible) != visible && visible {
+            self.show_artist(window);
+        }
+    }
+
+    /// Shows the current artist in the BIO panel: from the cache if it was
+    /// looked up before (with the current Preferences); otherwise, if the
+    /// panel is on screen, looks it up online -- and not while it isn't.
+    fn show_artist(&self, window: &MainWindow) {
+        *self.artist_link.borrow_mut() = None;
+        self.candidates.borrow_mut().clear();
+        let Some(artist) = self.artist.borrow().clone() else {
+            window.set_artist_state("nothing".into());
+            return;
+        };
+        window.set_artist_name(artist.clone().into());
+        let options = self.settings.borrow().artist_lookup();
+        let key = options.cache_key(&artist);
+        let pending = self
+            .pending_choice
+            .borrow()
+            .as_ref()
+            .filter(|(pending_key, _)| *pending_key == key)
+            .map(|(_, candidates)| candidates.clone());
+        if let Some(candidates) = pending {
+            self.show_candidates(window, candidates);
+            return;
+        }
+        match self.store.artist_info(&key) {
+            Some((Some(json), photo)) => match serde_json::from_str::<ArtistInfo>(&json) {
+                Ok(info) => self.show_artist_info(window, &info, photo.as_deref()),
+                Err(_) => self.show_artist_idle(window, &artist),
+            },
+            Some((None, _)) => {
+                window.set_artist_message(
+                    format!("No information found on {}.", options.services()).into(),
+                );
+                window.set_artist_state("not-found".into());
+            }
+            None if self.biography_visible.get() => self.look_up_artist(window, true),
+            None => self.show_artist_idle(window, &artist),
+        }
+    }
+
+    fn show_artist_idle(&self, window: &MainWindow, artist: &str) {
+        let services = self.settings.borrow().artist_lookup().services();
+        window.set_artist_message(
+            format!("\u{201c}{artist}\u{201d} is looked up on {services} while this panel is open.")
+                .into(),
+        );
+        window.set_artist_state("idle".into());
+    }
+
+    fn show_artist_info(&self, window: &MainWindow, info: &ArtistInfo, photo: Option<&[u8]>) {
+        // The credit as written in the tags, unless MusicBrainz knows the
+        // artist's own spelling.
+        if !info.name.is_empty() {
+            window.set_artist_name(info.name.clone().into());
+        }
+        window.set_artist_meta(info.meta_line().into());
+        window.set_artist_genres(info.genres.join(", ").into());
+        window.set_artist_summary(info.summary.clone().into());
+        let image = photo.and_then(decode_photo);
+        window.set_artist_has_photo(image.is_some());
+        let (label, credit) = match (info.from_wikipedia, image.is_some()) {
+            (true, true) => (
+                "Read more on Wikipedia",
+                "Biography and photo from Wikipedia (CC BY-SA 4.0 and the photo's own license). Artist data from MusicBrainz.",
+            ),
+            (true, false) => (
+                "Read more on Wikipedia",
+                "Biography from Wikipedia, under CC BY-SA 4.0. Artist data from MusicBrainz.",
+            ),
+            (false, _) => ("Open on MusicBrainz", "Artist data from MusicBrainz."),
+        };
+        window.set_artist_link_label(label.into());
+        window.set_artist_credit(credit.into());
+        window.set_artist_photo(image.unwrap_or_default());
+        *self.artist_link.borrow_mut() = Some(info.link.clone());
+        window.set_artist_state("found".into());
+    }
+
+    /// The BIO panel's button: looks the current artist up in the
+    /// background; the result arrives through `poll`.
+    /// `automatic` (the panel opened, or the track changed with it open)
+    /// waits `AUTO_LOOKUP_DELAY` first and gives up if the artist changed
+    /// meanwhile -- so skipping through tracks with the BIO tab open
+    /// doesn't fire a lookup per track. A click starts right away.
+    fn look_up_artist(&self, window: &MainWindow, automatic: bool) {
+        let Some(artist) = self.artist.borrow().clone() else {
+            return;
+        };
+        let options = self.settings.borrow().artist_lookup();
+        let key = options.cache_key(&artist);
+        window.set_artist_state("loading".into());
+        if self.lookup_in_flight.borrow().as_deref() == Some(key.as_str()) {
+            return;
+        }
+        *self.lookup_in_flight.borrow_mut() = Some(key.clone());
+        let title = self.title.borrow().clone();
+        let results = self.artist_results.0.clone();
+        let generation = self.artist_generation.clone();
+        let started_for = generation.load(Ordering::SeqCst);
+        std::thread::Builder::new()
+            .name("openbar5000-artist-info".into())
+            .spawn(move || {
+                if automatic {
+                    std::thread::sleep(AUTO_LOOKUP_DELAY);
+                    if generation.load(Ordering::SeqCst) != started_for {
+                        return;
+                    }
+                }
+                let result = artist_info::look_up(&artist, &title, &options);
+                let _ = results.send((key, artist, result));
+            })
+            .expect("failed to spawn artist lookup thread");
+    }
+
+    /// The user picked namesake `index` from the BIO panel's list.
+    fn choose_artist(&self, window: &MainWindow, index: usize) {
+        let (Some(artist), Some(candidate)) = (
+            self.artist.borrow().clone(),
+            self.candidates.borrow().get(index).cloned(),
+        ) else {
+            return;
+        };
+        let options = self.settings.borrow().artist_lookup();
+        let key = options.cache_key(&artist);
+        window.set_artist_state("loading".into());
+        *self.pending_choice.borrow_mut() = None;
+        *self.lookup_in_flight.borrow_mut() = Some(key.clone());
+        let results = self.artist_results.0.clone();
+        std::thread::Builder::new()
+            .name("openbar5000-artist-info".into())
+            .spawn(move || {
+                let result = artist_info::look_up_id(&candidate.id, &options);
+                let _ = results.send((key, artist, result));
+            })
+            .expect("failed to spawn artist lookup thread");
+    }
+
+    /// "None of these": remember that this name has no known artist.
+    fn reject_candidates(&self, window: &MainWindow) {
+        let Some(artist) = self.artist.borrow().clone() else {
+            return;
+        };
+        let key = self.settings.borrow().artist_lookup().cache_key(&artist);
+        self.store.save_artist_info(&key, None, None);
+        *self.pending_choice.borrow_mut() = None;
+        self.show_artist(window);
+    }
+
+    fn show_candidates(&self, window: &MainWindow, candidates: Vec<Candidate>) {
+        window.set_artist_candidates(ModelRc::from(Rc::new(VecModel::from(
+            candidates
+                .iter()
+                .map(|c| ArtistCandidate {
+                    name: c.name.clone().into(),
+                    detail: c.detail.clone().into(),
+                })
+                .collect::<Vec<_>>(),
+        ))));
+        *self.candidates.borrow_mut() = candidates;
+        window.set_artist_state("choose".into());
+    }
+
+    /// Takes finished lookups: caches them, and shows them if that artist
+    /// is still the one playing.
+    fn poll(&self, window: &MainWindow) {
+        while let Ok((key, artist, result)) = self.artist_results.1.try_recv() {
+            if self.lookup_in_flight.borrow().as_deref() == Some(key.as_str()) {
+                *self.lookup_in_flight.borrow_mut() = None;
+            }
+            if let Ok(Outcome::Ambiguous(candidates)) = &result {
+                *self.pending_choice.borrow_mut() = Some((key.clone(), candidates.clone()));
+            }
+            match &result {
+                Ok(Outcome::Found(info, photo)) => {
+                    let json = serde_json::to_string(info).expect("artist info serializes");
+                    self.store.save_artist_info(&key, Some(&json), photo.as_deref());
+                }
+                Ok(Outcome::NotFound) => self.store.save_artist_info(&key, None, None),
+                // Not cached: the user's choice is (once made), and an error
+                // is tried again on the next click.
+                Ok(Outcome::Ambiguous(_)) | Err(_) => {}
+            }
+            let current = self.artist.borrow().clone();
+            if current.as_deref() != Some(artist.as_str()) {
+                continue;
+            }
+            match result {
+                Err(e) => {
+                    window.set_artist_message(format!("Couldn't look up the artist: {e}").into());
+                    window.set_artist_state("error".into());
+                }
+                Ok(Outcome::Ambiguous(candidates)) => self.show_candidates(window, candidates),
+                Ok(_) => self.show_artist(window),
+            }
+        }
+    }
+
     /// Moves the lyrics highlight to the line being sung.
     fn position_changed(&self, window: &MainWindow, position: Duration) {
         let line = self
@@ -1084,6 +1521,13 @@ impl TrackPanels {
             window.set_lyric_active_line(line);
         }
     }
+}
+
+/// Decodes an artist photo (JPEG/PNG bytes) for display.
+fn decode_photo(bytes: &[u8]) -> Option<slint::Image> {
+    let rgba = image::load_from_memory(bytes).ok()?.into_rgba8();
+    let (width, height) = rgba.dimensions();
+    Some(cover_image_from_rgba(width, height, rgba.as_raw()))
 }
 
 /// The Info panel's rows for `track`, leaving out what isn't known.
@@ -1114,6 +1558,49 @@ fn track_info_rows(track: &Track) -> Vec<InfoRow> {
         value: value.into(),
     })
     .collect()
+}
+
+/// Runs an OS media-key action through the same callbacks as the
+/// on-screen controls, so both behave identically.
+fn apply_media_action(window: &MainWindow, action: MediaAction) {
+    match action {
+        MediaAction::Play => window.invoke_menu_play_clicked(),
+        MediaAction::Pause => window.invoke_menu_pause_clicked(),
+        MediaAction::TogglePlayPause => window.invoke_play_pause_clicked(),
+        MediaAction::Stop => window.invoke_stop_clicked(),
+        MediaAction::Next => window.invoke_next_clicked(),
+        MediaAction::Previous => window.invoke_previous_clicked(),
+        MediaAction::SeekBy(seconds) => {
+            let duration = window.get_duration_seconds().max(0.0);
+            let target = (window.get_position_seconds() as f64 + seconds).clamp(0.0, duration as f64);
+            window.invoke_seek_requested(target as f32);
+        }
+        MediaAction::SeekTo(position) => window.invoke_seek_requested(position.as_secs_f32()),
+        MediaAction::SetVolume(volume) => {
+            window.set_volume(volume);
+            window.invoke_volume_changed(volume);
+        }
+        MediaAction::Raise => {
+            let _ = window.show();
+        }
+        MediaAction::Quit => window.invoke_exit_clicked(),
+    }
+}
+
+/// The main window's native handle where the OS media controls need one
+/// (Windows' SMTC); `None` elsewhere.
+#[cfg(windows)]
+fn native_window_handle(window: &MainWindow) -> Option<*mut std::ffi::c_void> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    match window.window().window_handle().window_handle().ok()?.as_raw() {
+        RawWindowHandle::Win32(handle) => Some(handle.hwnd.get() as *mut std::ffi::c_void),
+        _ => None,
+    }
+}
+
+#[cfg(not(windows))]
+fn native_window_handle(_window: &MainWindow) -> Option<*mut std::ffi::c_void> {
+    None
 }
 
 /// Longest edge (px) the album-art panel's cover is decoded at -- sharp at
@@ -1170,6 +1657,10 @@ impl AlbumArtLoader {
         std::thread::Builder::new()
             .name("openbar5000-album-art".into())
             .spawn(move || {
+                // Already outdated (skipping through tracks): don't decode.
+                if latest.load(Ordering::SeqCst) != generation {
+                    return;
+                }
                 let art = engine::load_cover_art(&path, ALBUM_ART_MAX_SIZE);
                 let _ = window.upgrade_in_event_loop(move |window| {
                     if latest.load(Ordering::SeqCst) != generation {
@@ -1207,17 +1698,16 @@ fn waveform_outline_path(channel: &engine::WaveformChannel) -> String {
     path
 }
 
-/// Labels for the spectrum's bars, one per note from
-/// `engine::SPECTRUM_FIRST_NOTE` to `SPECTRUM_LAST_NOTE` ("F#0" ... "A8").
-fn spectrum_notes() -> Vec<SpectrumNote> {
-    const NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-    (engine::SPECTRUM_FIRST_NOTE..=engine::SPECTRUM_LAST_NOTE)
+/// Labels for the spectrum's bars, one per note from `first` to `last`
+/// ("F#0" ... "A8" by default).
+fn spectrum_notes(first: u8, last: u8) -> Vec<SpectrumNote> {
+    (first..=last)
         .map(|note| {
-            let name = NAMES[note as usize % 12];
+            let name = note_name(note);
             SpectrumNote {
-                name: format!("{name}{}", note as i32 / 12 - 1).into(),
-                sharp: name.ends_with('#'),
+                sharp: name.contains('#'),
                 octave_start: note % 12 == 0,
+                name: name.into(),
             }
         })
         .collect()
@@ -1440,16 +1930,20 @@ fn wire_layout(
             // Only panels actually on screen do work -- a panel in a hidden
             // tab costs nothing until its tab is shown.
             let visible = |kind| state.placement.slots.iter().any(|slot| slot.kind == kind);
-            let (waveform, spectrum, album_art) = (
+            let (waveform, spectrum, album_art, biography) = (
                 visible(PanelKind::Waveform),
                 visible(PanelKind::Spectrum),
                 visible(PanelKind::AlbumArt),
+                visible(PanelKind::Biography),
             );
             if state.waveform_enabled != Some(waveform) {
                 state.waveform_enabled = Some(waveform);
                 engine.send(EngineCommand::SetWaveformEnabled(waveform));
             }
             track_panels.album_art.set_enabled(album_art);
+            if let Some(window) = window_weak.upgrade() {
+                track_panels.set_biography_visible(&window, biography);
+            }
             if state.spectrum_enabled != Some(spectrum) {
                 state.spectrum_enabled = Some(spectrum);
                 engine.send(EngineCommand::SetSpectrumEnabled(spectrum));
@@ -2156,7 +2650,7 @@ mod tests {
 
     #[test]
     fn spectrum_notes_span_f_sharp_0_to_a8() {
-        let notes = spectrum_notes();
+        let notes = spectrum_notes(18, 117);
         assert_eq!(notes.first().unwrap().name, "F#0");
         assert_eq!(notes.last().unwrap().name, "A8");
         let c4 = notes.iter().find(|n| n.name == "C4").unwrap();

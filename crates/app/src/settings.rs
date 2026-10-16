@@ -1,3 +1,4 @@
+use crate::artist_info::{LookupOptions, WIKIPEDIA_LANGUAGES};
 use crate::layout::Layout;
 use crate::playlist_rows::PlaylistGrouping;
 use crate::store::Store;
@@ -27,6 +28,11 @@ pub struct Settings {
     /// they can create -- see README for the one-time setup steps.
     pub discord_presence_enabled: bool,
     pub discord_client_id: String,
+    /// Whether an artist lookup also fetches a biography and photo from
+    /// Wikipedia (MusicBrainz is always used to identify the artist).
+    pub artist_wikipedia: bool,
+    /// Wikipedia edition to read (falls back to English).
+    pub artist_wikipedia_language: String,
 }
 
 impl Default for Settings {
@@ -42,6 +48,8 @@ impl Default for Settings {
             visualization_fps: 60,
             discord_presence_enabled: false,
             discord_client_id: String::new(),
+            artist_wikipedia: true,
+            artist_wikipedia_language: "en".to_string(),
         }
     }
 }
@@ -65,6 +73,29 @@ fn playback_mode_from_str(value: &str) -> PlaybackMode {
         "shuffle" => PlaybackMode::Shuffle,
         _ => PlaybackMode::Normal,
     }
+}
+
+/// Notes the spectrum's range can be set to: C0 (MIDI 12) to G9 (127).
+pub const LOWEST_NOTE: u8 = 12;
+pub const HIGHEST_NOTE: u8 = 127;
+/// Reference pitches offered for A4.
+pub const A4_MIN_HZ: f32 = 400.0;
+pub const A4_MAX_HZ: f32 = 480.0;
+
+/// At least two notes, within what the settings offer.
+pub fn valid_note_range(first: u8, last: u8) -> bool {
+    LOWEST_NOTE <= first && first < last && last <= HIGHEST_NOTE
+}
+
+/// "C4", "F#0", ... for MIDI note `note`.
+pub fn note_name(note: u8) -> String {
+    const NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+    format!("{}{}", NAMES[note as usize % 12], note as i32 / 12 - 1)
+}
+
+/// The inverse of [`note_name`].
+pub fn note_from_name(name: &str) -> Option<u8> {
+    (LOWEST_NOTE..=HIGHEST_NOTE).find(|&note| note_name(note) == name)
 }
 
 /// Only 30 and 60 are offered; anything else (hand-edited or from a future
@@ -94,6 +125,15 @@ fn channel_mode_from_str(value: &str) -> SpectrumChannelMode {
 }
 
 impl Settings {
+    /// The artist lookup options chosen in Preferences.
+    pub fn artist_lookup(&self) -> LookupOptions {
+        LookupOptions {
+            wikipedia_language: self
+                .artist_wikipedia
+                .then(|| self.artist_wikipedia_language.clone()),
+        }
+    }
+
     pub fn load(store: &Store) -> Self {
         let mut settings = Self::default();
         let get = |key: &str| store.get_setting(key);
@@ -131,6 +171,19 @@ impl Settings {
         if let Some(v) = get("spectrum_interval_ms").and_then(|v| v.parse().ok()) {
             settings.spectrum.interval_ms = v;
         }
+        let first = get("spectrum_first_note").and_then(|v| v.parse().ok());
+        let last = get("spectrum_last_note").and_then(|v| v.parse().ok());
+        if let (Some(first), Some(last)) = (first, last) {
+            if valid_note_range(first, last) {
+                settings.spectrum.first_note = first;
+                settings.spectrum.last_note = last;
+            }
+        }
+        if let Some(v) = get("spectrum_a4_hz").and_then(|v| v.parse::<f32>().ok()) {
+            if (A4_MIN_HZ..=A4_MAX_HZ).contains(&v) {
+                settings.spectrum.a4_hz = v;
+            }
+        }
         if let Some(v) = get("playback_mode") {
             settings.playback_mode = playback_mode_from_str(&v);
         }
@@ -145,6 +198,14 @@ impl Settings {
         }
         if let Some(v) = get("discord_client_id") {
             settings.discord_client_id = v;
+        }
+        if let Some(v) = get("artist_wikipedia") {
+            settings.artist_wikipedia = v == "true";
+        }
+        if let Some(v) = get("artist_wikipedia_language") {
+            if WIKIPEDIA_LANGUAGES.iter().any(|(code, _)| *code == v) {
+                settings.artist_wikipedia_language = v;
+            }
         }
         settings.layout = get("layout")
             .and_then(|json| Layout::from_json(&json))
@@ -162,6 +223,9 @@ impl Settings {
                 channel_mode_to_str(self.spectrum.channel_mode).to_string(),
             ),
             ("spectrum_min_db", self.spectrum.min_db.to_string()),
+            ("spectrum_first_note", self.spectrum.first_note.to_string()),
+            ("spectrum_last_note", self.spectrum.last_note.to_string()),
+            ("spectrum_a4_hz", self.spectrum.a4_hz.to_string()),
             ("spectrum_max_db", self.spectrum.max_db.to_string()),
             ("spectrum_fft_size", self.spectrum.fft_size.to_string()),
             (
@@ -194,6 +258,8 @@ impl Settings {
                 self.discord_presence_enabled.to_string(),
             ),
             ("discord_client_id", self.discord_client_id.clone()),
+            ("artist_wikipedia", self.artist_wikipedia.to_string()),
+            ("artist_wikipedia_language", self.artist_wikipedia_language.clone()),
             ("layout", self.layout.to_json()),
         ]);
     }
@@ -259,5 +325,47 @@ mod fps_tests {
         // A corrupt saved layout falls back to the default.
         store.set_settings(&[("layout", "not json".to_string())]);
         assert!(Settings::load(&store).layout.contains(PanelKind::Playlist));
+    }
+}
+
+#[cfg(test)]
+mod spectrum_range_tests {
+    use super::*;
+
+    #[test]
+    fn note_names_round_trip_and_ranges_are_validated() {
+        assert_eq!(note_name(18), "F#0");
+        assert_eq!(note_name(69), "A4");
+        assert_eq!(note_name(117), "A8");
+        assert_eq!(note_from_name("C4"), Some(60));
+        assert_eq!(note_from_name("H4"), None);
+        assert!(valid_note_range(18, 117));
+        assert!(!valid_note_range(60, 60));
+        assert!(!valid_note_range(5, 60));
+    }
+
+    #[test]
+    fn note_range_and_a4_pitch_persist() {
+        let store = Store::open_in_memory().unwrap();
+        let mut settings = Settings::load(&store);
+        settings.spectrum.first_note = 36;
+        settings.spectrum.last_note = 96;
+        settings.spectrum.a4_hz = 432.0;
+        settings.save(&store);
+        let loaded = Settings::load(&store).spectrum;
+        assert_eq!((loaded.first_note, loaded.last_note, loaded.a4_hz), (36, 96, 432.0));
+
+        // Nonsense from a hand-edited database falls back to the defaults.
+        store.set_settings(&[
+            ("spectrum_first_note", "90".to_string()),
+            ("spectrum_last_note", "10".to_string()),
+            ("spectrum_a4_hz", "9000".to_string()),
+        ]);
+        let loaded = Settings::load(&store).spectrum;
+        let defaults = engine::SpectrumConfig::default();
+        assert_eq!(
+            (loaded.first_note, loaded.last_note, loaded.a4_hz),
+            (defaults.first_note, defaults.last_note, defaults.a4_hz)
+        );
     }
 }

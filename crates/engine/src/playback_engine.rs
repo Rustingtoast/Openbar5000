@@ -10,6 +10,8 @@ use crate::{EngineCommand, EngineEvent, PlaybackMode};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use plugin_api::OutputSink;
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// ~30 fps for the seekbar and waveform cursor.
@@ -20,6 +22,9 @@ const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// Points per channel in the waveform outline -- about one per pixel of a
 /// full-width seekbar, so the outline stays smooth.
 const WAVEFORM_BUCKET_COUNT: usize = 1000;
+/// How long a track must stay current before its waveform is computed --
+/// long enough that skipping through tracks never starts one.
+const WAVEFORM_START_DELAY: Duration = Duration::from_millis(250);
 
 /// Owns the dedicated playback thread. The UI never touches decoding, DSP,
 /// or output directly -- it only sends [`EngineCommand`]s and drains
@@ -79,6 +84,8 @@ struct EngineState {
     /// the next advance; kept pointing at the same tracks across
     /// removals/reorders.
     queue: VecDeque<usize>,
+    /// Set to cancel the waveform being computed for the current track.
+    waveform_cancel: Option<Arc<AtomicBool>>,
 }
 
 fn run(command_rx: Receiver<EngineCommand>, event_tx: Sender<EngineEvent>) {
@@ -102,6 +109,7 @@ fn run(command_rx: Receiver<EngineCommand>, event_tx: Sender<EngineEvent>) {
         playback_mode: PlaybackMode::Normal,
         shuffle: None,
         queue: VecDeque::new(),
+        waveform_cancel: None,
     };
 
     let mut last_position_sent = Instant::now();
@@ -193,6 +201,9 @@ fn handle_command(
             set_playback_state(state, PlaybackState::Stopped, event_tx);
             state.samples_played = 0;
         }
+        // Nothing loaded (e.g. clicking the empty waveform while stopped):
+        // nothing to seek, and no error worth showing.
+        EngineCommand::Seek(_) if state.playlist.current().is_none() => {}
         EngineCommand::Seek(pos) => {
             if let Err(e) = state.pipeline.seek(pos) {
                 let _ = event_tx.send(EngineEvent::Error(e.to_string()));
@@ -393,7 +404,7 @@ fn load_track(state: &mut EngineState, index: usize, event_tx: &Sender<EngineEve
             state.channels = info.channels;
             state.samples_played = 0;
             if state.waveform_enabled {
-                spawn_waveform_computation(track.path.clone(), index, event_tx.clone());
+                spawn_waveform_computation(state, track.path.clone(), index, event_tx.clone());
             }
             let _ = event_tx.send(EngineEvent::TrackChanged { index, track });
         }
@@ -408,15 +419,32 @@ fn load_track(state: &mut EngineState, index: usize, event_tx: &Sender<EngineEve
 /// decoder/file handle, so a multi-minute track doesn't stall playback (the
 /// playback thread is busy decoding the *same* file for output at the same
 /// time).
+///
+/// Skipping quickly through tracks would otherwise pile up one full-file
+/// decode per track (each on several cores, see `compute_peaks`), so the
+/// previous track's computation is cancelled, and a new one only starts
+/// once its track has stayed current for `WAVEFORM_START_DELAY`.
 fn spawn_waveform_computation(
+    state: &mut EngineState,
     path: std::path::PathBuf,
     index: usize,
     event_tx: Sender<EngineEvent>,
 ) {
+    if let Some(previous) = state.waveform_cancel.take() {
+        previous.store(true, Ordering::Relaxed);
+    }
+    let cancel = Arc::new(AtomicBool::new(false));
+    state.waveform_cancel = Some(cancel.clone());
     std::thread::Builder::new()
         .name("openbar5000-waveform".into())
         .spawn(move || {
-            if let Ok(channels) = crate::waveform::compute_peaks(&path, WAVEFORM_BUCKET_COUNT) {
+            std::thread::sleep(WAVEFORM_START_DELAY);
+            if cancel.load(Ordering::Relaxed) {
+                return;
+            }
+            if let Ok(Some(channels)) =
+                crate::waveform::compute_peaks_cancellable(&path, WAVEFORM_BUCKET_COUNT, &cancel)
+            {
                 let _ = event_tx.send(EngineEvent::WaveformReady { index, channels });
             }
         })

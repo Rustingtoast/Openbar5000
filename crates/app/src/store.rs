@@ -46,6 +46,17 @@ const MIGRATIONS: &[&str] = &[
 
     INSERT INTO playlists (id, name) VALUES (1, 'Default');
     "#,
+    // v2: cached artist lookups for the BIO panel (see `artist_info`). `data`
+    // is the JSON `ArtistInfo`, or NULL when the lookup found nothing --
+    // cached too, so a miss isn't retried on every track.
+    r#"
+    CREATE TABLE artist_info (
+        key        TEXT PRIMARY KEY,
+        data       TEXT,
+        photo      BLOB,
+        fetched_at INTEGER NOT NULL
+    );
+    "#,
 ];
 
 /// The id of the one playlist this app currently exposes in the UI. The
@@ -76,6 +87,33 @@ impl Store {
         conn.pragma_update(None, "foreign_keys", true)?;
         run_migrations(&conn)?;
         Ok(Self { conn })
+    }
+
+    // --- artist info cache ------------------------------------------------
+
+    /// A cached lookup: `Some((data, photo))` if `key` was looked up before
+    /// (`data` is `None` when nothing was found), `None` if never.
+    pub fn artist_info(&self, key: &str) -> Option<(Option<String>, Option<Vec<u8>>)> {
+        self.conn
+            .query_row(
+                "SELECT data, photo FROM artist_info WHERE key = ?1",
+                params![key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .unwrap_or(None)
+    }
+
+    pub fn save_artist_info(&self, key: &str, data: Option<&str>, photo: Option<&[u8]>) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64);
+        if let Err(e) = self.conn.execute(
+            "INSERT OR REPLACE INTO artist_info (key, data, photo, fetched_at) VALUES (?1, ?2, ?3, ?4)",
+            params![key, data, photo, now],
+        ) {
+            tracing::warn!("failed to cache artist info: {e}");
+        }
     }
 
     // --- settings: flat key/value --------------------------------------
@@ -348,5 +386,18 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
 
         assert_eq!(store.get_setting("theme_id"), Some("dark".to_string()));
+    }
+
+    #[test]
+    fn artist_info_cache_round_trips_hits_and_misses() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.artist_info("armin|en"), None);
+        store.save_artist_info("armin|en", Some("{\"name\":\"Armin\"}"), Some(&[1, 2, 3]));
+        store.save_artist_info("nobody|en", None, None);
+        assert_eq!(
+            store.artist_info("armin|en"),
+            Some((Some("{\"name\":\"Armin\"}".to_string()), Some(vec![1, 2, 3])))
+        );
+        assert_eq!(store.artist_info("nobody|en"), Some((None, None)));
     }
 }

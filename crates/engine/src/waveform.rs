@@ -1,6 +1,7 @@
 use crate::decoders::SymphoniaDecoder;
 use plugin_api::{DecodeError, Decoder};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 /// Frames per raw peak sample while decoding, before binning down to the
@@ -46,12 +47,24 @@ impl WaveformChannel {
 /// Fully decodes `path` (on whichever thread calls this -- callers should
 /// run it off the realtime playback thread) and returns, per channel,
 /// `bucket_count` min/max pairs: the outline a waveform seekbar draws.
+pub fn compute_peaks(path: &Path, bucket_count: usize) -> Result<Vec<WaveformChannel>, DecodeError> {
+    let never = AtomicBool::new(false);
+    Ok(compute_peaks_cancellable(path, bucket_count, &never)?.expect("never cancelled"))
+}
+
+/// [`compute_peaks`], giving up -- `Ok(None)` -- soon after `cancel` is set
+/// (checked every decoded chunk), e.g. because playback already moved on to
+/// another track and nobody will see this waveform.
 ///
 /// Decoding a whole track is the heaviest thing a track change does, so it
 /// is split into contiguous time slices decoded on separate cores (each
 /// with its own decoder seeked to its slice); falls back to one thread when
 /// the duration is unknown, the track is short, or seeking fails.
-pub fn compute_peaks(path: &Path, bucket_count: usize) -> Result<Vec<WaveformChannel>, DecodeError> {
+pub fn compute_peaks_cancellable(
+    path: &Path,
+    bucket_count: usize,
+    cancel: &AtomicBool,
+) -> Result<Option<Vec<WaveformChannel>>, DecodeError> {
     let workers = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1)
@@ -63,11 +76,11 @@ pub fn compute_peaks(path: &Path, bucket_count: usize) -> Result<Vec<WaveformCha
         || !known_duration
         || Duration::from_millis(info.duration_ms) < MIN_PARALLEL_DURATION
     {
-        return compute_peaks_sequential(path, bucket_count);
+        return compute_peaks_sequential(path, bucket_count, cancel);
     }
 
     let total_frames = info.duration_ms * info.sample_rate as u64 / 1000;
-    let slices: Vec<Result<Vec<WaveformChannel>, DecodeError>> = std::thread::scope(|scope| {
+    let slices: Vec<Result<Option<Vec<WaveformChannel>>, DecodeError>> = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..workers as u64)
             .map(|i| {
                 let start = total_frames * i / workers as u64;
@@ -75,7 +88,7 @@ pub fn compute_peaks(path: &Path, bucket_count: usize) -> Result<Vec<WaveformCha
                 // the tagged duration is a little short.
                 let end = (i + 1 < workers as u64).then(|| total_frames * (i + 1) / workers as u64);
                 scope.spawn(move || {
-                    peaks_for_slice(path, info.sample_rate, start, end, total_frames, bucket_count)
+                    peaks_for_slice(path, info.sample_rate, start, end, total_frames, bucket_count, cancel)
                 })
             })
             .collect();
@@ -87,8 +100,10 @@ pub fn compute_peaks(path: &Path, bucket_count: usize) -> Result<Vec<WaveformCha
 
     let mut merged: Option<Vec<WaveformChannel>> = None;
     for slice in slices {
-        let Ok(slice) = slice else {
-            return compute_peaks_sequential(path, bucket_count);
+        let slice = match slice {
+            Ok(Some(slice)) => slice,
+            Ok(None) => return Ok(None),
+            Err(_) => return compute_peaks_sequential(path, bucket_count, cancel),
         };
         match merged.as_mut() {
             None => merged = Some(slice),
@@ -99,7 +114,7 @@ pub fn compute_peaks(path: &Path, bucket_count: usize) -> Result<Vec<WaveformCha
             }
         }
     }
-    Ok(merged.unwrap_or_default())
+    Ok(Some(merged.unwrap_or_default()))
 }
 
 /// Decodes frames `start..end` (or to the end of the stream) and pools
@@ -111,7 +126,8 @@ fn peaks_for_slice(
     end: Option<u64>,
     total_frames: u64,
     bucket_count: usize,
-) -> Result<Vec<WaveformChannel>, DecodeError> {
+    cancel: &AtomicBool,
+) -> Result<Option<Vec<WaveformChannel>>, DecodeError> {
     let mut decoder = SymphoniaDecoder::new();
     let channels = decoder.open(path)?.channels.max(1) as usize;
     if start > 0 {
@@ -122,13 +138,16 @@ fn peaks_for_slice(
     let mut buf = vec![0f32; 4096];
     let mut frame = start;
     loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
         let written = decoder.next_frame(&mut buf)?;
         if written == 0 {
             break;
         }
         for samples in buf[..written].chunks_exact(channels) {
             if end.is_some_and(|end| frame >= end) {
-                return Ok(out);
+                return Ok(Some(out));
             }
             let bucket = ((frame * bucket_count as u64 / total_frames) as usize).min(bucket_count - 1);
             for (channel, &sample) in out.iter_mut().zip(samples) {
@@ -137,10 +156,14 @@ fn peaks_for_slice(
             frame += 1;
         }
     }
-    Ok(out)
+    Ok(Some(out))
 }
 
-fn compute_peaks_sequential(path: &Path, bucket_count: usize) -> Result<Vec<WaveformChannel>, DecodeError> {
+fn compute_peaks_sequential(
+    path: &Path,
+    bucket_count: usize,
+    cancel: &AtomicBool,
+) -> Result<Option<Vec<WaveformChannel>>, DecodeError> {
     let mut decoder = SymphoniaDecoder::new();
     let info = decoder.open(path)?;
     let channels = info.channels.max(1) as usize;
@@ -152,6 +175,9 @@ fn compute_peaks_sequential(path: &Path, bucket_count: usize) -> Result<Vec<Wave
     let mut frames_in_chunk = 0usize;
 
     loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
         let written = decoder.next_frame(&mut buf)?;
         if written == 0 {
             break;
@@ -172,7 +198,7 @@ fn compute_peaks_sequential(path: &Path, bucket_count: usize) -> Result<Vec<Wave
     }
 
     let raw_len = raw[0].max.len();
-    Ok(raw
+    Ok(Some(raw
         .iter()
         .map(|channel| {
             let mut out = WaveformChannel::new(bucket_count);
@@ -186,7 +212,7 @@ fn compute_peaks_sequential(path: &Path, bucket_count: usize) -> Result<Vec<Wave
             }
             out
         })
-        .collect())
+        .collect()))
 }
 
 #[cfg(test)]
@@ -205,7 +231,7 @@ mod tests {
         };
         let path = std::path::PathBuf::from(path);
         let t = std::time::Instant::now();
-        compute_peaks_sequential(&path, 400).unwrap();
+        compute_peaks_sequential(&path, 400, &AtomicBool::new(false)).unwrap();
         let sequential_time = t.elapsed();
         let t = std::time::Instant::now();
         let parallel = compute_peaks(&path, 400).unwrap();
@@ -218,7 +244,9 @@ mod tests {
         // only approximately equal.)
         let info = SymphoniaDecoder::new().open(&path).unwrap();
         let total = info.duration_ms * info.sample_rate as u64 / 1000;
-        let exact = peaks_for_slice(&path, info.sample_rate, 0, None, total, 400).unwrap();
+        let exact = peaks_for_slice(&path, info.sample_rate, 0, None, total, 400, &AtomicBool::new(false))
+            .unwrap()
+            .unwrap();
         assert_eq!(parallel, exact, "parallel peaks must match a one-pass decode exactly");
     }
 
@@ -235,7 +263,17 @@ mod tests {
             assert!(channel.max.iter().chain(&channel.min).all(|p| (-1.0..=1.0).contains(p)));
         }
         // The sequential fallback agrees on shape.
-        let sequential = compute_peaks_sequential(&fixture, 50).unwrap();
+        let sequential = compute_peaks_sequential(&fixture, 50, &AtomicBool::new(false))
+            .unwrap()
+            .unwrap();
         assert_eq!(sequential.len(), channels.len());
+    }
+
+    #[test]
+    fn a_cancelled_computation_stops_without_a_result() {
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/test_tone.wav");
+        let cancelled = AtomicBool::new(true);
+        assert_eq!(compute_peaks_cancellable(&fixture, 50, &cancelled).unwrap(), None);
     }
 }

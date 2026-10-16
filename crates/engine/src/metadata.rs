@@ -41,8 +41,31 @@ fn cover_thumbnail(bytes: &[u8]) -> Option<CoverThumbnail> {
 /// art, so call it off the UI thread. `None` if there's no usable art.
 pub fn load_cover_art(path: &Path, max_size: u32) -> Option<CoverThumbnail> {
     let tagged_file = lofty::read_from_path(path).ok()?;
-    let tag = tagged_file.primary_tag().or_else(|| tagged_file.first_tag())?;
-    scaled_cover(tag.pictures().first()?.data(), max_size)
+    scaled_cover(first_picture(&tagged_file)?, max_size)
+}
+
+/// The tag to read text fields from. Normally the format's primary tag,
+/// but files exist with an empty primary tag and the real one elsewhere --
+/// e.g. a FLAC whose Vorbis comments are blank while a stray ID3v2 block
+/// (which lofty reads, warning that it couldn't *write* it back) holds the
+/// title and artist (issue #20).
+fn best_tag(tagged_file: &lofty::file::TaggedFile) -> Option<&lofty::tag::Tag> {
+    let has_text = |tag: &&lofty::tag::Tag| tag.title().is_some() || tag.artist().is_some();
+    tagged_file
+        .primary_tag()
+        .filter(has_text)
+        .or_else(|| tagged_file.tags().iter().find(has_text))
+        .or_else(|| tagged_file.primary_tag())
+        .or_else(|| tagged_file.first_tag())
+}
+
+/// Embedded cover art from whichever tag carries one (see `best_tag`).
+fn first_picture(tagged_file: &lofty::file::TaggedFile) -> Option<&[u8]> {
+    let primary = tagged_file.primary_tag().into_iter();
+    primary
+        .chain(tagged_file.tags())
+        .find_map(|tag| tag.pictures().first())
+        .map(|picture| picture.data())
 }
 
 fn scaled_cover(bytes: &[u8], max_size: u32) -> Option<CoverThumbnail> {
@@ -126,9 +149,7 @@ pub fn load_metadata(path: &Path) -> TrackMetadata {
     let bit_depth = properties.bit_depth();
     let format_label = format_label(tagged_file.file_type());
 
-    let tag = tagged_file
-        .primary_tag()
-        .or_else(|| tagged_file.first_tag());
+    let tag = best_tag(&tagged_file);
 
     let (title, artist, album, track_number, disc_number, date, cover_thumbnail) = match tag {
         Some(tag) => (
@@ -140,9 +161,8 @@ pub fn load_metadata(path: &Path) -> TrackMetadata {
             tag.track(),
             tag.disk(),
             tag.date().map(|d| d.to_string()).unwrap_or_default(),
-            tag.pictures()
-                .first()
-                .and_then(|pic| cover_thumbnail(pic.data()))
+            first_picture(&tagged_file)
+                .and_then(cover_thumbnail)
                 .map(Arc::new),
         ),
         None => (
@@ -203,6 +223,49 @@ mod tests {
         assert_eq!((big.width, big.height), (600, 300));
         let small = scaled_cover(&png(200, 100), 600).unwrap();
         assert_eq!((small.width, small.height), (200, 100));
+    }
+
+    /// Issue #20: a FLAC with blank Vorbis comments and the real tags in a
+    /// stray ID3v2 block in front of it still gets its title and artist.
+    #[test]
+    fn flac_with_stray_id3v2_tag_reads_its_title() {
+        use lofty::config::WriteOptions;
+        use lofty::prelude::TagExt;
+        use lofty::tag::{Tag, TagType};
+
+        let mut id3 = Tag::new(TagType::Id3v2);
+        id3.set_title("Helpless".into());
+        id3.set_artist("Alexander Popov".into());
+        let mut bytes = Vec::new();
+        id3.dump_to(&mut bytes, WriteOptions::default()).unwrap();
+
+        // A minimal FLAC: "fLaC", STREAMINFO, then an empty (last)
+        // VORBIS_COMMENT block. Tag reading needs no audio frames.
+        bytes.extend_from_slice(b"fLaC");
+        bytes.extend_from_slice(&[0x00, 0x00, 0x00, 34]);
+        bytes.extend_from_slice(&[0x10, 0x00, 0x10, 0x00, 0, 0, 0, 0, 0, 0]);
+        let packed: u64 = (44_100 << 44) | (1 << 41) | (15 << 36);
+        bytes.extend_from_slice(&packed.to_be_bytes());
+        bytes.extend_from_slice(&[0; 16]);
+        let vendor = b"test";
+        let comment_len = 4 + vendor.len() + 4;
+        bytes.extend_from_slice(&[0x84, 0, 0, comment_len as u8]);
+        bytes.extend_from_slice(&(vendor.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(vendor);
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+
+        let path = std::env::temp_dir().join(format!("openbar5000-id3-in-flac-{}.flac", std::process::id()));
+        std::fs::write(&path, &bytes).unwrap();
+        // Precondition: the format's primary tag is the blank Vorbis one,
+        // so just taking the primary tag (the old behaviour) would miss
+        // the title.
+        let tagged = lofty::read_from_path(&path).unwrap();
+        assert!(tagged.primary_tag().is_some_and(|tag| tag.title().is_none()));
+        let metadata = load_metadata(&path);
+        std::fs::remove_file(&path).ok();
+        assert_eq!(metadata.title, "Helpless");
+        assert_eq!(metadata.artist, "Alexander Popov");
+        assert_eq!(metadata.format_label, "FLAC");
     }
 
     #[test]
