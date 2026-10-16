@@ -1,6 +1,8 @@
 use crate::discord_presence::{
     NowPlaying, PresenceClient, PresenceCommand, PresenceEvent, DEFAULT_CLIENT_ID,
 };
+use crate::layout::{drop_at, drop_preview, Axis, DragStart, Drop, Layout, PanelKind, Placement, Side};
+use crate::lyrics::Lyrics;
 use crate::platform;
 use crate::playlist_rows::{
     all_group_keys, build_grouped_rows, group_key_of, sort_order, CoverCache, PlaylistGrouping,
@@ -13,12 +15,15 @@ use engine::{
     AudioInfo, EngineCommand, EngineEvent, PlaybackEngine, PlaybackMode, PlaybackState, Track,
 };
 use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use ui::{
-    format_duration, AboutWindow, MainWindow, PlaylistRow, PropertiesWindow, SettingsWindow,
+    cover_image_from_rgba, format_duration, AboutWindow, DropPreview, InfoRow, LayoutDivider, LyricLine, SpectrumNote, TabStripSlot, MainWindow, PanelChoice, PanelSlot, PlaylistRow, PropertiesWindow, SettingsWindow,
     ThemeEditorWindow, ThemeListEntry,
 };
 
@@ -164,22 +169,17 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     playlist_view_state.borrow_mut().grouping = settings.borrow().playlist_grouping;
     window.set_playlist_grouping(settings.borrow().playlist_grouping.as_str().into());
 
-    window.set_show_waveform(settings.borrow().show_waveform);
-    window.set_show_spectrum(settings.borrow().show_spectrum);
-    engine.send(EngineCommand::SetWaveformEnabled(
-        settings.borrow().show_waveform,
-    ));
-    engine.send(EngineCommand::SetSpectrumEnabled(
-        settings.borrow().show_spectrum,
-    ));
-    settings_window.set_show_waveform(settings.borrow().show_waveform);
-    settings_window.set_show_spectrum(settings.borrow().show_spectrum);
+    let track_panels = Rc::new(TrackPanels::new(window));
+    wire_layout(window, &engine, &settings, &store, &track_panels);
 
     let initial_playback_mode = settings.borrow().playback_mode;
     sync_playback_mode_window(window, initial_playback_mode);
     engine.send(EngineCommand::SetPlaybackMode(initial_playback_mode));
 
     engine.send(EngineCommand::SetSpectrumConfig(settings.borrow().spectrum));
+    window.set_spectrum_notes(ModelRc::from(Rc::new(VecModel::from(spectrum_notes()))));
+    window.set_spectrum_min_db(settings.borrow().spectrum.min_db as i32);
+    window.set_spectrum_max_db(settings.borrow().spectrum.max_db as i32);
     {
         let spectrum = settings.borrow().spectrum;
         settings_window.set_spectrum_channels(spectrum_channel_label(spectrum.channel_mode).into());
@@ -261,20 +261,6 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             }
         });
     }
-    {
-        let settings = settings.clone();
-        let store = store.clone();
-        let window_weak = window.as_weak();
-        let engine = engine.clone();
-        settings_window.on_waveform_toggled(move |enabled| {
-            settings.borrow_mut().show_waveform = enabled;
-            settings.borrow().save(&store);
-            if let Some(window) = window_weak.upgrade() {
-                window.set_show_waveform(enabled);
-            }
-            engine.send(EngineCommand::SetWaveformEnabled(enabled));
-        });
-    }
     // Created here (started at the end of `wire`) so the frame-rate setting
     // can retune it.
     let event_poll_timer = Rc::new(Timer::default());
@@ -288,20 +274,6 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             settings.borrow_mut().visualization_fps = fps;
             settings.borrow().save(&store);
             event_poll_timer.set_interval(poll_interval(fps));
-        });
-    }
-    {
-        let settings = settings.clone();
-        let store = store.clone();
-        let window_weak = window.as_weak();
-        let engine = engine.clone();
-        settings_window.on_spectrum_toggled(move |enabled| {
-            settings.borrow_mut().show_spectrum = enabled;
-            settings.borrow().save(&store);
-            if let Some(window) = window_weak.upgrade() {
-                window.set_show_spectrum(enabled);
-            }
-            engine.send(EngineCommand::SetSpectrumEnabled(enabled));
         });
     }
 
@@ -319,7 +291,11 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         let settings = settings.clone();
         let store = store.clone();
         let engine = engine.clone();
+        let window_weak = window.as_weak();
         settings_window.on_spectrum_min_db_changed(move |v| {
+            if let Some(window) = window_weak.upgrade() {
+                window.set_spectrum_min_db(v);
+            }
             settings.borrow_mut().spectrum.min_db = v as f32;
             settings.borrow().save(&store);
             engine.send(EngineCommand::SetSpectrumConfig(settings.borrow().spectrum));
@@ -329,7 +305,11 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         let settings = settings.clone();
         let store = store.clone();
         let engine = engine.clone();
+        let window_weak = window.as_weak();
         settings_window.on_spectrum_max_db_changed(move |v| {
+            if let Some(window) = window_weak.upgrade() {
+                window.set_spectrum_max_db(v);
+            }
             settings.borrow_mut().spectrum.max_db = v as f32;
             settings.borrow().save(&store);
             engine.send(EngineCommand::SetSpectrumConfig(settings.borrow().spectrum));
@@ -984,6 +964,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                         &current_track,
                         &store,
                         &presence,
+                        &track_panels,
                         event,
                     );
                 }
@@ -997,12 +978,13 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                 &current_track,
                 &store,
                 &presence,
+                &track_panels,
                 event,
             );
         }
         if let Some((bars, peaks)) = latest_spectrum {
-            update_in_place(&spectrum_bars, bars);
-            update_in_place(&spectrum_peaks, peaks);
+            sync_model(&spectrum_bars, bars);
+            sync_model(&spectrum_peaks, peaks);
         }
         while let Some(event) = presence.try_recv_event() {
             if let Some(settings_window) = settings_window_weak.upgrade() {
@@ -1020,6 +1002,810 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         about_window,
         settings_window,
         theme_editor_window,
+    }
+}
+
+/// UI-thread state for the panel layout (see `crate::layout`).
+struct LayoutState {
+    /// Size of the panel area, as last reported by Slint.
+    area: (f32, f32),
+    /// The current layout placed into `area` -- slot/divider indices from
+    /// Slint index into this.
+    placement: Placement,
+    /// Active divider drag and the pointer position it started at.
+    drag: Option<(DragStart, f32)>,
+    editing: bool,
+    panel_drag: Option<PanelDrag>,
+    tab_drag: Option<TabDrag>,
+    /// What the engine was last told, so it's only told about changes.
+    waveform_enabled: Option<bool>,
+    spectrum_enabled: Option<bool>,
+}
+
+/// State behind the panels that describe the current track: album art,
+/// the Info table and lyrics.
+struct TrackPanels {
+    album_art: AlbumArtLoader,
+    lyrics: RefCell<Option<Lyrics>>,
+    lyric_line: Cell<i32>,
+}
+
+impl TrackPanels {
+    fn new(window: &MainWindow) -> Self {
+        Self {
+            album_art: AlbumArtLoader::new(window),
+            lyrics: RefCell::new(None),
+            lyric_line: Cell::new(-1),
+        }
+    }
+
+    fn track_changed(&self, window: &MainWindow, track: &Track) {
+        window.set_now_playing_text(now_playing_text(track).into());
+        window.set_track_info(ModelRc::from(Rc::new(VecModel::from(track_info_rows(track)))));
+        self.album_art.show_track(Some(track.path.clone()));
+        // No lyrics source exists yet; one would call `set_lyrics` here
+        // (or later, from a background lookup) with what it found.
+        self.set_lyrics(window, None, "No lyrics found for this track.");
+    }
+
+    fn stopped(&self, window: &MainWindow) {
+        window.set_now_playing_text("".into());
+        window.set_track_info(ModelRc::default());
+        self.album_art.show_track(None);
+        self.set_lyrics(window, None, "Nothing playing");
+    }
+
+    /// Shows `lyrics` in the Lyrics panel, or `status` when there are none.
+    /// The entry point for lyric sources.
+    fn set_lyrics(&self, window: &MainWindow, lyrics: Option<Lyrics>, status: &str) {
+        let lines: Vec<LyricLine> = lyrics
+            .iter()
+            .flat_map(|lyrics| &lyrics.lines)
+            .map(|line| LyricLine {
+                text: line.text.clone().into(),
+            })
+            .collect();
+        window.set_lyric_lines(ModelRc::from(Rc::new(VecModel::from(lines))));
+        window.set_lyric_status(status.into());
+        window.set_lyric_active_line(-1);
+        self.lyric_line.set(-1);
+        *self.lyrics.borrow_mut() = lyrics;
+    }
+
+    /// Moves the lyrics highlight to the line being sung.
+    fn position_changed(&self, window: &MainWindow, position: Duration) {
+        let line = self
+            .lyrics
+            .borrow()
+            .as_ref()
+            .and_then(|lyrics| lyrics.active_line(position))
+            .map_or(-1, |i| i as i32);
+        if self.lyric_line.replace(line) != line {
+            window.set_lyric_active_line(line);
+        }
+    }
+}
+
+/// The Info panel's rows for `track`, leaving out what isn't known.
+fn track_info_rows(track: &Track) -> Vec<InfoRow> {
+    let m = &track.metadata;
+    let quality = match (m.sample_rate, m.bit_depth) {
+        (Some(rate), Some(bits)) => format!("{:.1} kHz, {bits} bit", rate as f64 / 1000.0),
+        (Some(rate), None) => format!("{:.1} kHz", rate as f64 / 1000.0),
+        _ => String::new(),
+    };
+    [
+        ("Title", m.title.clone()),
+        ("Artist", m.artist.clone()),
+        ("Album", m.album.clone()),
+        ("Date", m.date.clone()),
+        ("Track", m.track_number.map(|n| n.to_string()).unwrap_or_default()),
+        ("Disc", m.disc_number.map(|n| n.to_string()).unwrap_or_default()),
+        ("Length", format_duration(m.duration)),
+        ("Format", m.format_label.clone()),
+        ("Bitrate", m.bitrate_kbps.map(|k| format!("{k} kbps")).unwrap_or_default()),
+        ("Sample rate", quality),
+        ("File", track.path.display().to_string()),
+    ]
+    .into_iter()
+    .filter(|(_, value)| !value.is_empty())
+    .map(|(label, value)| InfoRow {
+        label: label.into(),
+        value: value.into(),
+    })
+    .collect()
+}
+
+/// Longest edge (px) the album-art panel's cover is decoded at -- sharp at
+/// any sensible panel size without holding a full-resolution scan.
+const ALBUM_ART_MAX_SIZE: u32 = 600;
+
+/// Loads the current track's cover for the album-art panel (issue #10) on
+/// a background thread, and only while that panel is in the layout.
+struct AlbumArtLoader {
+    window: slint::Weak<MainWindow>,
+    /// Bumped on every request; a load that finishes after a newer request
+    /// (the track changed again meanwhile) is dropped.
+    generation: Arc<AtomicU64>,
+    enabled: Cell<bool>,
+    current: RefCell<Option<PathBuf>>,
+}
+
+impl AlbumArtLoader {
+    fn new(window: &MainWindow) -> Self {
+        Self {
+            window: window.as_weak(),
+            generation: Arc::new(AtomicU64::new(0)),
+            enabled: Cell::new(false),
+            current: RefCell::new(None),
+        }
+    }
+
+    /// The track now playing (`None` once stopped).
+    fn show_track(&self, path: Option<PathBuf>) {
+        *self.current.borrow_mut() = path;
+        self.reload();
+    }
+
+    /// Whether the album-art panel exists; adding it mid-track loads the
+    /// cover right away.
+    fn set_enabled(&self, enabled: bool) {
+        if self.enabled.replace(enabled) != enabled {
+            self.reload();
+        }
+    }
+
+    fn reload(&self) {
+        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let path = self.current.borrow().clone();
+        let Some(path) = path.filter(|_| self.enabled.get()) else {
+            if let Some(window) = self.window.upgrade() {
+                window.set_has_album_art(false);
+                window.set_album_art(slint::Image::default());
+            }
+            return;
+        };
+        let window = self.window.clone();
+        let latest = self.generation.clone();
+        std::thread::Builder::new()
+            .name("openbar5000-album-art".into())
+            .spawn(move || {
+                let art = engine::load_cover_art(&path, ALBUM_ART_MAX_SIZE);
+                let _ = window.upgrade_in_event_loop(move |window| {
+                    if latest.load(Ordering::SeqCst) != generation {
+                        return;
+                    }
+                    match art {
+                        Some(art) => {
+                            window.set_album_art(cover_image_from_rgba(art.width, art.height, &art.rgba));
+                            window.set_has_album_art(true);
+                        }
+                        None => window.set_has_album_art(false),
+                    }
+                });
+            })
+            .expect("failed to spawn album art thread");
+    }
+}
+
+/// The closed outline of one channel's waveform as SVG path commands, in a
+/// `bucket count` x [-1, 1] space (y down, so peaks are negated): along the
+/// top edge (maxima) left to right, then back along the bottom (minima) --
+/// the stroked shape the reference UI draws per channel.
+fn waveform_outline_path(channel: &engine::WaveformChannel) -> String {
+    use std::fmt::Write;
+    let mut path = String::with_capacity(channel.max.len() * 24);
+    for (i, max) in channel.max.iter().enumerate() {
+        let _ = write!(path, "{} {} {:.3} ", if i == 0 { "M" } else { "L" }, i, -max);
+    }
+    for (i, min) in channel.min.iter().enumerate().rev() {
+        let _ = write!(path, "L {} {:.3} ", i, -min);
+    }
+    if !path.is_empty() {
+        path.push('Z');
+    }
+    path
+}
+
+/// Labels for the spectrum's bars, one per note from
+/// `engine::SPECTRUM_FIRST_NOTE` to `SPECTRUM_LAST_NOTE` ("F#0" ... "A8").
+fn spectrum_notes() -> Vec<SpectrumNote> {
+    const NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+    (engine::SPECTRUM_FIRST_NOTE..=engine::SPECTRUM_LAST_NOTE)
+        .map(|note| {
+            let name = NAMES[note as usize % 12];
+            SpectrumNote {
+                name: format!("{name}{}", note as i32 / 12 - 1).into(),
+                sharp: name.ends_with('#'),
+                octave_start: note % 12 == 0,
+            }
+        })
+        .collect()
+}
+
+/// The playlist panel's summary line: "23 tracks, Length: 1:21:07".
+fn playlist_summary(tracks: &[Track]) -> String {
+    let total: Duration = tracks.iter().map(|t| t.metadata.duration).sum();
+    let noun = if tracks.len() == 1 { "track" } else { "tracks" };
+    format!("{} {noun}, Length: {}", tracks.len(), format_duration(total))
+}
+
+/// The now-playing line (issue #10): "01. Title (6:43) • Artist • Album",
+/// leaving out whatever the tags don't have.
+fn now_playing_text(track: &Track) -> String {
+    let m = &track.metadata;
+    let mut text = match m.track_number {
+        Some(n) => format!("{n:02}. {}", m.title),
+        None => m.title.clone(),
+    };
+    if !m.duration.is_zero() {
+        text.push_str(&format!(" ({})", format_duration(m.duration)));
+    }
+    for part in [&m.artist, &m.album] {
+        if !part.is_empty() {
+            text.push_str(" \u{2022} ");
+            text.push_str(part);
+        }
+    }
+    text
+}
+
+/// A panel being dragged in edit mode.
+struct PanelDrag {
+    /// Slot index (into `LayoutState::placement`) of the dragged panel.
+    from: usize,
+    pressed_at: (f32, f32),
+    /// Past the small threshold that tells a drag from a click.
+    active: bool,
+    /// Slot index and drop under the pointer right now.
+    target: Option<(usize, Drop)>,
+}
+
+/// A tab being pressed or dragged.
+struct TabDrag {
+    /// Index into `LayoutState::placement.tab_strips`.
+    strip: usize,
+    tab: usize,
+    pressed_at: (f32, f32),
+    active: bool,
+    target: Option<TabDropTarget>,
+}
+
+enum TabDropTarget {
+    /// Within its own strip: move the tab so it lands before tab `to`.
+    Reorder(usize),
+    /// Out onto a panel (edit mode only), like dragging a panel.
+    Panel(usize, Drop),
+}
+
+/// Side-by-side dividers between panels at least this tall get a visible,
+/// draggable separator outside edit mode (e.g. tabs | playlist), while slim
+/// strips like the now-playing line stay clean.
+const SEPARATOR_MIN_HEIGHT: f32 = 60.0;
+
+/// The panel under (`x`, `y`) to drop onto, ignoring slot `exclude` (the
+/// one being dragged), with the drop and its on-screen preview.
+fn panel_drop_target(
+    placement: &Placement,
+    x: f32,
+    y: f32,
+    exclude: Option<usize>,
+) -> Option<(usize, Drop, DropPreview)> {
+    let (index, slot) = placement.slots.iter().enumerate().find(|(_, slot)| {
+        let r = &slot.rect;
+        x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
+    })?;
+    if Some(index) == exclude {
+        return None;
+    }
+    let drop = drop_at(&slot.rect, x, y);
+    let rect = drop_preview(&slot.rect, drop);
+    Some((
+        index,
+        drop,
+        DropPreview {
+            visible: true,
+            label: drop_label(drop, slot.kind).into(),
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+        },
+    ))
+}
+
+/// How far (px) the pointer must move before a press becomes a drag.
+const PANEL_DRAG_THRESHOLD: f32 = 6.0;
+
+fn drop_label(drop: Drop, target: PanelKind) -> String {
+    let target = target.label();
+    match drop {
+        Drop::Swap => format!("Swap with {target}"),
+        Drop::Beside(Side::Left) => format!("Place left of {target}"),
+        Drop::Beside(Side::Right) => format!("Place right of {target}"),
+        Drop::Beside(Side::Top) => format!("Place above {target}"),
+        Drop::Beside(Side::Bottom) => format!("Place below {target}"),
+    }
+}
+
+/// Connects the layout menus, panel-area resizes and divider drags. The
+/// layout itself lives in `settings` (it's saved with them).
+fn wire_layout(
+    window: &MainWindow,
+    engine: &Rc<PlaybackEngine>,
+    settings: &Rc<RefCell<Settings>>,
+    store: &Rc<Store>,
+    track_panels: &Rc<TrackPanels>,
+) {
+    let slots = Rc::new(VecModel::<PanelSlot>::default());
+    let dividers = Rc::new(VecModel::<LayoutDivider>::default());
+    window.set_panel_slots(ModelRc::from(slots.clone()));
+    window.set_layout_dividers(ModelRc::from(dividers.clone()));
+    window.set_panel_choices(ModelRc::from(Rc::new(VecModel::from(
+        PanelKind::ALL
+            .iter()
+            .map(|kind| PanelChoice {
+                id: kind.id().into(),
+                label: kind.label().into(),
+            })
+            .collect::<Vec<_>>(),
+    ))));
+    let state = Rc::new(RefCell::new(LayoutState {
+        area: (window.get_panel_area_width(), window.get_panel_area_height()),
+        placement: Placement::default(),
+        drag: None,
+        editing: false,
+        panel_drag: None,
+        tab_drag: None,
+        waveform_enabled: None,
+        spectrum_enabled: None,
+    }));
+
+    // Re-places the layout and pushes it to Slint (in place, so panels
+    // aren't rebuilt on every resize), and switches the engine's waveform /
+    // spectrum work on or off to match which panels exist.
+    let relayout = {
+        let state = state.clone();
+        let settings = settings.clone();
+        let engine = engine.clone();
+        let track_panels = track_panels.clone();
+        let window_weak = window.as_weak();
+        Rc::new(move || {
+            let layout = settings.borrow().layout.clone();
+            let mut state = state.borrow_mut();
+            let (width, height) = state.area;
+            state.placement = layout.place(width, height);
+            sync_model(
+                &slots,
+                state
+                    .placement
+                    .slots
+                    .iter()
+                    .map(|slot| {
+                        let moves = layout.sibling_moves(&slot.path);
+                        PanelSlot {
+                            kind: slot.kind.id().into(),
+                            label: slot.kind.label().into(),
+                            x: slot.rect.x,
+                            y: slot.rect.y,
+                            width: slot.rect.width,
+                            height: slot.rect.height,
+                            move_side_by_side: moves.axis == Some(Axis::Horizontal),
+                            can_move_back: moves.can_move_back,
+                            can_move_forward: moves.can_move_forward,
+                        }
+                    })
+                    .collect(),
+            );
+            sync_model(
+                &dividers,
+                state
+                    .placement
+                    .dividers
+                    .iter()
+                    .map(|divider| LayoutDivider {
+                        side_by_side: divider.axis == Axis::Horizontal,
+                        separator: divider.axis == Axis::Horizontal
+                            && divider.rect.height >= SEPARATOR_MIN_HEIGHT,
+                        x: divider.rect.x,
+                        y: divider.rect.y,
+                        width: divider.rect.width,
+                        height: divider.rect.height,
+                    })
+                    .collect(),
+            );
+            if let Some(window) = window_weak.upgrade() {
+                window.set_tab_strips(ModelRc::from(Rc::new(VecModel::from(
+                    state
+                        .placement
+                        .tab_strips
+                        .iter()
+                        .map(|strip| TabStripSlot {
+                            labels: ModelRc::from(Rc::new(VecModel::from(
+                                strip
+                                    .labels
+                                    .iter()
+                                    .map(|label| slint::SharedString::from(*label))
+                                    .collect::<Vec<_>>(),
+                            ))),
+                            active: strip.active as i32,
+                            x: strip.rect.x,
+                            y: strip.rect.y,
+                            width: strip.rect.width,
+                            height: strip.rect.height,
+                        })
+                        .collect::<Vec<_>>(),
+                ))));
+            }
+            // Only panels actually on screen do work -- a panel in a hidden
+            // tab costs nothing until its tab is shown.
+            let visible = |kind| state.placement.slots.iter().any(|slot| slot.kind == kind);
+            let (waveform, spectrum, album_art) = (
+                visible(PanelKind::Waveform),
+                visible(PanelKind::Spectrum),
+                visible(PanelKind::AlbumArt),
+            );
+            if state.waveform_enabled != Some(waveform) {
+                state.waveform_enabled = Some(waveform);
+                engine.send(EngineCommand::SetWaveformEnabled(waveform));
+            }
+            track_panels.album_art.set_enabled(album_art);
+            if state.spectrum_enabled != Some(spectrum) {
+                state.spectrum_enabled = Some(spectrum);
+                engine.send(EngineCommand::SetSpectrumEnabled(spectrum));
+            }
+        })
+    };
+    relayout();
+
+    // Applies a structural edit to the panel at `slot_index`, then saves.
+    let edit_slot = {
+        let state = state.clone();
+        let settings = settings.clone();
+        let store = store.clone();
+        let relayout = relayout.clone();
+        Rc::new(move |slot_index: i32, edit: &dyn Fn(&mut Layout, &[usize])| {
+            let Some(path) = state
+                .borrow()
+                .placement
+                .slots
+                .get(slot_index as usize)
+                .map(|slot| slot.path.clone())
+            else {
+                return;
+            };
+            edit(&mut settings.borrow_mut().layout, &path);
+            settings.borrow().save(&store);
+            relayout();
+        })
+    };
+
+    {
+        let state = state.clone();
+        let relayout = relayout.clone();
+        window.on_panel_area_resized(move |width, height| {
+            state.borrow_mut().area = (width, height);
+            relayout();
+        });
+    }
+    {
+        let state = state.clone();
+        let window_weak = window.as_weak();
+        window.on_layout_edit_toggled(move || {
+            let editing = {
+                let mut state = state.borrow_mut();
+                state.editing = !state.editing;
+                state.drag = None;
+                state.panel_drag = None;
+                state.editing
+            };
+            if let Some(window) = window_weak.upgrade() {
+                window.set_drop_preview(DropPreview::default());
+                window.set_layout_editing(editing);
+                window.set_status_text(
+                    if editing {
+                        "Editing layout: drag the dividers to resize, right-click a panel to change it."
+                    } else {
+                        "Layout saved."
+                    }
+                    .into(),
+                );
+            }
+        });
+    }
+    {
+        let settings = settings.clone();
+        let store = store.clone();
+        let relayout = relayout.clone();
+        window.on_layout_reset_clicked(move || {
+            settings.borrow_mut().layout = Layout::default_with(true, true);
+            settings.borrow().save(&store);
+            relayout();
+        });
+    }
+    {
+        let edit_slot = edit_slot.clone();
+        window.on_panel_replace_clicked(move |slot_index, kind_id| {
+            if let Some(kind) = PanelKind::from_id(&kind_id) {
+                edit_slot(slot_index, &|layout, path| layout.replace(path, kind));
+            }
+        });
+    }
+    {
+        let edit_slot = edit_slot.clone();
+        window.on_panel_split_clicked(move |slot_index, side_by_side| {
+            let axis = if side_by_side { Axis::Horizontal } else { Axis::Vertical };
+            edit_slot(slot_index, &|layout, path| layout.split(path, axis));
+        });
+    }
+    {
+        let edit_slot = edit_slot.clone();
+        window.on_panel_add_tab_clicked(move |slot_index| {
+            edit_slot(slot_index, &|layout, path| layout.add_tab(path));
+        });
+    }
+    {
+        let state = state.clone();
+        let settings = settings.clone();
+        let store = store.clone();
+        let relayout = relayout.clone();
+        let window_weak = window.as_weak();
+        window.on_tab_drag_released(move || {
+            let Some(drag) = state.borrow_mut().tab_drag.take() else {
+                return;
+            };
+            if let Some(window) = window_weak.upgrade() {
+                window.set_drop_preview(DropPreview::default());
+            }
+            let (strip_path, target_path) = {
+                let state = state.borrow();
+                let Some(strip) = state.placement.tab_strips.get(drag.strip) else {
+                    return;
+                };
+                let target_path = match &drag.target {
+                    Some(TabDropTarget::Panel(slot, _)) => {
+                        state.placement.slots.get(*slot).map(|slot| slot.path.clone())
+                    }
+                    _ => None,
+                };
+                (strip.path.clone(), target_path)
+            };
+            {
+                let layout = &mut settings.borrow_mut().layout;
+                match (drag.active, &drag.target) {
+                    // A press without a drag is a click: show that tab.
+                    (false, _) => layout.set_active_tab(&strip_path, drag.tab),
+                    (true, Some(TabDropTarget::Reorder(to))) => {
+                        layout.move_tab(&strip_path, drag.tab, *to)
+                    }
+                    (true, Some(TabDropTarget::Panel(_, drop))) => {
+                        let Some(onto) = target_path else {
+                            return;
+                        };
+                        let mut from = strip_path.clone();
+                        from.push(drag.tab);
+                        layout.drop_panel(&from, &onto, *drop);
+                    }
+                    (true, None) => return,
+                }
+            }
+            settings.borrow().save(&store);
+            relayout();
+        });
+    }
+    {
+        let state = state.clone();
+        window.on_tab_drag_pressed(move |strip, tab, x, y| {
+            state.borrow_mut().tab_drag = Some(TabDrag {
+                strip: strip as usize,
+                tab: tab as usize,
+                pressed_at: (x, y),
+                active: false,
+                target: None,
+            });
+        });
+    }
+    {
+        let state = state.clone();
+        let window_weak = window.as_weak();
+        window.on_tab_drag_moved(move |x, y| {
+            let preview = {
+                let mut state = state.borrow_mut();
+                let state = &mut *state;
+                let Some(drag) = state.tab_drag.as_mut() else {
+                    return;
+                };
+                let (px, py) = drag.pressed_at;
+                if !drag.active && (x - px).hypot(y - py) < PANEL_DRAG_THRESHOLD {
+                    return;
+                }
+                drag.active = true;
+                let Some(strip) = state.placement.tab_strips.get(drag.strip) else {
+                    return;
+                };
+                let r = &strip.rect;
+                let in_strip = x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
+                if in_strip {
+                    // Reorder: insert at the tab boundary nearest the pointer.
+                    let count = strip.labels.len().max(1);
+                    let tab_width = r.width / count as f32;
+                    let to = (((x - r.x) / tab_width + 0.5).floor() as usize).min(count);
+                    if to == drag.tab || to == drag.tab + 1 {
+                        drag.target = None;
+                        DropPreview::default()
+                    } else {
+                        drag.target = Some(TabDropTarget::Reorder(to));
+                        DropPreview {
+                            visible: true,
+                            label: "".into(),
+                            x: r.x + to as f32 * tab_width - 1.5,
+                            y: r.y,
+                            width: 3.0,
+                            height: r.height,
+                        }
+                    }
+                } else if state.editing {
+                    // Out of the strip onto a panel, like a panel drag. The
+                    // tab's own panel (if showing) isn't a target.
+                    let mut own = strip.path.clone();
+                    own.push(drag.tab);
+                    let exclude = state.placement.slots.iter().position(|slot| slot.path == own);
+                    match panel_drop_target(&state.placement, x, y, exclude) {
+                        Some((index, drop, preview)) => {
+                            drag.target = Some(TabDropTarget::Panel(index, drop));
+                            preview
+                        }
+                        None => {
+                            drag.target = None;
+                            DropPreview::default()
+                        }
+                    }
+                } else {
+                    drag.target = None;
+                    DropPreview::default()
+                }
+            };
+            if let Some(window) = window_weak.upgrade() {
+                window.set_drop_preview(preview);
+            }
+        });
+    }
+    {
+        let edit_slot = edit_slot.clone();
+        window.on_panel_move_clicked(move |slot_index, forward| {
+            edit_slot(slot_index, &|layout, path| layout.shift(path, forward));
+        });
+    }
+    {
+        let state = state.clone();
+        window.on_panel_drag_pressed(move |slot_index, x, y| {
+            state.borrow_mut().panel_drag = Some(PanelDrag {
+                from: slot_index as usize,
+                pressed_at: (x, y),
+                active: false,
+                target: None,
+            });
+        });
+    }
+    {
+        let state = state.clone();
+        let window_weak = window.as_weak();
+        window.on_panel_drag_moved(move |x, y| {
+            let preview = {
+                let mut state = state.borrow_mut();
+                let state = &mut *state;
+                let Some(drag) = state.panel_drag.as_mut() else {
+                    return;
+                };
+                let (px, py) = drag.pressed_at;
+                if !drag.active && (x - px).hypot(y - py) < PANEL_DRAG_THRESHOLD {
+                    return;
+                }
+                drag.active = true;
+                match panel_drop_target(&state.placement, x, y, Some(drag.from)) {
+                    Some((index, drop, preview)) => {
+                        drag.target = Some((index, drop));
+                        preview
+                    }
+                    // Over itself or outside every panel: nothing to drop on.
+                    None => {
+                        drag.target = None;
+                        DropPreview::default()
+                    }
+                }
+            };
+            if let Some(window) = window_weak.upgrade() {
+                window.set_drop_preview(preview);
+            }
+        });
+    }
+    {
+        let state = state.clone();
+        let settings = settings.clone();
+        let store = store.clone();
+        let relayout = relayout.clone();
+        let window_weak = window.as_weak();
+        window.on_panel_drag_released(move || {
+            let Some(drag) = state.borrow_mut().panel_drag.take() else {
+                return;
+            };
+            if let Some(window) = window_weak.upgrade() {
+                window.set_drop_preview(DropPreview::default());
+            }
+            let Some((target, drop)) = drag.target.filter(|_| drag.active) else {
+                return;
+            };
+            let (from, onto, moved) = {
+                let state = state.borrow();
+                let (Some(from), Some(onto)) =
+                    (state.placement.slots.get(drag.from), state.placement.slots.get(target))
+                else {
+                    return;
+                };
+                (from.path.clone(), onto.path.clone(), from.kind)
+            };
+            settings.borrow_mut().layout.drop_panel(&from, &onto, drop);
+            settings.borrow().save(&store);
+            relayout();
+            if let Some(window) = window_weak.upgrade() {
+                window.set_status_text(format!("Moved {}.", moved.label()).into());
+            }
+        });
+    }
+    {
+        let edit_slot = edit_slot.clone();
+        window.on_panel_remove_clicked(move |slot_index| {
+            edit_slot(slot_index, &|layout, path| layout.remove(path));
+        });
+    }
+    {
+        let state = state.clone();
+        window.on_divider_pressed(move |divider_index, pointer| {
+            let mut state = state.borrow_mut();
+            let start = state
+                .placement
+                .dividers
+                .get(divider_index as usize)
+                .and_then(|divider| DragStart::new(divider, &state.placement));
+            state.drag = start.map(|start| (start, pointer));
+        });
+    }
+    {
+        let state = state.clone();
+        let settings = settings.clone();
+        let relayout = relayout.clone();
+        window.on_divider_moved(move |pointer| {
+            let Some((start, pressed_at)) = state.borrow().drag.clone() else {
+                return;
+            };
+            settings.borrow_mut().layout.drag(&start, pointer - pressed_at);
+            relayout();
+        });
+    }
+    {
+        let state = state.clone();
+        let settings = settings.clone();
+        let store = store.clone();
+        window.on_divider_released(move || {
+            if state.borrow_mut().drag.take().is_some() {
+                settings.borrow().save(&store);
+            }
+        });
+    }
+}
+
+/// Makes `model` hold `rows`, updating changed rows in place when the
+/// length is unchanged so a repeater bound to it keeps its elements (and
+/// their state, like the playlist's scroll position).
+fn sync_model<T: Clone + PartialEq + 'static>(model: &VecModel<T>, rows: Vec<T>) {
+    if model.row_count() != rows.len() {
+        model.set_vec(rows);
+        return;
+    }
+    for (i, row) in rows.into_iter().enumerate() {
+        if model.row_data(i).as_ref() != Some(&row) {
+            model.set_row_data(i, row);
+        }
     }
 }
 
@@ -1138,6 +1924,7 @@ fn set_editor_value(editor: &ThemeEditorWindow, key: &str, value: String) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_event(
     window: &MainWindow,
     playlist_model: &Rc<VecModel<PlaylistRow>>,
@@ -1145,26 +1932,30 @@ fn apply_event(
     current_track: &Rc<RefCell<Option<Track>>>,
     store: &Store,
     presence: &PresenceClient,
+    track_panels: &TrackPanels,
     event: EngineEvent,
 ) {
     match event {
         EngineEvent::TrackChanged { index, track } => {
+            track_panels.track_changed(window, &track);
             window.set_duration_seconds(track.metadata.duration.as_secs_f32());
             window.set_duration_text(format_duration(track.metadata.duration).into());
+            // "Artist - Title - Album", as in the reference status bar.
             window.set_status_text(
-                format!(
-                    "{} \u{2014} {}",
-                    track.metadata.artist, track.metadata.title
-                )
-                .into(),
+                [&track.metadata.artist, &track.metadata.title, &track.metadata.album]
+                    .into_iter()
+                    .filter(|part| !part.is_empty())
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join(" - ")
+                    .into(),
             );
             // Reset right away rather than waiting for the next
             // `PositionUpdate` -- otherwise a RepeatOne/RepeatAll loop back
             // onto the same track briefly keeps showing the old end position.
             window.set_position_seconds(0.0);
             window.set_position_text(format_duration(Duration::ZERO).into());
-            window.set_waveform_peaks(ModelRc::from(Rc::new(VecModel::<f32>::default())));
-            window.set_waveform_played_bucket_index(0);
+            window.set_waveform_paths(ModelRc::default());
             // Not just `PlaybackStateChanged`: advancing to the next track
             // while already playing doesn't re-fire that event (the state
             // didn't change), so this is the only reliable place to update
@@ -1175,23 +1966,21 @@ fn apply_event(
             refresh_playlist_rows(playlist_model, playlist_view_state);
         }
         EngineEvent::PositionUpdate { position, duration } => {
+            track_panels.position_changed(window, position);
             window.set_position_seconds(position.as_secs_f32());
             window.set_position_text(format_duration(position).into());
             if duration.as_secs_f32() > 0.0 {
                 window.set_duration_seconds(duration.as_secs_f32());
                 window.set_duration_text(format_duration(duration).into());
             }
-            let peak_count = window.get_waveform_peaks().row_count() as i32;
-            if peak_count > 0 && duration.as_secs_f32() > 0.0 {
-                let fraction = position.as_secs_f32() / duration.as_secs_f32();
-                let played = ((fraction * peak_count as f32) as i32).clamp(0, peak_count - 1);
-                window.set_waveform_played_bucket_index(played);
-            }
         }
         EngineEvent::PlaybackStateChanged(state) => {
             window.set_is_playing(state == PlaybackState::Playing);
             match state {
-                PlaybackState::Stopped => presence.send(PresenceCommand::Cleared),
+                PlaybackState::Stopped => {
+                    presence.send(PresenceCommand::Cleared);
+                    track_panels.stopped(window);
+                }
                 PlaybackState::Playing | PlaybackState::Paused => {
                     if let Some(track) = current_track.borrow().clone() {
                         let elapsed = Duration::from_secs_f32(window.get_position_seconds());
@@ -1227,14 +2016,18 @@ fn apply_event(
             }
             refresh_playlist_rows(playlist_model, playlist_view_state);
             window.set_status_text(format!("{track_count} track(s) loaded").into());
+            window.set_playlist_summary(playlist_summary(&playlist_view_state.borrow().tracks).into());
         }
         EngineEvent::LoadProgress { done, total } => {
             window.set_status_text(format!("Loading playlist\u{2026} {done}/{total}").into());
         }
-        EngineEvent::WaveformReady { index, peaks } => {
+        EngineEvent::WaveformReady { index, channels } => {
             if playlist_view_state.borrow().current_index == Some(index) {
-                window.set_waveform_peaks(ModelRc::from(Rc::new(VecModel::from(peaks))));
-                window.set_waveform_played_bucket_index(0);
+                let paths: Vec<slint::SharedString> =
+                    channels.iter().map(|c| waveform_outline_path(c).into()).collect();
+                let bucket_count = channels.first().map_or(1, |c| c.max.len().max(1));
+                window.set_waveform_bucket_count(bucket_count as i32);
+                window.set_waveform_paths(ModelRc::from(Rc::new(VecModel::from(paths))));
             }
         }
         // Coalesced and applied by the poll timer instead (see `wire`).
@@ -1242,20 +2035,7 @@ fn apply_event(
     }
 }
 
-/// Overwrites `model`'s rows with `values`, only replacing the whole
-/// contents when the length changes (e.g. peaks toggled), so a repeater
-/// bound to it keeps its existing elements.
-fn update_in_place(model: &VecModel<f32>, values: Vec<f32>) {
-    if model.row_count() != values.len() {
-        model.set_vec(values);
-        return;
-    }
-    for (row, value) in values.into_iter().enumerate() {
-        if model.row_data(row) != Some(value) {
-            model.set_row_data(row, value);
-        }
-    }
-}
+
 
 fn send_presence_for_track(
     presence: &PresenceClient,
@@ -1347,4 +2127,52 @@ fn show_properties(properties_window: &PropertiesWindow, track: &Track) {
     properties_window
         .show()
         .expect("failed to show properties window");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use engine::TrackMetadata;
+
+    #[test]
+    fn now_playing_text_matches_issue_10_and_skips_missing_tags() {
+        let track = |number, artist: &str, album: &str| Track {
+            path: PathBuf::from("/m/x.flac"),
+            metadata: TrackMetadata {
+                title: "Helpless [Mix Cut]".into(),
+                artist: artist.into(),
+                album: album.into(),
+                track_number: number,
+                duration: Duration::from_secs(403),
+                ..Default::default()
+            },
+        };
+        assert_eq!(
+            now_playing_text(&track(Some(1), "Alexander Popov & Myon", "Trance World, Vol. 16")),
+            "01. Helpless [Mix Cut] (6:43) \u{2022} Alexander Popov & Myon \u{2022} Trance World, Vol. 16"
+        );
+        assert_eq!(now_playing_text(&track(None, "", "")), "Helpless [Mix Cut] (6:43)");
+    }
+
+    #[test]
+    fn spectrum_notes_span_f_sharp_0_to_a8() {
+        let notes = spectrum_notes();
+        assert_eq!(notes.first().unwrap().name, "F#0");
+        assert_eq!(notes.last().unwrap().name, "A8");
+        let c4 = notes.iter().find(|n| n.name == "C4").unwrap();
+        assert!(c4.octave_start && !c4.sharp);
+        assert!(notes.iter().find(|n| n.name == "A#3").unwrap().sharp);
+    }
+
+    #[test]
+    fn waveform_outline_goes_along_the_top_then_back_along_the_bottom() {
+        let channel = engine::WaveformChannel {
+            max: vec![0.5, 1.0],
+            min: vec![-0.25, -1.0],
+        };
+        assert_eq!(
+            waveform_outline_path(&channel),
+            "M 0 -0.500 L 1 -1.000 L 1 1.000 L 0 0.250 Z"
+        );
+    }
 }

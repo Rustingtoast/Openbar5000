@@ -17,7 +17,9 @@ const POSITION_UPDATE_INTERVAL: Duration = Duration::from_millis(33);
 
 const LOAD_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
-const WAVEFORM_BUCKET_COUNT: usize = 400;
+/// Points per channel in the waveform outline -- about one per pixel of a
+/// full-width seekbar, so the outline stays smooth.
+const WAVEFORM_BUCKET_COUNT: usize = 1000;
 
 /// Owns the dedicated playback thread. The UI never touches decoding, DSP,
 /// or output directly -- it only sends [`EngineCommand`]s and drains
@@ -414,8 +416,8 @@ fn spawn_waveform_computation(
     std::thread::Builder::new()
         .name("openbar5000-waveform".into())
         .spawn(move || {
-            if let Ok(peaks) = crate::waveform::compute_peaks(&path, WAVEFORM_BUCKET_COUNT) {
-                let _ = event_tx.send(EngineEvent::WaveformReady { index, peaks });
+            if let Ok(channels) = crate::waveform::compute_peaks(&path, WAVEFORM_BUCKET_COUNT) {
+                let _ = event_tx.send(EngineEvent::WaveformReady { index, channels });
             }
         })
         .expect("failed to spawn waveform thread");

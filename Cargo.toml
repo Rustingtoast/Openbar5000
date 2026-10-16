@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Rustingtoast/Openbar5000"
@@ -38,3 +38,5 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 discord-rich-presence = "1.1"
 rand = "0.10"
 arboard = "3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

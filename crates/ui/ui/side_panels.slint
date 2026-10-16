@@ -1,0 +1,168 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+/// One label/value pair in the Info panel.
+export struct InfoRow {
+    label: string,
+    value: string,
+}
+
+/// One line of lyrics (see `app::lyrics`).
+export struct LyricLine {
+    text: string,
+}
+
+/// The current track's tags and technical details (the reference UI's INF
+/// tab).
+export component InfoView inherits Rectangle {
+    in property <[InfoRow]> rows: [];
+
+    background: Theme.bg-base;
+
+    if root.rows.length == 0: Text {
+        text: "Nothing playing";
+        color: Theme.text-muted;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    if root.rows.length > 0: ScrollView {
+        VerticalLayout {
+            padding: 16px;
+            spacing: 6px;
+            alignment: start;
+            for row in root.rows: HorizontalLayout {
+                spacing: 12px;
+                Text {
+                    width: 110px;
+                    text: row.label;
+                    color: Theme.text-muted;
+                    horizontal-alignment: right;
+                }
+                Text {
+                    horizontal-stretch: 1;
+                    text: row.value;
+                    color: Theme.text-primary;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+}
+
+/// Lyrics, centered, with the line being sung highlighted and kept in the
+/// middle of the panel (the reference UI's LYR tab). Fed by
+/// `app::lyrics::Lyrics`; `status` is shown instead when there are no
+/// lines (e.g. "No lyrics found").
+export component LyricsView inherits Rectangle {
+    in property <[LyricLine]> lines: [];
+    /// Index into `lines` of the line being sung; -1 for none/unsynced.
+    in property <int> active-line: -1;
+    in property <string> status: "";
+
+    property <length> line-height: 22px;
+
+    background: Theme.bg-base;
+    clip: true;
+
+    if root.lines.length == 0: Text {
+        text: root.status;
+        color: Theme.text-muted;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        wrap: word-wrap;
+    }
+    if root.lines.length > 0: flick := Flickable {
+        content-height: root.lines.length * root.line-height + self.height;
+        // Synced: keep the active line centered; unsynced: free scrolling
+        // starting at the top.
+        content-y: root.active-line >= 0
+            ? -(root.active-line * root.line-height)
+            : 0;
+        animate content-y { duration: 250ms; easing: ease-out; }
+
+        for line[i] in root.lines: Text {
+            x: 0;
+            y: root.height / 2 - root.line-height / 2 + i * root.line-height;
+            width: root.width;
+            height: root.line-height;
+            text: line.text;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            color: i == root.active-line ? Theme.text-primary : Theme.text-muted;
+            font-weight: i == root.active-line ? 700 : 400;
+        }
+    }
+}
+
+/// A panel whose feature doesn't exist yet (BIO, LIB).
+export component PlaceholderView inherits Rectangle {
+    in property <string> title;
+    in property <string> message;
+
+    background: Theme.bg-base;
+
+    VerticalLayout {
+        alignment: center;
+        spacing: 6px;
+        padding: 24px;
+        Text {
+            text: root.title;
+            color: Theme.text-primary;
+            font-weight: 700;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: root.message;
+            color: Theme.text-muted;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+}
+
+/// A tab group's buttons (the reference UI's "INF BIO LYR ART LIB" strip).
+export component TabStripView inherits Rectangle {
+    in property <[string]> labels: [];
+    in property <int> active: 0;
+    // Positions are relative to the strip. Clicking vs dragging is decided
+    // by the app (a release without a drag is a click).
+    callback tab-pressed(int, length, length);
+    callback tab-moved(length, length);
+    callback tab-released();
+
+    background: Theme.bg-raised;
+
+    for label[i] in root.labels: Rectangle {
+        x: i * root.width / Math.max(1, root.labels.length);
+        width: root.width / Math.max(1, root.labels.length);
+        background: i == root.active ? Theme.bg-sunken : touch.has-hover ? Theme.bg-base : transparent;
+        border-width: 0px;
+        touch := TouchArea {
+            mouse-cursor: pointer;
+            pointer-event(event) => {
+                if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                    root.tab-pressed(i, parent.x + self.mouse-x, self.mouse-y);
+                } else if event.button == PointerEventButton.left && event.kind == PointerEventKind.up {
+                    root.tab-released();
+                }
+            }
+            moved => { root.tab-moved(parent.x + self.mouse-x, self.mouse-y); }
+        }
+        Text {
+            text: label;
+            font-weight: 700;
+            font-size: 12px;
+            color: i == root.active ? Theme.text-primary : Theme.text-muted;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        // Separator to the next tab.
+        if i + 1 < root.labels.length: Rectangle {
+            x: parent.width - 1px;
+            y: 4px;
+            width: 1px;
+            height: parent.height - 8px;
+            background: Theme.text-muted.transparentize(0.75);
+        }
+    }
+}

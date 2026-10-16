@@ -248,6 +248,7 @@ fn track_row(
     PlaylistRow {
         is_header: false,
         cover_image: blank_cover.clone(),
+        has_cover: false,
         group_title: String::new().into(),
         group_subtitle: String::new().into(),
         group_info: String::new().into(),
@@ -310,6 +311,7 @@ fn header_row(
 
     PlaylistRow {
         is_header: true,
+        has_cover: first.metadata.cover_thumbnail.is_some(),
         cover_image,
         group_title: title.into(),
         group_subtitle: subtitle.into(),
@@ -410,6 +412,8 @@ mod tests {
         );
         // Beta | zulu | Alpha | Yankee | Beta | xray
         assert_eq!(expanded.len(), 6);
+        // No embedded art in these tracks: headers show the disc icon.
+        assert!(!expanded[0].has_cover);
 
         let collapsed = HashSet::from(["Beta".to_string()]);
         let rows = build_grouped_rows(

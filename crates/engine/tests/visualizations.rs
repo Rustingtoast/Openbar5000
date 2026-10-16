@@ -25,8 +25,9 @@ fn waveform_and_spectrum_events_fire_during_playback() {
 
     while Instant::now() < deadline && !(got_waveform && got_spectrum) {
         match engine.try_recv_event() {
-            Some(EngineEvent::WaveformReady { peaks, .. }) => {
-                assert!(!peaks.is_empty());
+            Some(EngineEvent::WaveformReady { channels, .. }) => {
+                assert!(!channels.is_empty());
+                assert!(!channels[0].max.is_empty());
                 got_waveform = true;
             }
             Some(EngineEvent::SpectrumUpdate { bars, peaks }) => {

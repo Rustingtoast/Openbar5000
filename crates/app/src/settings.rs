@@ -1,3 +1,4 @@
+use crate::layout::Layout;
 use crate::playlist_rows::PlaylistGrouping;
 use crate::store::Store;
 use engine::{PlaybackMode, SpectrumChannelMode, SpectrumConfig};
@@ -8,8 +9,12 @@ use std::path::PathBuf;
 /// never needs a schema migration.
 #[derive(Debug, Clone)]
 pub struct Settings {
+    /// Pre-panels visibility toggles: now only seed the default `layout`
+    /// for settings saved before layouts existed.
     pub show_waveform: bool,
     pub show_spectrum: bool,
+    /// The main window's panel arrangement (issue #22).
+    pub layout: Layout,
     pub theme_id: String,
     pub spectrum: SpectrumConfig,
     pub playback_mode: PlaybackMode,
@@ -29,6 +34,7 @@ impl Default for Settings {
         Self {
             show_waveform: true,
             show_spectrum: true,
+            layout: Layout::default_with(true, true),
             theme_id: "dark".to_string(),
             spectrum: SpectrumConfig::default(),
             playback_mode: PlaybackMode::Normal,
@@ -140,6 +146,9 @@ impl Settings {
         if let Some(v) = get("discord_client_id") {
             settings.discord_client_id = v;
         }
+        settings.layout = get("layout")
+            .and_then(|json| Layout::from_json(&json))
+            .unwrap_or_else(|| Layout::default_with(settings.show_waveform, settings.show_spectrum));
         settings
     }
 
@@ -185,6 +194,7 @@ impl Settings {
                 self.discord_presence_enabled.to_string(),
             ),
             ("discord_client_id", self.discord_client_id.clone()),
+            ("layout", self.layout.to_json()),
         ]);
     }
 }
@@ -230,5 +240,24 @@ mod fps_tests {
 
         store.set_settings(&[("visualization_fps", "144".to_string())]);
         assert_eq!(Settings::load(&store).visualization_fps, 60);
+    }
+
+    #[test]
+    fn layout_migrates_old_visibility_toggles_then_round_trips() {
+        use crate::layout::PanelKind;
+        let store = Store::open_in_memory().unwrap();
+        // Saved by a build from before panels: waveform hidden.
+        store.set_settings(&[("show_waveform", "false".to_string())]);
+        let mut settings = Settings::load(&store);
+        assert!(!settings.layout.contains(PanelKind::Waveform));
+        assert!(settings.layout.contains(PanelKind::Spectrum));
+
+        settings.layout.replace(&[0], PanelKind::Spectrum);
+        settings.save(&store);
+        assert_eq!(Settings::load(&store).layout, settings.layout);
+
+        // A corrupt saved layout falls back to the default.
+        store.set_settings(&[("layout", "not json".to_string())]);
+        assert!(Settings::load(&store).layout.contains(PanelKind::Playlist));
     }
 }
