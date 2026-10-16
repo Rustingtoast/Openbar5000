@@ -5,7 +5,7 @@ import { TransportBar, PlaybackButtons, SeekBar, SeekSlider, PlaybackOptions } f
 import { InfoView, InfoRow, LyricsView, LyricLine, PlaceholderView, TabStripView, ArtistView, ArtistCandidate } from "side_panels.slint";
 import { StatusBar } from "status_bar.slint";
 import { WaveformSeekbar } from "waveform_seekbar.slint";
-import { SpectrumView, SpectrumNote } from "spectrum_view.slint";
+import { SpectrumView, SpectrumNote, SpectrumRect } from "spectrum_view.slint";
 import { NowPlayingBar, AlbumArtView } from "now_playing.slint";
 import { PropertiesWindow, PropertyField, DetailRow, ArtworkRow } from "properties_window.slint";
 import { AboutWindow } from "about_window.slint";
@@ -118,6 +118,8 @@ export component MainWindow inherits Window {
     in property <float> position-seconds: 0;
     in property <float> duration-seconds: 0;
     in property <string> position-text: "0:00";
+    /// "-m:ss" left in the track, updated with `position-text`.
+    in property <string> remaining-text: "-0:00";
     in property <string> duration-text: "0:00";
     in property <float> volume: 1.0;
     in property <bool> shuffle-active: false;
@@ -171,8 +173,10 @@ export component MainWindow inherits Window {
     }
     in property <[string]> waveform-paths: [];
     in property <int> waveform-bucket-count: 1;
-    in property <[float]> spectrum-bars: [];
-    in property <[float]> spectrum-peaks: [];
+    /// The spectrum's bars and peak markers (see `app::spectrum_bars`),
+    /// laid out in the plot size last reported by `spectrum-plot-resized`.
+    in property <[SpectrumRect]> spectrum-rects: [];
+    callback spectrum-plot-resized(length, length);
     in property <[SpectrumNote]> spectrum-notes: [];
     in property <int> spectrum-min-db: -80;
     in property <int> spectrum-max-db: 0;
@@ -437,8 +441,8 @@ export component MainWindow inherits Window {
             if slot.kind == "spectrum": SpectrumView {
                 width: parent.width;
                 height: parent.height;
-                bars: root.spectrum-bars;
-                peaks: root.spectrum-peaks;
+                rects: root.spectrum-rects;
+                plot-resized(width, height) => { root.spectrum-plot-resized(width, height); }
                 notes: root.spectrum-notes;
                 min-db: root.spectrum-min-db;
                 max-db: root.spectrum-max-db;
@@ -450,6 +454,7 @@ export component MainWindow inherits Window {
                 position-seconds: root.position-seconds;
                 duration-seconds: root.duration-seconds;
                 position-text: root.position-text;
+                remaining-text: root.remaining-text;
                 duration-text: root.duration-text;
                 volume: root.volume;
                 shuffle-active: root.shuffle-active;
@@ -493,6 +498,7 @@ export component MainWindow inherits Window {
                 position-seconds: root.position-seconds;
                 duration-seconds: root.duration-seconds;
                 position-text: root.position-text;
+                remaining-text: root.remaining-text;
                 volume: root.volume;
                 shuffle-active: root.shuffle-active;
                 loop-active: root.loop-active;
@@ -515,6 +521,7 @@ export component MainWindow inherits Window {
                 position-seconds: root.position-seconds;
                 duration-seconds: root.duration-seconds;
                 position-text: root.position-text;
+                remaining-text: root.remaining-text;
                 volume: root.volume;
                 shuffle-active: root.shuffle-active;
                 loop-active: root.loop-active;

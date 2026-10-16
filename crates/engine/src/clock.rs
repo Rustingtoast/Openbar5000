@@ -5,7 +5,11 @@ use std::time::{Duration, Instant};
 /// waking the playback thread. The engine publishes a snapshot whenever it
 /// runs anyway (a decode, a command); between snapshots the position is
 /// extrapolated from the wall clock, which is exactly how audio is
-/// consumed, and never past what has been decoded.
+/// consumed, and never past what has been decoded. It never runs backwards
+/// within a run of playback either: extrapolating can get a little ahead
+/// of the output (it starts playing a moment after it's told to), and the
+/// next snapshot would pull it back -- it holds still until playback
+/// catches up instead.
 #[derive(Clone, Default)]
 pub struct PlaybackClock(Arc<Mutex<Snapshot>>);
 
@@ -21,6 +25,10 @@ struct Snapshot {
     running: bool,
     at: Option<Instant>,
     duration: Duration,
+    /// The furthest position read in this run of playback. A run ends when
+    /// fewer frames have been heard than before: a seek back, another
+    /// track, a restart.
+    floor: Duration,
 }
 
 impl PlaybackClock {
@@ -35,7 +43,7 @@ impl PlaybackClock {
     }
 
     fn position_at(&self, now: Instant) -> Duration {
-        let snapshot = *self.lock();
+        let mut snapshot = self.lock();
         if snapshot.frame_rate == 0 {
             return Duration::ZERO;
         }
@@ -47,7 +55,10 @@ impl PlaybackClock {
                 frames = frames.min(snapshot.decoded_frames);
             }
         }
-        Duration::from_secs_f64(frames.max(0) as f64 / snapshot.frame_rate as f64)
+        let position = Duration::from_secs_f64(frames.max(0) as f64 / snapshot.frame_rate as f64)
+            .max(snapshot.floor);
+        snapshot.floor = position;
+        position
     }
 
     /// Called by the playback thread with its current numbers.
@@ -59,13 +70,16 @@ impl PlaybackClock {
         running: bool,
         duration: Duration,
     ) {
-        *self.lock() = Snapshot {
+        let mut snapshot = self.lock();
+        let same_run = audible_frames >= snapshot.audible_frames && frame_rate == snapshot.frame_rate;
+        *snapshot = Snapshot {
             audible_frames,
             decoded_frames,
             frame_rate,
             running,
             at: Some(Instant::now()),
             duration,
+            floor: if same_run { snapshot.floor } else { Duration::ZERO },
         };
     }
 
@@ -103,6 +117,28 @@ mod tests {
         let at = clock.lock().at.unwrap();
         assert_eq!(clock.position_at(at + Duration::from_millis(100)), Duration::ZERO);
         assert_eq!(clock.position_at(at + Duration::from_millis(250)), Duration::from_millis(50));
+    }
+
+    #[test]
+    fn holds_still_rather_than_running_back_while_the_output_starts() {
+        let clock = PlaybackClock::default();
+        // 1000 frames a second: a frame is a millisecond. Playing, but the
+        // output hasn't taken anything yet.
+        clock.publish(0, 1_000, 1_000, true, Duration::ZERO);
+        let at = clock.lock().at.unwrap();
+        assert_eq!(clock.position_at(at + Duration::from_millis(8)), Duration::from_millis(8));
+        // Still nothing heard: the reading holds instead of going back.
+        clock.publish(0, 1_000, 1_000, true, Duration::ZERO);
+        let at = clock.lock().at.unwrap();
+        assert_eq!(clock.position_at(at + Duration::from_millis(1)), Duration::from_millis(8));
+        // Playback catches up and goes on from there.
+        assert_eq!(clock.position_at(at + Duration::from_millis(20)), Duration::from_millis(20));
+
+        // Seeking back starts a new run, free to go back.
+        clock.publish(10, 1_000, 1_000, true, Duration::ZERO);
+        clock.publish(0, 100, 1_000, false, Duration::ZERO);
+        let at = clock.lock().at.unwrap();
+        assert_eq!(clock.position_at(at), Duration::ZERO);
     }
 
     #[test]

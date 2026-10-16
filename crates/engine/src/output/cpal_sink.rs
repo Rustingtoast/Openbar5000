@@ -142,12 +142,18 @@ impl OutputSink for CpalSink {
         let flush_requested = self.flush_requested.clone();
         flush_requested.store(false, Ordering::Release);
         let volume = self.volume.clone();
+        // Realtime scheduling for the callback's thread, asked for once
+        // it has run (see `realtime`).
+        #[cfg(target_os = "linux")]
+        let mut callback_thread = super::realtime::request_for_callback();
 
         let stream = self
             .device
             .build_output_stream(
                 config,
                 move |data: &mut [f32], _info| {
+                    #[cfg(target_os = "linux")]
+                    callback_thread.report();
                     if flush_requested.load(Ordering::Acquire) {
                         consumer.clear();
                         flush_requested.store(false, Ordering::Release);

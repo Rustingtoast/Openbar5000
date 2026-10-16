@@ -116,8 +116,10 @@ export component TransportBar inherits Rectangle {
     callback shuffle-clicked();
     callback loop-clicked();
 
-    // Whole seconds left, shown as "-m:ss" like the reference.
-    property <int> remaining: Math.max(0, Math.floor(root.duration-seconds - root.position-seconds));
+    // Whole seconds left, "-m:ss" like the reference: from Rust, so it
+    // only changes once a second -- worked out here from the position, it
+    // would be re-laid out on every frame.
+    in property <string> remaining-text: "-0:00";
 
     height: 32px;
     background: Theme.bg-raised;
@@ -166,8 +168,7 @@ export component TransportBar inherits Rectangle {
             horizontal-alignment: right;
             vertical-alignment: center;
             color: Theme.text-muted;
-            text: "-" + Math.floor(root.remaining / 60) + ":"
-                + (Math.mod(root.remaining, 60) < 10 ? "0" : "") + Math.mod(root.remaining, 60);
+            text: root.remaining-text;
         }
         Rectangle { width: 8px; }
         IconButton {
@@ -277,7 +278,8 @@ export component SeekBar inherits Rectangle {
     callback shuffle-clicked();
     callback loop-clicked();
 
-    property <int> remaining: Math.max(0, Math.floor(root.duration-seconds - root.position-seconds));
+    /// Whole seconds left, "-m:ss" (see `TransportBar`).
+    in property <string> remaining-text: "-0:00";
 
     height: 26px;
     background: Theme.bg-base;
@@ -305,8 +307,7 @@ export component SeekBar inherits Rectangle {
             horizontal-alignment: right;
             vertical-alignment: center;
             color: Theme.text-muted;
-            text: "-" + Math.floor(root.remaining / 60) + ":"
-                + (Math.mod(root.remaining, 60) < 10 ? "0" : "") + Math.mod(root.remaining, 60);
+            text: root.remaining-text;
         }
         Rectangle { width: 4px; }
         IconButton {
@@ -378,7 +379,8 @@ export component PlaybackOptions inherits Rectangle {
     callback shuffle-clicked();
     callback loop-clicked();
 
-    property <int> remaining: Math.max(0, Math.floor(root.duration-seconds - root.position-seconds));
+    /// Whole seconds left, "-m:ss" (see `TransportBar`).
+    in property <string> remaining-text: "-0:00";
 
     height: 22px;
     background: Theme.bg-base;
@@ -393,8 +395,7 @@ export component PlaybackOptions inherits Rectangle {
             color: Theme.text-muted;
             font-size: 11px;
             overflow: elide;
-            text: root.position-text + " / -" + Math.floor(root.remaining / 60) + ":"
-                + (Math.mod(root.remaining, 60) < 10 ? "0" : "") + Math.mod(root.remaining, 60);
+            text: root.position-text + " / " + root.remaining-text;
         }
         IconButton {
             y: (parent.height - self.height) / 2;

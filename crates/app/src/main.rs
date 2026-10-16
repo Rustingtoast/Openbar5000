@@ -12,6 +12,7 @@ mod playlist_rows;
 mod playlists;
 mod properties;
 mod settings;
+mod spectrum_bars;
 mod store;
 mod theme;
 mod wiring;

@@ -380,11 +380,14 @@ pub fn load_metadata_parallel(
         for _ in 0..workers {
             let done_tx = done_tx.clone();
             let next = &next;
-            scope.spawn(move || loop {
-                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let Some(path) = paths.get(i) else { break };
-                if done_tx.send((i, load_metadata(path))).is_err() {
-                    break;
+            scope.spawn(move || {
+                crate::background::lower_thread_priority();
+                loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(path) = paths.get(i) else { break };
+                    if done_tx.send((i, load_metadata(path))).is_err() {
+                        break;
+                    }
                 }
             });
         }

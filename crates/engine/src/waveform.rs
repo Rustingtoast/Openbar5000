@@ -90,6 +90,7 @@ pub fn compute_peaks_cancellable(
                 // the tagged duration is a little short.
                 let end = (i + 1 < workers as u64).then(|| total_frames * (i + 1) / workers as u64);
                 scope.spawn(move || {
+                    crate::background::lower_thread_priority();
                     peaks_for_slice(path, info.sample_rate, start, end, total_frames, bucket_count, cancel)
                 })
             })

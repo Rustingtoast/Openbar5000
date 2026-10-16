@@ -59,3 +59,8 @@ ureq = "3"
 notify = "8"
 # Local date, for the holiday logos.
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+# Slint's winit backend with one fix: on X11 it drew every frame twice
+# (see `patches/README.md`). Remove once Slint ships the fix.
+[patch.crates-io]
+i-slint-backend-winit = { path = "patches/i-slint-backend-winit" }

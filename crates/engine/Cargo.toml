@@ -18,5 +18,12 @@ rustfft.workspace = true
 rand.workspace = true
 image.workspace = true
 
+# Realtime scheduling for the audio thread, from RTKit or the desktop
+# portal (see `output::realtime`). zbus is already built for Slint's tray
+# icon; its blocking API is what's added.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
+libc = "0.2"
+
 [dev-dependencies]
 tracing-subscriber.workspace = true

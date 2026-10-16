@@ -19,6 +19,7 @@ use crate::settings::{
     note_from_name, note_name, normalize_fps, FPS_CHOICES, valid_note_range, Settings, A4_MAX_HZ, A4_MIN_HZ,
     HIGHEST_NOTE, LOWEST_NOTE,
 };
+use crate::spectrum_bars::spectrum_rects;
 use crate::store::Store;
 use crate::theme::{self, ThemeColors, ThemeRegistry};
 use engine::{
@@ -1417,12 +1418,11 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         });
     }
 
-    // Kept for the window's lifetime and updated row by row: handing Slint a
-    // fresh model every frame would make it rebuild every bar element.
-    let spectrum_bars = Rc::new(VecModel::<f32>::default());
-    let spectrum_peaks = Rc::new(VecModel::<f32>::default());
-    window.set_spectrum_bars(ModelRc::from(spectrum_bars.clone()));
-    window.set_spectrum_peaks(ModelRc::from(spectrum_peaks.clone()));
+    let spectrum = Rc::new(SpectrumDisplay::new(window));
+    {
+        let spectrum = spectrum.clone();
+        window.on_spectrum_plot_resized(move |width, height| spectrum.resized(width, height));
+    }
 
     // OS media keys (issue #17). Registered once the event loop runs: on
     // Windows it needs the native window, which only exists once shown.
@@ -1453,7 +1453,9 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         });
     }
 
-    report_renderer(window, &settings_window);
+    // Whether frames still reach the screen (see `FrameWatch`).
+    let frames = Rc::new(FrameWatch::default());
+    report_renderer(window, &settings_window, frames.clone());
     // Playback statistics (issue #34): a play counts once the song reaches
     // half its length or four minutes, whichever is first -- the usual
     // scrobbling rule -- once per time it's started.
@@ -1467,7 +1469,9 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     // Minimized or entirely covered, nothing is seen: stop the spectrum's
     // FFT, don't push visualization frames (some Linux window managers
     // still redraw a minimized window's contents, issue #21) and tick only
-    // a few times a second -- enough for play counts and media keys.
+    // a few times a second -- enough for play counts and media keys. X11
+    // and macOS say so; on Wayland, which doesn't, it shows as frames no
+    // longer being drawn (see `FrameWatch`).
     let occluded = Rc::new(Cell::new(false));
     {
         use slint::winit_030::{winit::event::WindowEvent, EventResult, WinitWindowAccessor};
@@ -1479,6 +1483,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             EventResult::Propagate
         });
     }
+    let minimized = MinimizedCheck::default();
     // What the engine was last told, so it's only told about changes.
     let spectrum_requested = Cell::new(None);
     let poll_timer = event_poll_timer.clone();
@@ -1566,6 +1571,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         let position = clock.position();
         if position != shown_position.replace(position) {
             apply_position(&window, &track_panels, position, clock.duration());
+            frames.changed();
             if let Some((path, threshold, counted)) = play_count.borrow_mut().as_mut() {
                 if !*counted && position >= *threshold {
                     *counted = true;
@@ -1576,7 +1582,10 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                 }
             }
         }
-        let hidden = occluded.get() || window.window().is_minimized();
+        if frames.take_probe() {
+            window.window().request_redraw();
+        }
+        let hidden = occluded.get() || minimized.get(&window) || frames.starved();
         let spectrum_shown = window.get_panel_slots().iter().any(|slot| slot.kind == "spectrum");
         let want_spectrum = spectrum_shown && !hidden;
         if spectrum_requested.replace(Some(want_spectrum)) != Some(want_spectrum) {
@@ -1591,8 +1600,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             poll_timer.set_interval(interval);
         }
         if let Some((bars, peaks)) = latest_spectrum.filter(|_| !hidden) {
-            sync_model(&spectrum_bars, bars);
-            sync_model(&spectrum_peaks, peaks);
+            spectrum.show(bars, peaks);
         }
         track_panels.poll(&window);
         lyrics_editor.poll(&window, &track_panels);
@@ -1655,6 +1663,16 @@ fn apply_position(window: &MainWindow, track_panels: &TrackPanels, position: Dur
         window.set_duration_seconds(duration.as_secs_f32());
         window.set_duration_text(format_duration(duration).into());
     }
+    show_remaining(window);
+}
+
+/// "-m:ss" left in the track, from the position and length shown. Set from
+/// here rather than worked out in Slint from `position-seconds`: that
+/// changes every frame, and the text (and the layout around it) would be
+/// redone on each one, when it only changes once a second.
+fn show_remaining(window: &MainWindow) {
+    let left = (window.get_duration_seconds() - window.get_position_seconds()).floor().max(0.0) as u64;
+    window.set_remaining_text(format!("-{}:{:02}", left / 60, left % 60).into());
 }
 
 /// UI-thread state for the panel layout (see `crate::layout`).
@@ -2318,11 +2336,17 @@ fn show_sort_choices(window: &MainWindow, selected: SortMode) {
 /// expensive (issue #21). That fallback never reports a graphics setup, so
 /// a window that has been on screen for a while without one is drawn on
 /// the CPU -- and should a setup still come, it corrects the report.
-fn report_renderer(window: &MainWindow, settings_window: &SettingsWindow) {
+///
+/// The same notifier tells `frames` about every frame drawn.
+fn report_renderer(window: &MainWindow, settings_window: &SettingsWindow, frames: Rc<FrameWatch>) {
     let gpu_reported = Rc::new(Cell::new(false));
     let settings_window_weak = settings_window.as_weak();
     let reported = gpu_reported.clone();
+    let drawn = frames.clone();
     let result = window.window().set_rendering_notifier(move |state, api| {
+        if matches!(state, slint::RenderingState::AfterRendering) {
+            drawn.drawn();
+        }
         if !matches!(state, slint::RenderingState::RenderingSetup) || reported.replace(true) {
             return;
         }
@@ -2339,7 +2363,20 @@ fn report_renderer(window: &MainWindow, settings_window: &SettingsWindow) {
                     Backend::Gl => "OpenGL",
                     _ => "the GPU",
                 };
-                format!("Skia on {interface}, {} (GPU accelerated)", info.name)
+                // A driver that emulates a GPU on the CPU (Mesa's llvmpipe/
+                // lavapipe) is what's left when the real one can't be used --
+                // e.g. NVIDIA's driver in a Flatpak without its matching
+                // GL.nvidia extension. Every frame then costs CPU as with
+                // the software renderer.
+                if info.device_type == slint::wgpu_30::wgpu::DeviceType::Cpu {
+                    format!(
+                        "Skia on {interface}, {} \u{2014} a CPU emulation of a GPU, so drawing uses \
+                         much more CPU (check the graphics driver). The 30 fps frame rate halves it.",
+                        info.name
+                    )
+                } else {
+                    format!("Skia on {interface}, {} (GPU accelerated)", info.name)
+                }
             }
             _ => "Skia (GPU accelerated)".to_string(),
         };
@@ -2980,6 +3017,159 @@ fn wire_layout(
     }
 }
 
+/// How often to ask the windowing system whether the window is minimized.
+const MINIMIZED_CHECK_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Whether the main window is minimized, asked of the windowing system
+/// itself: Slint's own flag only follows resizes and occlusion events, and
+/// minimizing on X11 brings neither. Asking is a round trip to the X
+/// server, so the answer is kept for a moment. (Wayland doesn't say; there
+/// `FrameWatch` notices instead.)
+#[derive(Default)]
+struct MinimizedCheck {
+    last: Cell<Option<(std::time::Instant, bool)>>,
+}
+
+impl MinimizedCheck {
+    fn get(&self, window: &MainWindow) -> bool {
+        use slint::winit_030::WinitWindowAccessor;
+        if let Some((at, minimized)) = self.last.get() {
+            if at.elapsed() < MINIMIZED_CHECK_INTERVAL {
+                return minimized;
+            }
+        }
+        let minimized = window.window().is_minimized()
+            || window
+                .window()
+                .with_winit_window(|winit| winit.is_minimized())
+                .flatten()
+                .unwrap_or(false);
+        self.last.set(Some((std::time::Instant::now(), minimized)));
+        minimized
+    }
+}
+
+/// How long a change may go without a frame before one is asked for
+/// outright: what changed may not be on screen (no seekbar in the layout,
+/// a silent spectrum), and then nothing else asks.
+const PROBE_AFTER: Duration = Duration::from_millis(250);
+
+/// How long a change may wait for a frame before the window is taken to
+/// be out of sight -- a visible one draws the frame asked for at once.
+const STARVED_AFTER: Duration = Duration::from_secs(1);
+
+/// Notices a window that isn't being drawn although its contents changed:
+/// a Wayland compositor stops asking a minimized or covered window for
+/// frames, and doesn't otherwise say it's out of sight.
+#[derive(Default)]
+struct FrameWatch {
+    /// Only once a frame has been reported at all: drawing on the CPU,
+    /// they may never be.
+    watching: Cell<bool>,
+    /// The oldest change no frame has shown yet.
+    waiting_since: Cell<Option<std::time::Instant>>,
+    /// Whether a frame has been asked for during this wait.
+    probed: Cell<bool>,
+}
+
+impl FrameWatch {
+    /// Something on screen may have changed.
+    fn changed(&self) {
+        if self.waiting_since.get().is_none() {
+            self.waiting_since.set(Some(std::time::Instant::now()));
+            self.probed.set(false);
+        }
+    }
+
+    fn drawn(&self) {
+        self.watching.set(true);
+        self.waiting_since.set(None);
+    }
+
+    /// Whether to ask for a frame now: once per wait, when nothing has
+    /// drawn one for a while. A window that can be seen draws it, which
+    /// ends the wait; one that can't, doesn't.
+    fn take_probe(&self) -> bool {
+        self.take_probe_at(std::time::Instant::now())
+    }
+
+    fn take_probe_at(&self, now: std::time::Instant) -> bool {
+        let due = self.watching.get()
+            && !self.probed.get()
+            && self
+                .waiting_since
+                .get()
+                .is_some_and(|since| now.saturating_duration_since(since) >= PROBE_AFTER);
+        if due {
+            self.probed.set(true);
+        }
+        due
+    }
+
+    /// Whether a change has gone undrawn for long.
+    fn starved(&self) -> bool {
+        self.starved_at(std::time::Instant::now())
+    }
+
+    fn starved_at(&self, now: std::time::Instant) -> bool {
+        self.watching.get()
+            && self
+                .waiting_since
+                .get()
+                .is_some_and(|since| now.saturating_duration_since(since) >= STARVED_AFTER)
+    }
+}
+
+/// What the spectrum panel draws: its last frame, laid out as rectangles
+/// in the plot's size (see `spectrum_bars`).
+struct SpectrumDisplay {
+    /// Kept for the window's lifetime and updated row by row, so the
+    /// rectangle elements stay put.
+    rects: Rc<VecModel<ui::SpectrumRect>>,
+    plot: Cell<(f32, f32)>,
+    /// The last (bars, peaks), laid out again when the plot is resized.
+    frame: RefCell<(Vec<f32>, Vec<f32>)>,
+}
+
+impl SpectrumDisplay {
+    fn new(window: &MainWindow) -> Self {
+        let rects = Rc::new(VecModel::default());
+        window.set_spectrum_rects(ModelRc::from(rects.clone()));
+        Self {
+            rects,
+            plot: Cell::new((0.0, 0.0)),
+            frame: RefCell::new((Vec::new(), Vec::new())),
+        }
+    }
+
+    fn show(&self, bars: Vec<f32>, peaks: Vec<f32>) {
+        *self.frame.borrow_mut() = (bars, peaks);
+        self.draw();
+    }
+
+    fn resized(&self, width: f32, height: f32) {
+        if self.plot.replace((width, height)) != (width, height) {
+            self.draw();
+        }
+    }
+
+    fn draw(&self) {
+        let (width, height) = self.plot.get();
+        let frame = self.frame.borrow();
+        let rects = spectrum_rects(&frame.0, &frame.1, width, height)
+            .into_iter()
+            .map(|r| ui::SpectrumRect {
+                x: r.x,
+                y: r.y,
+                width: r.width,
+                height: r.height,
+                shade: r.shade,
+            })
+            .collect();
+        sync_model(&self.rects, rects);
+    }
+}
+
 /// Makes `model` hold `rows`, updating changed rows in place when the
 /// length is unchanged so a repeater bound to it keeps its elements (and
 /// their state, like the playlist's scroll position).
@@ -3174,6 +3364,7 @@ fn apply_event(
             // track briefly keeps showing the old end position.
             window.set_position_seconds(0.0);
             window.set_position_text(format_duration(Duration::ZERO).into());
+            show_remaining(window);
             window.set_waveform_paths(ModelRc::default());
             // Not just `PlaybackStateChanged`: advancing to the next track
             // while already playing doesn't re-fire that event (the state
@@ -3320,6 +3511,35 @@ fn spectrum_channel_from_label(label: &str) -> engine::SpectrumChannelMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_change_left_undrawn_for_a_second_means_out_of_sight() {
+        let frames = FrameWatch::default();
+        frames.changed();
+        let since = frames.waiting_since.get().unwrap();
+        // No frame reported yet at all: can't tell, so never starved.
+        assert!(!frames.starved_at(since + STARVED_AFTER));
+
+        frames.drawn();
+        frames.changed();
+        let since = frames.waiting_since.get().unwrap();
+        // Later changes keep the oldest undrawn one.
+        frames.changed();
+        assert_eq!(frames.waiting_since.get(), Some(since));
+        // A frame is asked for once, after a while without one.
+        assert!(!frames.take_probe_at(since + PROBE_AFTER / 2));
+        assert!(frames.take_probe_at(since + PROBE_AFTER));
+        assert!(!frames.take_probe_at(since + PROBE_AFTER * 2));
+        assert!(!frames.starved_at(since + STARVED_AFTER / 2));
+        assert!(frames.starved_at(since + STARVED_AFTER));
+
+        // A frame shows it all; the next wait may ask again.
+        frames.drawn();
+        assert!(!frames.starved_at(since + STARVED_AFTER * 2));
+        frames.changed();
+        let since = frames.waiting_since.get().unwrap();
+        assert!(frames.take_probe_at(since + PROBE_AFTER));
+    }
     use engine::TrackMetadata;
 
     #[test]

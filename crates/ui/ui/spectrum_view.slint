@@ -1,5 +1,15 @@
 import { Theme } from "theme.slint";
 
+/// A bar or peak marker, laid out by `app::spectrum_bars` in the plot's
+/// pixels. `shade` runs from the plain bar color (0) to the accent (1).
+export struct SpectrumRect {
+    x: length,
+    y: length,
+    width: length,
+    height: length,
+    shade: float,
+}
+
 /// A spectrum bar's musical note (see `engine::SPECTRUM_FIRST_NOTE`).
 export struct SpectrumNote {
     name: string,
@@ -13,12 +23,13 @@ export struct SpectrumNote {
 /// gridlines, bars turning from grey to accent as they get louder, and
 /// accent peak markers.
 export component SpectrumView inherits Rectangle {
-    in property <[float]> bars: [];
-    /// Falling peak markers, one per bar; empty when peaks are disabled.
-    in property <[float]> peaks: [];
+    /// The bars, then the peak markers (if enabled), in the plot's pixels.
+    in property <[SpectrumRect]> rects: [];
     in property <[SpectrumNote]> notes: [];
     in property <int> min-db: -80;
     in property <int> max-db: 0;
+    /// The plot's size, which the paths are laid out in.
+    callback plot-resized(length, length);
 
     property <length> label-height: 13px;
     property <length> scale-width: 40px;
@@ -34,78 +45,83 @@ export component SpectrumView inherits Rectangle {
     height: 150px;
     background: Theme.bg-sunken;
 
-    for note[i] in root.notes: Rectangle {
-        x: root.plot-x + i * root.column-width;
-        width: root.column-width;
+    init => { root.plot-resized(root.plot-width, root.plot-height); }
+    changed plot-width => { root.plot-resized(root.plot-width, root.plot-height); }
+    changed plot-height => { root.plot-resized(root.plot-width, root.plot-height); }
 
-        // Piano-style columns: naturals a touch lighter than sharps.
-        Rectangle {
-            y: root.label-height;
-            height: root.plot-height;
-            background: note.sharp ? Theme.bg-sunken : Theme.bg-base;
+    // Everything but the bars and peaks only changes with the size, the
+    // note range or the theme: one cached layer, not ~400 elements drawn
+    // again on every frame.
+    Rectangle {
+        cache-rendering-hint: true;
+
+        for note[i] in root.notes: Rectangle {
+            x: root.plot-x + i * root.column-width;
+            width: root.column-width;
+
+            // Piano-style columns: naturals a touch lighter than sharps.
+            Rectangle {
+                y: root.label-height;
+                height: root.plot-height;
+                background: note.sharp ? Theme.bg-sunken : Theme.bg-base;
+            }
+            if note.octave-start: Rectangle {
+                x: 0;
+                y: root.label-height;
+                width: 1px;
+                height: root.plot-height;
+                background: Theme.text-muted.transparentize(0.65);
+            }
+            if root.label-all || note.octave-start: Text {
+                y: 0;
+                height: root.label-height;
+                text: note.name;
+                font-size: 9px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                color: note.sharp ? Theme.text-muted.transparentize(0.5) : Theme.text-muted;
+            }
+            if root.label-all || note.octave-start: Text {
+                y: root.height - root.label-height;
+                height: root.label-height;
+                text: note.name;
+                font-size: 9px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                color: note.sharp ? Theme.text-muted.transparentize(0.5) : Theme.text-muted;
+            }
         }
-        if note.octave-start: Rectangle {
-            x: 0;
-            y: root.label-height;
-            width: 1px;
-            height: root.plot-height;
-            background: Theme.text-muted.transparentize(0.65);
-        }
-        if i < root.bars.length: Rectangle {
-            x: 1px;
-            width: parent.width - 2px;
-            height: Math.max(1px, Math.min(root.bars[i], 1.0) * root.plot-height);
-            y: root.label-height + root.plot-height - self.height;
-            // Cubed, so only bars near the top turn fully accent-colored
-            // while the rest stay grey, as in the reference.
-            background: Theme.accent.mix(Theme.spectrum-bar, Math.pow(Math.clamp(root.bars[i], 0, 1), 3));
-        }
-        if i < root.peaks.length: Rectangle {
-            x: 1px;
-            width: parent.width - 2px;
-            height: 1px;
-            y: root.label-height + root.plot-height - Math.min(root.peaks[i], 1.0) * root.plot-height;
-            background: Theme.accent;
-        }
-        if root.label-all || note.octave-start: Text {
-            y: 0;
-            height: root.label-height;
-            text: note.name;
+
+        // dB scales, every 10 dB.
+        for step in root.db-steps + 1: Text {
+            x: 2px;
+            width: root.scale-width - 6px;
+            y: root.label-height + step * 10 / Math.max(1, root.max-db - root.min-db) * root.plot-height - 6px;
+            height: 12px;
+            text: (root.max-db - step * 10) + "dB";
             font-size: 9px;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-            color: note.sharp ? Theme.text-muted.transparentize(0.5) : Theme.text-muted;
+            horizontal-alignment: left;
+            color: Theme.text-muted;
         }
-        if root.label-all || note.octave-start: Text {
-            y: root.height - root.label-height;
-            height: root.label-height;
-            text: note.name;
+        for step in root.db-steps + 1: Text {
+            x: root.plot-x + root.plot-width + 4px;
+            width: root.scale-width - 6px;
+            y: root.label-height + step * 10 / Math.max(1, root.max-db - root.min-db) * root.plot-height - 6px;
+            height: 12px;
+            text: (root.max-db - step * 10) + "dB";
             font-size: 9px;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-            color: note.sharp ? Theme.text-muted.transparentize(0.5) : Theme.text-muted;
+            horizontal-alignment: right;
+            color: Theme.text-muted;
         }
     }
 
-    // dB scales, every 10 dB.
-    for step in root.db-steps + 1: Text {
-        x: 2px;
-        width: root.scale-width - 6px;
-        y: root.label-height + step * 10 / Math.max(1, root.max-db - root.min-db) * root.plot-height - 6px;
-        height: 12px;
-        text: (root.max-db - step * 10) + "dB";
-        font-size: 9px;
-        horizontal-alignment: left;
-        color: Theme.text-muted;
-    }
-    for step in root.db-steps + 1: Text {
-        x: root.plot-x + root.plot-width + 4px;
-        width: root.scale-width - 6px;
-        y: root.label-height + step * 10 / Math.max(1, root.max-db - root.min-db) * root.plot-height - 6px;
-        height: 12px;
-        text: (root.max-db - step * 10) + "dB";
-        font-size: 9px;
-        horizontal-alignment: right;
-        color: Theme.text-muted;
+    // Plain rectangles, already laid out: the cheapest thing to draw, and
+    // nothing to work out per bar but the shade.
+    for rect in root.rects: Rectangle {
+        x: root.plot-x + rect.x;
+        y: root.label-height + rect.y;
+        width: rect.width;
+        height: rect.height;
+        background: Theme.accent.mix(Theme.spectrum-bar, rect.shade);
     }
 }

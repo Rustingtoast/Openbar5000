@@ -89,20 +89,23 @@ pub fn scan(
         for _ in 0..workers {
             let done_tx = done_tx.clone();
             let (next, changed) = (&next, &changed);
-            scope.spawn(move || loop {
-                if cancel.load(Ordering::Relaxed) {
-                    break;
-                }
-                let i = next.fetch_add(1, Ordering::Relaxed);
-                let Some((path, (modified, size))) = changed.get(i) else { break };
-                let track = LibraryTrack {
-                    path: path.clone(),
-                    modified: *modified,
-                    size: *size,
-                    tags: engine::read_library_tags(path),
-                };
-                if done_tx.send(track).is_err() {
-                    break;
+            scope.spawn(move || {
+                engine::lower_thread_priority();
+                loop {
+                    if cancel.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some((path, (modified, size))) = changed.get(i) else { break };
+                    let track = LibraryTrack {
+                        path: path.clone(),
+                        modified: *modified,
+                        size: *size,
+                        tags: engine::read_library_tags(path),
+                    };
+                    if done_tx.send(track).is_err() {
+                        break;
+                    }
                 }
             });
         }

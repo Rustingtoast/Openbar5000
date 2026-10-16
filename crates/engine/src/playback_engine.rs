@@ -599,6 +599,7 @@ fn spawn_waveform_computation(
     std::thread::Builder::new()
         .name("openbar5000-waveform".into())
         .spawn(move || {
+            crate::background::lower_thread_priority();
             std::thread::sleep(WAVEFORM_START_DELAY);
             if cancel.load(Ordering::Relaxed) {
                 return;

@@ -80,14 +80,17 @@ EOF
 # missing dependencies, `sudo apt-get install -f` will resolve them for the
 # system's actual package names. Vulkan is only recommended: Skia draws
 # through it when it's there, and through OpenGL (libgl1) otherwise.
+# The window system libraries are loaded at runtime rather than linked, so
+# they're listed by hand: X11 (with xkbcommon-x11 for the keyboard) and
+# Wayland, both first-class; EGL is only for OpenGL drawing.
 cat > "$PKG_DIR/DEBIAN/control" <<EOF
 Package: $APP_NAME
 Version: $VERSION
 Section: sound
 Priority: optional
 Architecture: $ARCH
-Depends: libasound2, libfontconfig1, libx11-6, libxkbcommon0, libxcursor1, libxrandr2, libxi6, libgl1
-Recommends: libvulkan1
+Depends: libasound2, libfontconfig1, libx11-6, libx11-xcb1, libxkbcommon0, libxkbcommon-x11-0, libxcursor1, libxrandr2, libxi6, libwayland-client0, libgl1
+Recommends: libvulkan1, libegl1, libwayland-egl1
 Maintainer: Openbar5000 Project <noreply@github.com>
 Homepage: https://github.com/Rustingtoast/Openbar5000
 Description: Open-source, cross-platform alternative to foobar2000

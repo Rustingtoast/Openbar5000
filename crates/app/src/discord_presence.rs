@@ -143,12 +143,11 @@ fn run(command_rx: Receiver<PresenceCommand>, event_tx: Sender<PresenceEvent>) {
     let mut next_attempt = std::time::Instant::now();
 
     loop {
-        let timeout = if state.connected {
-            IDLE_CHECK_INTERVAL
-        } else {
-            next_attempt.saturating_duration_since(std::time::Instant::now())
+        let received = match wait_for_command(&state, next_attempt, std::time::Instant::now()) {
+            Some(timeout) => command_rx.recv_timeout(timeout),
+            None => command_rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
         };
-        match command_rx.recv_timeout(timeout) {
+        match received {
             Ok(command) => {
                 if matches!(command, PresenceCommand::Configure { .. }) {
                     // Turned on or pointed at another app: try right away.
@@ -188,6 +187,21 @@ fn run(command_rx: Receiver<PresenceCommand>, event_tx: Sender<PresenceEvent>) {
     }
 
     disconnect(&mut state, &event_tx);
+}
+
+/// How long the thread may wait for a command before it has something of
+/// its own to do: a health check, or the next connection attempt. `None`
+/// when off (or without a client ID): nothing to do until told otherwise,
+/// so it sleeps -- `next_attempt` isn't moved forward while off, and
+/// waiting it out would make the wait zero and the thread spin.
+fn wait_for_command(state: &State, next_attempt: std::time::Instant, now: std::time::Instant) -> Option<Duration> {
+    if state.connected {
+        Some(IDLE_CHECK_INTERVAL)
+    } else if state.enabled && !state.client_id.is_empty() {
+        Some(next_attempt.saturating_duration_since(now))
+    } else {
+        None
+    }
 }
 
 fn next_retry_delay(delay: Duration) -> Duration {
@@ -331,6 +345,34 @@ mod tests {
             delay = next_retry_delay(delay);
         }
         assert_eq!(waits, [5, 10, 20, 40, 60, 60]);
+    }
+
+    #[test]
+    fn sleeps_until_told_while_off_instead_of_spinning() {
+        let mut state = State {
+            enabled: false,
+            client_id: String::new(),
+            client: None,
+            connected: false,
+            retry_delay: RECONNECT_INTERVAL,
+            last_activity: None,
+        };
+        // An attempt "due" long ago, as when the feature was never enabled.
+        let now = std::time::Instant::now();
+        let past = now - Duration::from_secs(60);
+        assert_eq!(wait_for_command(&state, past, now), None);
+
+        // Enabled without a client ID: still nothing to connect to.
+        state.enabled = true;
+        assert_eq!(wait_for_command(&state, past, now), None);
+
+        state.client_id = "123".to_string();
+        assert_eq!(wait_for_command(&state, past, now), Some(Duration::ZERO));
+        let later = now + Duration::from_secs(5);
+        assert_eq!(wait_for_command(&state, later, now), Some(Duration::from_secs(5)));
+
+        state.connected = true;
+        assert_eq!(wait_for_command(&state, past, now), Some(IDLE_CHECK_INTERVAL));
     }
 
     fn sample(is_playing: bool) -> NowPlaying {
