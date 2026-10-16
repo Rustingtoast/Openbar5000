@@ -1,3 +1,4 @@
+use crate::clock::PlaybackClock;
 use crate::decoders::SymphoniaDecoder;
 use crate::events::PlaybackState;
 use crate::library::scan_audio_files;
@@ -14,9 +15,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// ~120 per second, so the seekbar and waveform cursor can move smoothly at
-/// the highest visualization frame rate (the UI keeps only the newest).
-const POSITION_UPDATE_INTERVAL: Duration = Duration::from_millis(8);
+/// Most chunks decoded in one go before checking for commands again, so a
+/// refill never delays a pause or skip noticeably.
+const MAX_CHUNKS_PER_REFILL: usize = 32;
 
 const LOAD_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -37,6 +38,7 @@ const WAVEFORM_START_DELAY: Duration = Duration::from_millis(250);
 pub struct PlaybackEngine {
     command_tx: Sender<EngineCommand>,
     event_rx: Receiver<EngineEvent>,
+    clock: PlaybackClock,
     _thread: std::thread::JoinHandle<()>,
 }
 
@@ -44,13 +46,16 @@ impl PlaybackEngine {
     pub fn spawn() -> Self {
         let (command_tx, command_rx) = crossbeam_channel::unbounded();
         let (event_tx, event_rx) = crossbeam_channel::unbounded();
+        let clock = PlaybackClock::default();
+        let engine_clock = clock.clone();
         let thread = std::thread::Builder::new()
             .name("openbar5000-playback".into())
-            .spawn(move || run(command_rx, event_tx))
+            .spawn(move || run(command_rx, event_tx, engine_clock))
             .expect("failed to spawn playback thread");
         Self {
             command_tx,
             event_rx,
+            clock,
             _thread: thread,
         }
     }
@@ -62,6 +67,12 @@ impl PlaybackEngine {
     /// Non-blocking; call this from a UI timer to drain pending events.
     pub fn try_recv_event(&self) -> Option<EngineEvent> {
         self.event_rx.try_recv().ok()
+    }
+
+    /// The playback position, to read whenever it's drawn -- there are no
+    /// position events, so the playback thread never wakes just for them.
+    pub fn clock(&self) -> &PlaybackClock {
+        &self.clock
     }
 }
 
@@ -99,7 +110,7 @@ struct EngineState {
     last_output_check: Instant,
 }
 
-fn run(command_rx: Receiver<EngineCommand>, event_tx: Sender<EngineEvent>) {
+fn run(command_rx: Receiver<EngineCommand>, event_tx: Sender<EngineEvent>, clock: PlaybackClock) {
     let (sink, output_device) = match CpalSink::default_device() {
         Ok(sink) => {
             let id = sink.device_id().map(str::to_string);
@@ -130,18 +141,14 @@ fn run(command_rx: Receiver<EngineCommand>, event_tx: Sender<EngineEvent>) {
         last_output_check: Instant::now(),
     };
 
-    let mut last_position_sent = Instant::now();
-
     loop {
-        // While playing, only decode when the output has room for another
-        // chunk, rather than blocking inside the sink's `write`. Otherwise
-        // sleep (still answering commands) exactly until the next thing is
-        // due -- room for a chunk, a spectrum frame, or a position update --
-        // instead of polling, so an idle-ish playback thread stays asleep.
+        // While playing, sleep (still answering commands) until the output
+        // has drained to half full or a spectrum frame is due, then top the
+        // output up in one go -- a few wakeups a second rather than one
+        // per chunk.
         let poll_timeout = match state.playback_state {
             PlaybackState::Playing => {
-                let position_due = POSITION_UPDATE_INTERVAL.saturating_sub(last_position_sent.elapsed());
-                let mut next = state.pipeline.time_until_room().min(position_due);
+                let mut next = state.pipeline.time_until_refill();
                 if let Some(spectrum_due) = state.pipeline.time_until_spectrum() {
                     next = next.min(spectrum_due);
                 }
@@ -169,33 +176,58 @@ fn run(command_rx: Receiver<EngineCommand>, event_tx: Sender<EngineEvent>) {
             }
         }
 
-        if state.playback_state != PlaybackState::Playing {
-            continue;
-        }
-
-        if state.pipeline.has_room_for_chunk() {
-            match state.pipeline.process_chunk() {
-                Ok(0) => {
-                    on_track_finished(&mut state, &event_tx);
-                    continue;
-                }
-                Ok(written) => state.samples_played += written as u64,
-                Err(e) => {
-                    let _ = event_tx.send(EngineEvent::Error(e.to_string()));
-                    set_playback_state(&mut state, PlaybackState::Stopped, &event_tx);
-                    continue;
-                }
+        if state.playback_state == PlaybackState::Playing {
+            refill_output(&mut state, &command_rx, &event_tx);
+            if let Some((bars, peaks)) = state.pipeline.audible_spectrum() {
+                let _ = event_tx.send(EngineEvent::SpectrumUpdate { bars, peaks });
             }
         }
+        publish_clock(&state, &clock);
+    }
+}
 
-        if let Some((bars, peaks)) = state.pipeline.audible_spectrum() {
-            let _ = event_tx.send(EngineEvent::SpectrumUpdate { bars, peaks });
+/// Decodes until the output is full (or a command is waiting), going on
+/// to the next track when one ends.
+fn refill_output(state: &mut EngineState, command_rx: &Receiver<EngineCommand>, event_tx: &Sender<EngineEvent>) {
+    for _ in 0..MAX_CHUNKS_PER_REFILL {
+        if state.playback_state != PlaybackState::Playing
+            || !state.pipeline.has_room_for_chunk()
+            || !command_rx.is_empty()
+        {
+            return;
         }
-        if last_position_sent.elapsed() >= POSITION_UPDATE_INTERVAL {
-            send_position_update(&state, &event_tx);
-            last_position_sent = Instant::now();
+        match state.pipeline.process_chunk() {
+            Ok(0) => on_track_finished(state, event_tx),
+            Ok(written) => state.samples_played += written as u64,
+            Err(e) => {
+                let _ = event_tx.send(EngineEvent::Error(e.to_string()));
+                set_playback_state(state, PlaybackState::Stopped, event_tx);
+                return;
+            }
         }
     }
+}
+
+/// Tells the [`PlaybackClock`] what is audible right now.
+fn publish_clock(state: &EngineState, clock: &PlaybackClock) {
+    let channels = state.channels.max(1) as i64;
+    let decoded = state.samples_played as i64;
+    // What's been heard, not just decoded: the sink still holds the
+    // difference. Right after a track change that's audio from the
+    // previous track, so this is negative until the new one is audible.
+    let audible = decoded - state.pipeline.queued_samples() as i64;
+    let duration = state
+        .playlist
+        .current()
+        .map(|t| t.metadata.duration)
+        .unwrap_or_default();
+    clock.publish(
+        audible.div_euclid(channels),
+        decoded / channels,
+        state.sample_rate,
+        state.playback_state == PlaybackState::Playing,
+        duration,
+    );
 }
 
 /// Returns `false` when the thread should exit.
@@ -244,7 +276,6 @@ fn handle_command(
             } else {
                 state.samples_played =
                     (pos.as_secs_f64() * state.sample_rate as f64 * state.channels as f64) as u64;
-                send_position_update(state, event_tx);
             }
         }
         EngineCommand::Next => {
@@ -712,19 +743,3 @@ fn switch_output(state: &mut EngineState, event_tx: &Sender<EngineEvent>) {
     let _ = event_tx.send(EngineEvent::OutputDeviceChanged { name, fallback });
 }
 
-fn send_position_update(state: &EngineState, event_tx: &Sender<EngineEvent>) {
-    // What's been heard, not just decoded: the sink still holds the
-    // difference. Right after a track change that's audio from the
-    // previous track, so this stays at 0:00 until the new one is audible.
-    let audible = state
-        .samples_played
-        .saturating_sub(state.pipeline.queued_samples() as u64);
-    let frames_played = audible / state.channels.max(1) as u64;
-    let position = Duration::from_secs_f64(frames_played as f64 / state.sample_rate.max(1) as f64);
-    let duration = state
-        .playlist
-        .current()
-        .map(|t| t.metadata.duration)
-        .unwrap_or_default();
-    let _ = event_tx.send(EngineEvent::PositionUpdate { position, duration });
-}

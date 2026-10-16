@@ -78,7 +78,8 @@ EOF
 # Exact package names can drift between distro releases (e.g. Ubuntu's
 # libasound2 -> libasound2t64 transition) -- if `dpkg -i` complains about
 # missing dependencies, `sudo apt-get install -f` will resolve them for the
-# system's actual package names.
+# system's actual package names. Vulkan is only recommended: Skia draws
+# through it when it's there, and through OpenGL (libgl1) otherwise.
 cat > "$PKG_DIR/DEBIAN/control" <<EOF
 Package: $APP_NAME
 Version: $VERSION
@@ -86,6 +87,7 @@ Section: sound
 Priority: optional
 Architecture: $ARCH
 Depends: libasound2, libfontconfig1, libx11-6, libxkbcommon0, libxcursor1, libxrandr2, libxi6, libgl1
+Recommends: libvulkan1
 Maintainer: Openbar5000 Project <noreply@github.com>
 Homepage: https://github.com/Rustingtoast/Openbar5000
 Description: Open-source, cross-platform alternative to foobar2000

@@ -16,7 +16,7 @@
 # and run it with:
 #   flatpak run io.github.rustingtoast.Openbar5000
 #
-# Requires flatpak, flatpak-builder (or the org.flatpak.Builder Flatpak) and
+# Requires flatpak, flatpak-builder (or the org.flatpak.Builder Flatpak), curl and
 # cargo on the build machine. The freedesktop runtime, SDK and Rust
 # extension are installed from Flathub automatically on first run.
 
@@ -61,6 +61,10 @@ if ! command -v cargo >/dev/null 2>&1; then
     echo "error: cargo not found (needed to vendor the Rust crates). Install Rust via https://rustup.rs" >&2
     exit 1
 fi
+if ! command -v curl >/dev/null 2>&1; then
+    echo "error: curl not found (needed to fetch Skia's prebuilt library). Install your distribution's curl package." >&2
+    exit 1
+fi
 
 # The AppStream release list should name the version being built.
 if ! grep -q "<release version=\"$VERSION\"" "$METAINFO"; then
@@ -86,6 +90,29 @@ replace-with = "vendored-sources"
 [source.vendored-sources]
 directory = "vendor"
 CONFIG
+
+# Skia (the renderer) links a prebuilt library that its build script
+# normally downloads -- not possible in the sandbox. Its name depends on the
+# target and the enabled Skia features, which are the same here as in the
+# sandbox: let a check build on this machine work the name out, fetch that
+# archive, and hand it to the sandboxed build as a file (see the manifest's
+# SKIA_BINARIES_URL).
+echo "==> Fetching Skia's prebuilt library..."
+SKIA_DIR="$DIST_DIR/skia"
+SKIA_PROBE="$DIST_DIR/skia-probe"
+rm -rf "$SKIA_DIR"
+mkdir -p "$SKIA_DIR"
+(cd "$REPO_ROOT" && CARGO_TARGET_DIR="$SKIA_PROBE" cargo check --release --locked --quiet -p app)
+SKIA_WANTED="$(grep -h "TRYING TO DOWNLOAD AND INSTALL SKIA BINARIES:" "$SKIA_PROBE"/release/build/skia-bindings-*/output | tail -n1 | sed 's/.*BINARIES: //')"
+if [[ -z "$SKIA_WANTED" ]]; then
+    echo "error: couldn't tell which Skia binaries the build needs (see $SKIA_PROBE)." >&2
+    exit 1
+fi
+SKIA_TAG="${SKIA_WANTED%%/*}"
+SKIA_KEY="${SKIA_WANTED#*/}"
+curl -fsSL -o "$SKIA_DIR/skia-binaries-$SKIA_KEY.tar.gz" \
+    "https://github.com/rust-skia/skia-binaries/releases/download/$SKIA_TAG/skia-binaries-$SKIA_KEY.tar.gz"
+echo "    skia-binaries-$SKIA_KEY ($SKIA_TAG)"
 
 echo "==> Building the Flatpak ($VERSION, $ARCH)..."
 "${BUILDER[@]}" \

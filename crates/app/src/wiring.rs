@@ -47,6 +47,9 @@ fn poll_interval(fps: u32) -> Duration {
     Duration::from_millis(1000 / normalize_fps(fps) as u64)
 }
 
+/// The event poll's interval while the window can't be seen.
+const HIDDEN_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
 /// The FFT sizes Preferences offers, in its ComboBox's order.
 const FFT_SIZES: [usize; 5] = [1024, 2048, 4096, 8192, 16384];
 
@@ -1461,10 +1464,27 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     let playlist_fingerprint = Cell::new(0u64);
     let audio_output_events = audio_output.clone();
 
-    // Minimized, nothing is seen: stop the spectrum's FFT and don't push
-    // visualization frames (some Linux window managers still redraw a
-    // minimized window's contents, issue #21).
-    let was_minimized = Cell::new(false);
+    // Minimized or entirely covered, nothing is seen: stop the spectrum's
+    // FFT, don't push visualization frames (some Linux window managers
+    // still redraw a minimized window's contents, issue #21) and tick only
+    // a few times a second -- enough for play counts and media keys.
+    let occluded = Rc::new(Cell::new(false));
+    {
+        use slint::winit_030::{winit::event::WindowEvent, EventResult, WinitWindowAccessor};
+        let occluded = occluded.clone();
+        window.window().on_winit_window_event(move |_, event| {
+            if let WindowEvent::Occluded(now) = event {
+                occluded.set(*now);
+            }
+            EventResult::Propagate
+        });
+    }
+    // What the engine was last told, so it's only told about changes.
+    let spectrum_requested = Cell::new(None);
+    let poll_timer = event_poll_timer.clone();
+
+    let clock = engine.clock().clone();
+    let shown_position = Cell::new(Duration::ZERO);
 
     let window_weak = window.as_weak();
     let settings_window_weak = settings_window.as_weak();
@@ -1473,24 +1493,18 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         let Some(window) = window_weak.upgrade() else {
             return;
         };
-        // Position and spectrum updates can arrive several per tick; only
-        // the newest of each is worth drawing.
-        let mut latest_position = None;
+        // Spectrum updates can arrive several per tick; only the newest is
+        // worth drawing.
         let mut latest_spectrum = None;
         let mut playlist_changed = false;
         while let Some(event) = engine.try_recv_event() {
             match event {
-                EngineEvent::PositionUpdate { .. } => latest_position = Some(event),
                 EngineEvent::SpectrumUpdate { bars, peaks } => latest_spectrum = Some((bars, peaks)),
                 EngineEvent::OutputDeviceChanged { name, fallback } => {
                     audio_output_events.device_changed(&name, fallback);
                 }
                 event => {
                     playlist_changed |= matches!(event, EngineEvent::PlaylistUpdated { .. });
-                    if matches!(event, EngineEvent::TrackChanged { .. }) {
-                        // Belongs to the previous track.
-                        latest_position = None;
-                    }
                     if let EngineEvent::TrackChanged { track, .. } = &event {
                         let threshold = (track.metadata.duration / 2)
                             .min(Duration::from_secs(240))
@@ -1548,9 +1562,12 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                 engine.send(EngineCommand::ReorderPlaylist(order));
             }
         }
-        if let Some(EngineEvent::PositionUpdate { position, .. }) = &latest_position {
+        // Read when it's drawn: the playback thread doesn't wake for it.
+        let position = clock.position();
+        if position != shown_position.replace(position) {
+            apply_position(&window, &track_panels, position, clock.duration());
             if let Some((path, threshold, counted)) = play_count.borrow_mut().as_mut() {
-                if !*counted && *position >= *threshold {
+                if !*counted && position >= *threshold {
                     *counted = true;
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -1559,24 +1576,21 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                 }
             }
         }
-        if let Some(event) = latest_position {
-            apply_event(
-                &window,
-                &playlist_model,
-                &playlist_view_state,
-                &current_track,
-                &store,
-                &presence,
-                &track_panels,
-                event,
-            );
+        let hidden = occluded.get() || window.window().is_minimized();
+        let spectrum_shown = window.get_panel_slots().iter().any(|slot| slot.kind == "spectrum");
+        let want_spectrum = spectrum_shown && !hidden;
+        if spectrum_requested.replace(Some(want_spectrum)) != Some(want_spectrum) {
+            engine.send(EngineCommand::SetSpectrumEnabled(want_spectrum));
         }
-        let minimized = window.window().is_minimized();
-        if minimized != was_minimized.replace(minimized) {
-            let spectrum_shown = window.get_panel_slots().iter().any(|slot| slot.kind == "spectrum");
-            engine.send(EngineCommand::SetSpectrumEnabled(spectrum_shown && !minimized));
+        let interval = if hidden {
+            HIDDEN_POLL_INTERVAL
+        } else {
+            poll_interval(settings.borrow().visualization_fps)
+        };
+        if poll_timer.interval() != interval {
+            poll_timer.set_interval(interval);
         }
-        if let Some((bars, peaks)) = latest_spectrum.filter(|_| !minimized) {
+        if let Some((bars, peaks)) = latest_spectrum.filter(|_| !hidden) {
             sync_model(&spectrum_bars, bars);
             sync_model(&spectrum_peaks, peaks);
         }
@@ -1631,6 +1645,18 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     }
 }
 
+/// Shows the playback position (and the length, which a refresh of the
+/// track's tags may have changed).
+fn apply_position(window: &MainWindow, track_panels: &TrackPanels, position: Duration, duration: Duration) {
+    track_panels.position_changed(window, position);
+    window.set_position_seconds(position.as_secs_f32());
+    window.set_position_text(format_duration(position).into());
+    if duration > Duration::ZERO {
+        window.set_duration_seconds(duration.as_secs_f32());
+        window.set_duration_text(format_duration(duration).into());
+    }
+}
+
 /// UI-thread state for the panel layout (see `crate::layout`).
 struct LayoutState {
     /// Size of the panel area, as last reported by Slint.
@@ -1645,7 +1671,6 @@ struct LayoutState {
     tab_drag: Option<TabDrag>,
     /// What the engine was last told, so it's only told about changes.
     waveform_enabled: Option<bool>,
-    spectrum_enabled: Option<bool>,
 }
 
 /// How long a track must stay current before the open BIO panel looks its
@@ -2286,43 +2311,68 @@ fn show_sort_choices(window: &MainWindow, selected: SortMode) {
 }
 
 /// Logs which renderer draws the window, and shows it in Preferences >
-/// Visualizations: Slint quietly falls back to its CPU-only software
-/// renderer when OpenGL can't be set up (e.g. a missing or broken GL
-/// driver on Linux), which makes every frame far more expensive (issue
-/// #21). The software renderer is the one that can't take a rendering
-/// notifier.
+/// Visualizations. Skia draws through the system's GPU interface (through
+/// wgpu, which only reports it with Slint's `unstable-wgpu-30`), but falls
+/// back to drawing on the CPU when none can be set up (e.g. a missing or
+/// broken graphics driver on Linux), which makes every frame far more
+/// expensive (issue #21). That fallback never reports a graphics setup, so
+/// a window that has been on screen for a while without one is drawn on
+/// the CPU -- and should a setup still come, it corrects the report.
 fn report_renderer(window: &MainWindow, settings_window: &SettingsWindow) {
+    let gpu_reported = Rc::new(Cell::new(false));
     let settings_window_weak = settings_window.as_weak();
-    let reported = Cell::new(false);
+    let reported = gpu_reported.clone();
     let result = window.window().set_rendering_notifier(move |state, api| {
         if !matches!(state, slint::RenderingState::RenderingSetup) || reported.replace(true) {
             return;
         }
         let label = match api {
-            slint::GraphicsAPI::NativeOpenGL { .. } => "OpenGL (GPU accelerated)",
-            _ => "GPU accelerated",
+            slint::GraphicsAPI::NativeOpenGL { .. } => "Skia on OpenGL (GPU accelerated)".to_string(),
+            // Whichever interface wgpu settled on, and on which GPU.
+            slint::GraphicsAPI::WGPU30 { device, .. } => {
+                use slint::wgpu_30::wgpu::Backend;
+                let info = device.adapter_info();
+                let interface = match info.backend {
+                    Backend::Metal => "Metal",
+                    Backend::Dx12 => "Direct3D 12",
+                    Backend::Vulkan => "Vulkan",
+                    Backend::Gl => "OpenGL",
+                    _ => "the GPU",
+                };
+                format!("Skia on {interface}, {} (GPU accelerated)", info.name)
+            }
+            _ => "Skia (GPU accelerated)".to_string(),
         };
         tracing::info!("renderer: {label}");
         if let Some(settings_window) = settings_window_weak.upgrade() {
             settings_window.set_renderer_info(label.into());
         }
     });
+    let software_label = if std::env::var_os("SLINT_BACKEND").is_some() {
+        "Software (CPU only), chosen by SLINT_BACKEND"
+    } else {
+        "Software (CPU only) \u{2014} no GPU drawing could be set up, so drawing uses much \
+         more CPU. The 30 fps frame rate halves it."
+    };
     if result.is_err() {
-        if std::env::var_os("SLINT_BACKEND").is_some() {
-            tracing::info!("renderer: software (CPU only), as chosen by SLINT_BACKEND");
-            settings_window.set_renderer_info("Software (CPU only), chosen by SLINT_BACKEND".into());
-        } else {
-            tracing::warn!(
-                "renderer: software (CPU only) -- OpenGL couldn't be set up, so drawing uses \
-                 much more CPU; run with SLINT_BACKEND=winit-femtovg to see why"
-            );
-            settings_window.set_renderer_info(
-                "Software (CPU only) \u{2014} OpenGL couldn't be set up, so drawing uses much \
-                 more CPU. The 30 fps frame rate halves it."
-                    .into(),
-            );
-        }
+        // Slint's own software renderer, which takes no notifier at all.
+        tracing::warn!("renderer: {software_label}");
+        settings_window.set_renderer_info(software_label.into());
+        return;
     }
+    let window_weak = window.as_weak();
+    let settings_window_weak = settings_window.as_weak();
+    Timer::single_shot(Duration::from_secs(5), move || {
+        let (Some(window), Some(settings_window)) = (window_weak.upgrade(), settings_window_weak.upgrade())
+        else {
+            return;
+        };
+        let shown = window.window().is_visible() && !window.window().is_minimized();
+        if shown && !gpu_reported.get() {
+            tracing::warn!("renderer: {software_label}");
+            settings_window.set_renderer_info(software_label.into());
+        }
+    });
 }
 
 /// The closed outline of one channel's waveform as SVG path commands, in a
@@ -2494,7 +2544,6 @@ fn wire_layout(
         panel_drag: None,
         tab_drag: None,
         waveform_enabled: None,
-        spectrum_enabled: None,
     }));
 
     // Re-places the layout and pushes it to Slint (in place, so panels
@@ -2576,9 +2625,10 @@ fn wire_layout(
             // Only panels actually on screen do work -- a panel in a hidden
             // tab costs nothing until its tab is shown.
             let visible = |kind| state.placement.slots.iter().any(|slot| slot.kind == kind);
-            let (waveform, spectrum, album_art, biography) = (
+            // (The spectrum is switched by the event poll, which also knows
+            // whether the window can be seen at all.)
+            let (waveform, album_art, biography) = (
                 visible(PanelKind::Waveform),
-                visible(PanelKind::Spectrum),
                 visible(PanelKind::AlbumArt),
                 visible(PanelKind::Biography),
             );
@@ -2589,10 +2639,6 @@ fn wire_layout(
             track_panels.album_art.set_enabled(album_art);
             if let Some(window) = window_weak.upgrade() {
                 track_panels.set_biography_visible(&window, biography);
-            }
-            if state.spectrum_enabled != Some(spectrum) {
-                state.spectrum_enabled = Some(spectrum);
-                engine.send(EngineCommand::SetSpectrumEnabled(spectrum));
             }
         })
     };
@@ -3123,9 +3169,9 @@ fn apply_event(
                     .join(" - ")
                     .into(),
             );
-            // Reset right away rather than waiting for the next
-            // `PositionUpdate` -- otherwise a RepeatOne/RepeatAll loop back
-            // onto the same track briefly keeps showing the old end position.
+            // Reset right away rather than waiting for the clock to catch
+            // up -- otherwise a RepeatOne/RepeatAll loop back onto the same
+            // track briefly keeps showing the old end position.
             window.set_position_seconds(0.0);
             window.set_position_text(format_duration(Duration::ZERO).into());
             window.set_waveform_paths(ModelRc::default());
@@ -3137,15 +3183,6 @@ fn apply_event(
             *current_track.borrow_mut() = Some(*track);
             playlist_view_state.borrow_mut().current_index = Some(index);
             refresh_playlist_rows(playlist_model, playlist_view_state);
-        }
-        EngineEvent::PositionUpdate { position, duration } => {
-            track_panels.position_changed(window, position);
-            window.set_position_seconds(position.as_secs_f32());
-            window.set_position_text(format_duration(position).into());
-            if duration.as_secs_f32() > 0.0 {
-                window.set_duration_seconds(duration.as_secs_f32());
-                window.set_duration_text(format_duration(duration).into());
-            }
         }
         EngineEvent::PlaybackStateChanged(state) => {
             window.set_is_playing(state == PlaybackState::Playing);

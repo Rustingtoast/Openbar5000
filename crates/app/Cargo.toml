@@ -14,7 +14,10 @@ path = "src/main.rs"
 engine.workspace = true
 ui.workspace = true
 plugin-host.workspace = true
-slint.workspace = true
+# winit access: to notice the window being entirely covered; wgpu access:
+# to tell which GPU interface Skia draws with (see `wiring`). Both are tied
+# to Slint's minor version.
+slint = { workspace = true, features = ["unstable-winit-030", "unstable-wgpu-30"] }
 crossbeam-channel.workspace = true
 discord-rich-presence.workspace = true
 rfd.workspace = true

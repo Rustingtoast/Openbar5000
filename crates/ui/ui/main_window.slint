@@ -162,6 +162,13 @@ export component MainWindow inherits Window {
     callback artist-candidate-clicked(int);
     callback artist-none-of-these-clicked();
     in property <bool> layout-editing: false;
+    // Escape leaves the layout editor: the key handler below takes focus
+    // whenever editing starts.
+    changed layout-editing => {
+        if root.layout-editing {
+            layout-keys.focus();
+        }
+    }
     in property <[string]> waveform-paths: [];
     in property <int> waveform-bucket-count: 1;
     in property <[float]> spectrum-bars: [];
@@ -375,6 +382,15 @@ export component MainWindow inherits Window {
             width: slot.width;
             height: slot.height;
             clip: true;
+            // Every frame redraws the whole window, but while playing only
+            // the visualizations and the position change: keep the other
+            // panels as cached layers, redrawn only when their own content
+            // does (a scroll, a hover, a new track). Not the ones that
+            // change every frame -- for those a layer is only extra work.
+            cache-rendering-hint: slot.kind != "waveform" && slot.kind != "spectrum"
+                && slot.kind != "transport" && slot.kind != "seek-bar"
+                && slot.kind != "seek-slider" && slot.kind != "playback-options"
+                && slot.kind != "equalizer";
 
             if slot.kind == "playlist": PlaylistView {
                 width: parent.width;
@@ -730,6 +746,18 @@ export component MainWindow inherits Window {
                 }
             }
             }
+        }
+    }
+
+    layout-keys := FocusScope {
+        width: 0;
+        height: 0;
+        key-pressed(event) => {
+            if root.layout-editing && event.text == Key.Escape {
+                root.layout-edit-toggled();
+                return accept;
+            }
+            reject
         }
     }
 

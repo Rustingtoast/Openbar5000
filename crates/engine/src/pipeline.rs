@@ -192,15 +192,19 @@ impl Pipeline {
             .is_none_or(|free| free >= CHUNK_SAMPLES)
     }
 
-    /// Roughly how long until the sink has drained enough to take a whole
-    /// chunk -- zero if it already can (or can't tell).
-    pub fn time_until_room(&self) -> std::time::Duration {
+    /// How long until the sink has drained to half full, when it's worth
+    /// waking to top it up again -- zero if it already has (or can't
+    /// tell). Refilling in batches like this, rather than a chunk at a
+    /// time as room appears, lets the playback thread sleep for most of
+    /// the buffer's length instead of waking every few milliseconds.
+    pub fn time_until_refill(&self) -> std::time::Duration {
         let Some(free) = self.sink.free_samples() else {
             return std::time::Duration::ZERO;
         };
-        let missing = CHUNK_SAMPLES.saturating_sub(free);
+        let queued = self.sink.queued_samples();
+        let low_water = ((free + queued) / 2).max(CHUNK_SAMPLES);
         let samples_per_sec = self.sample_rate.max(1) as f64 * self.channels.max(1) as f64;
-        std::time::Duration::from_secs_f64(missing as f64 / samples_per_sec)
+        std::time::Duration::from_secs_f64(queued.saturating_sub(low_water) as f64 / samples_per_sec)
     }
 
     /// How long until the next spectrum analysis is due, or `None` when the

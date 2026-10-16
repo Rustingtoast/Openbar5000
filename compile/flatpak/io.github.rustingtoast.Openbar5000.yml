@@ -1,6 +1,7 @@
 # Flatpak manifest for Openbar5000 -- built by ../build-flatpak.sh, which
-# first vendors the Rust crates into dist/flatpak/vendor so the build runs
-# offline inside the sandbox (as Flatpak builds must).
+# first vendors the Rust crates into dist/flatpak/vendor and fetches Skia's
+# prebuilt library into dist/flatpak/skia, so the build runs offline inside
+# the sandbox (as Flatpak builds must).
 app-id: io.github.rustingtoast.Openbar5000
 runtime: org.freedesktop.Platform
 runtime-version: '26.08'
@@ -38,6 +39,9 @@ build-options:
   env:
     CARGO_HOME: /run/build/openbar5000/cargo
     CARGO_NET_OFFLINE: 'true'
+    # Skia's prebuilt library, fetched by build-flatpak.sh: its build script
+    # fills in {key} and reads the archive from here instead of GitHub.
+    SKIA_BINARIES_URL: file:///run/build/openbar5000/skia/skia-binaries-{key}.tar.gz
 
 modules:
   - name: openbar5000
@@ -70,3 +74,7 @@ modules:
         path: ../../dist/flatpak/cargo-config.toml
         dest: .cargo
         dest-filename: config.toml
+      # Skia's prebuilt library, fetched by build-flatpak.sh.
+      - type: dir
+        path: ../../dist/flatpak/skia
+        dest: skia

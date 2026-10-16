@@ -45,10 +45,11 @@ fn waveform_and_spectrum_events_fire_during_playback() {
 }
 
 /// Issue #16: with a 10ms interval the spectrum used to update only once
-/// per decoded chunk (~10 fps) and the position every 200ms. Measured over
-/// a steady stretch mid-track (the fixture is ~2.1s long).
+/// per decoded chunk (~10 fps). Measured over a steady stretch mid-track
+/// (the fixture is ~2.1s long). The position has no events: the clock is
+/// read whenever it's drawn, and must move smoothly between reads.
 #[test]
-fn spectrum_and_position_update_at_their_configured_rates() {
+fn spectrum_updates_at_its_configured_rate_and_the_clock_runs_smoothly() {
     let engine = PlaybackEngine::spawn();
     engine.send(EngineCommand::SetSpectrumEnabled(true));
     engine.send(EngineCommand::SetSpectrumConfig(SpectrumConfig {
@@ -61,18 +62,35 @@ fn spectrum_and_position_update_at_their_configured_rates() {
 
     let start = Instant::now();
     let (from, to) = (Duration::from_millis(500), Duration::from_millis(1500));
-    let (mut spectrum, mut position) = (0u32, 0u32);
+    let mut spectrum = 0u32;
+    let mut positions = Vec::new();
+    let mut last_read = start;
     while start.elapsed() < to {
         match engine.try_recv_event() {
             Some(EngineEvent::SpectrumUpdate { .. }) if start.elapsed() >= from => spectrum += 1,
-            Some(EngineEvent::PositionUpdate { .. }) if start.elapsed() >= from => position += 1,
             Some(EngineEvent::Error(e)) => panic!("engine error: {e}"),
             Some(_) => {}
             None => std::thread::sleep(Duration::from_millis(1)),
         }
+        // Like a 60 fps UI.
+        if start.elapsed() >= from && last_read.elapsed() >= Duration::from_millis(16) {
+            last_read = Instant::now();
+            positions.push(engine.clock().position());
+        }
     }
-    println!("per second: {spectrum} spectrum updates, {position} position updates");
-    // Generous lower bounds (nominal 100 and 30) so a loaded CI box passes.
+    println!("per second: {spectrum} spectrum updates, {} clock reads", positions.len());
+    // Generous lower bound (nominal 100) so a loaded CI box passes.
     assert!(spectrum >= 50, "only {spectrum} spectrum updates/s");
-    assert!(position >= 20, "only {position} position updates/s");
+    assert!(positions.windows(2).all(|w| w[1] >= w[0]), "the clock went backwards: {positions:?}");
+    let distinct = positions.windows(2).filter(|w| w[1] > w[0]).count();
+    assert!(
+        distinct * 10 >= positions.len() * 8,
+        "the clock moved on only {distinct} of {} reads",
+        positions.len()
+    );
+    let advanced = *positions.last().unwrap() - positions[0];
+    assert!(
+        advanced >= Duration::from_millis(800) && advanced <= Duration::from_millis(1100),
+        "about a second of playback should be heard in a second, got {advanced:?}"
+    );
 }

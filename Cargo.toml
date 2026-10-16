@@ -30,8 +30,22 @@ ringbuf = "0.4"
 rfd = "0.15"
 tracing = "0.1"
 tracing-subscriber = "0.3"
-slint = "1.17"
-slint-build = "1.17"
+# Drawn by Skia on every platform: Metal on macOS, Direct3D 12 on Windows,
+# Vulkan (or OpenGL) on Linux -- each system's own GPU interface, where
+# Slint's default femtovg renderer goes through OpenGL everywhere (which
+# macOS only emulates, on top of Metal). The software renderer stays as the
+# last resort when no GPU drawing can be set up at all. Slint's defaults are
+# off so femtovg isn't built too; the rest of its defaults are listed here.
+slint = { version = "1.18", default-features = false, features = [
+    "std",
+    "backend-default",
+    "renderer-skia",
+    "renderer-software",
+    "accessibility",
+    "compat-1-2",
+    "system-tray",
+] }
+slint-build = "1.18"
 rustfft = "6.4"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 rusqlite = { version = "0.40", features = ["bundled"] }

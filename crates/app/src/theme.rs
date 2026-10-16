@@ -170,23 +170,23 @@ fn builtin_entries() -> Vec<ThemeEntry> {
                 spectrum_bar: rgb(0x50, 0xfa, 0x7b),
             },
         },
-        // Inspired by Stellaris' interface: deep blue-black panels, teal
-        // highlights, and the gold its UI uses for what matters most -- here
-        // the loudest spectrum bars and peak markers blend into it.
+        // Stellaris, from the game's planet view: dark teal-green panels,
+        // off-white text, and the mint-teal of its bars, arrows and
+        // selected buttons -- quiet spectrum bars dim teal, loud ones mint.
         ThemeEntry {
             id: "stellaris".into(),
             label: "Stellaris".into(),
             is_custom: false,
             colors: ThemeColors {
-                bg_base: rgb(0x0a, 0x14, 0x1b),
-                bg_raised: rgb(0x10, 0x21, 0x2b),
-                bg_sunken: rgb(0x06, 0x0d, 0x12),
-                text_primary: rgb(0xcf, 0xe7, 0xe9),
-                text_muted: rgb(0x6d, 0x8d, 0x94),
-                accent: rgb(0xd9, 0xa6, 0x40),
-                accent_text: rgb(0x0a, 0x14, 0x1b),
-                waveform_unplayed: rgb(0x1d, 0x3a, 0x44),
-                spectrum_bar: rgb(0x1f, 0x8f, 0x8c),
+                bg_base: rgb(0x0f, 0x1c, 0x19),
+                bg_raised: rgb(0x17, 0x29, 0x25),
+                bg_sunken: rgb(0x0a, 0x13, 0x11),
+                text_primary: rgb(0xe3, 0xec, 0xe8),
+                text_muted: rgb(0x8a, 0xa6, 0x9c),
+                accent: rgb(0x3f, 0xbf, 0x9a),
+                accent_text: rgb(0x0a, 0x13, 0x11),
+                waveform_unplayed: rgb(0x28, 0x4a, 0x42),
+                spectrum_bar: rgb(0x1e, 0x5a, 0x4c),
             },
         },
         ThemeEntry {
@@ -354,23 +354,24 @@ fn builtin_entries() -> Vec<ThemeEntry> {
                 spectrum_bar: rgb(0x1b, 0x5c, 0x30),
             },
         },
-        // Cyberpunk 2077: near-black with a cold blue tint, cyan text,
-        // neon yellow for what's active, and the spectrum running from hot
-        // red into that yellow as it gets loud.
+        // Cyberpunk: Edgerunners, from the series' key visuals: the electric
+        // blue/indigo night (#0327d2, #010c60 in the posters), the city's
+        // neon pink (#f26cfc), and Lucy's lavender-white hair (#ddbcee) for
+        // text. The spectrum glows blue and flares into pink when loud.
         ThemeEntry {
             id: "cyberpunk".into(),
-            label: "Cyberpunk 2077".into(),
+            label: "Cyberpunk: Edgerunners".into(),
             is_custom: false,
             colors: ThemeColors {
-                bg_base: rgb(0x0a, 0x0b, 0x10),
-                bg_raised: rgb(0x12, 0x14, 0x1d),
-                bg_sunken: rgb(0x05, 0x06, 0x09),
-                text_primary: rgb(0x5e, 0xf6, 0xff),
-                text_muted: rgb(0x4a, 0x7a, 0x86),
-                accent: rgb(0xfc, 0xee, 0x0a),
-                accent_text: rgb(0x0a, 0x0b, 0x10),
-                waveform_unplayed: rgb(0x26, 0x2a, 0x38),
-                spectrum_bar: rgb(0x8a, 0x0f, 0x2b),
+                bg_base: rgb(0x0a, 0x0a, 0x33),
+                bg_raised: rgb(0x14, 0x12, 0x4a),
+                bg_sunken: rgb(0x06, 0x06, 0x1f),
+                text_primary: rgb(0xe7, 0xd9, 0xf7),
+                text_muted: rgb(0x8f, 0x86, 0xc9),
+                accent: rgb(0xf2, 0x6c, 0xfc),
+                accent_text: rgb(0x0a, 0x0a, 0x33),
+                waveform_unplayed: rgb(0x2a, 0x24, 0x70),
+                spectrum_bar: rgb(0x03, 0x27, 0xd2),
             },
         },
     ]

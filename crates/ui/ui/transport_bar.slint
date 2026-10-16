@@ -71,10 +71,15 @@ export component ThinSlider inherits Rectangle {
 export component IconButton inherits Rectangle {
     in property <image> icon;
     in property <bool> active: false;
+    /// What the button does, for screen readers.
+    in property <string> label;
     callback clicked();
 
     width: 26px;
     height: 26px;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
 
     touch := TouchArea {
         mouse-cursor: pointer;
@@ -126,21 +131,25 @@ export component TransportBar inherits Rectangle {
         IconButton {
             y: (parent.height - self.height) / 2;
             icon: @image-url("assets/icons/skip-back.svg");
+            label: "Previous";
             clicked => { root.previous-clicked(); }
         }
         IconButton {
             y: (parent.height - self.height) / 2;
             icon: root.is-playing ? @image-url("assets/icons/pause.svg") : @image-url("assets/icons/play.svg");
+            label: root.is-playing ? "Pause" : "Play";
             clicked => { root.play-pause-clicked(); }
         }
         IconButton {
             y: (parent.height - self.height) / 2;
             icon: @image-url("assets/icons/stop.svg");
+            label: "Stop";
             clicked => { root.stop-clicked(); }
         }
         IconButton {
             y: (parent.height - self.height) / 2;
             icon: @image-url("assets/icons/skip-forward.svg");
+            label: "Next";
             clicked => { root.next-clicked(); }
         }
         Rectangle { width: 6px; }
@@ -165,12 +174,14 @@ export component TransportBar inherits Rectangle {
             y: (parent.height - self.height) / 2;
             icon: root.repeat-one-active ? @image-url("assets/icons/repeat-one.svg") : @image-url("assets/icons/repeat.svg");
             active: root.loop-active;
+            label: "Repeat";
             clicked => { root.loop-clicked(); }
         }
         IconButton {
             y: (parent.height - self.height) / 2;
             icon: @image-url("assets/icons/shuffle.svg");
             active: root.shuffle-active;
+            label: "Shuffle";
             clicked => { root.shuffle-clicked(); }
         }
         Rectangle { width: 6px; }
@@ -213,21 +224,25 @@ export component PlaybackButtons inherits Rectangle {
         IconButton {
             y: (parent.height - self.height) / 2;
             icon: @image-url("assets/icons/stop.svg");
+            label: "Stop";
             clicked => { root.stop-clicked(); }
         }
         IconButton {
             y: (parent.height - self.height) / 2;
             icon: @image-url("assets/icons/skip-back.svg");
+            label: "Previous";
             clicked => { root.previous-clicked(); }
         }
         IconButton {
             y: (parent.height - self.height) / 2;
             icon: root.is-playing ? @image-url("assets/icons/pause.svg") : @image-url("assets/icons/play.svg");
+            label: root.is-playing ? "Pause" : "Play";
             clicked => { root.play-pause-clicked(); }
         }
         IconButton {
             y: (parent.height - self.height) / 2;
             icon: @image-url("assets/icons/skip-forward.svg");
+            label: "Next";
             clicked => { root.next-clicked(); }
         }
         // One system dialog can't reliably pick files *or* a folder on
@@ -298,12 +313,14 @@ export component SeekBar inherits Rectangle {
             y: (parent.height - self.height) / 2;
             icon: root.repeat-one-active ? @image-url("assets/icons/repeat-one.svg") : @image-url("assets/icons/repeat.svg");
             active: root.loop-active;
+            label: "Repeat";
             clicked => { root.loop-clicked(); }
         }
         IconButton {
             y: (parent.height - self.height) / 2;
             icon: @image-url("assets/icons/shuffle.svg");
             active: root.shuffle-active;
+            label: "Shuffle";
             clicked => { root.shuffle-clicked(); }
         }
         Rectangle { width: 4px; }
@@ -383,12 +400,14 @@ export component PlaybackOptions inherits Rectangle {
             y: (parent.height - self.height) / 2;
             icon: root.repeat-one-active ? @image-url("assets/icons/repeat-one.svg") : @image-url("assets/icons/repeat.svg");
             active: root.loop-active;
+            label: "Repeat";
             clicked => { root.loop-clicked(); }
         }
         IconButton {
             y: (parent.height - self.height) / 2;
             icon: @image-url("assets/icons/shuffle.svg");
             active: root.shuffle-active;
+            label: "Shuffle";
             clicked => { root.shuffle-clicked(); }
         }
         ThinSlider {
