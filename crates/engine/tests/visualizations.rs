@@ -45,9 +45,9 @@ fn waveform_and_spectrum_events_fire_during_playback() {
 }
 
 /// Issue #16: with a 10ms interval the spectrum used to update only once
-/// per decoded chunk (~10 fps). Measured over a steady stretch mid-track
-/// (the fixture is ~2.1s long). The position has no events: the clock is
-/// read whenever it's drawn, and must move smoothly between reads.
+/// per decoded chunk (~10 fps). Measured over the first second of
+/// playback (the fixture is ~2.1s long). The position has no events: the
+/// clock is read whenever it's drawn, and must move smoothly between reads.
 #[test]
 fn spectrum_updates_at_its_configured_rate_and_the_clock_runs_smoothly() {
     let engine = PlaybackEngine::spawn();
@@ -60,20 +60,33 @@ fn spectrum_updates_at_its_configured_rate_and_the_clock_runs_smoothly() {
     engine.send(EngineCommand::LoadPlaylist(vec![fixture()]));
     engine.send(EngineCommand::Play);
 
+    // Count from the first frame, not from a fixed moment: opening the
+    // audio device can take a while (the first run of a new build, a busy
+    // machine), and that's not what's measured here.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match engine.try_recv_event() {
+            Some(EngineEvent::SpectrumUpdate { .. }) => break,
+            Some(EngineEvent::Error(e)) => panic!("engine error: {e}"),
+            Some(_) => {}
+            None if Instant::now() > deadline => panic!("playback didn't start"),
+            None => std::thread::sleep(Duration::from_millis(1)),
+        }
+    }
+    // One second, well inside the ~2.1s fixture.
     let start = Instant::now();
-    let (from, to) = (Duration::from_millis(500), Duration::from_millis(1500));
     let mut spectrum = 0u32;
     let mut positions = Vec::new();
     let mut last_read = start;
-    while start.elapsed() < to {
+    while start.elapsed() < Duration::from_secs(1) {
         match engine.try_recv_event() {
-            Some(EngineEvent::SpectrumUpdate { .. }) if start.elapsed() >= from => spectrum += 1,
+            Some(EngineEvent::SpectrumUpdate { .. }) => spectrum += 1,
             Some(EngineEvent::Error(e)) => panic!("engine error: {e}"),
             Some(_) => {}
             None => std::thread::sleep(Duration::from_millis(1)),
         }
         // Like a 60 fps UI.
-        if start.elapsed() >= from && last_read.elapsed() >= Duration::from_millis(16) {
+        if last_read.elapsed() >= Duration::from_millis(16) {
             last_read = Instant::now();
             positions.push(engine.clock().position());
         }

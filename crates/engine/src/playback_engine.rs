@@ -177,10 +177,12 @@ fn run(command_rx: Receiver<EngineCommand>, event_tx: Sender<EngineEvent>, clock
         }
 
         if state.playback_state == PlaybackState::Playing {
-            refill_output(&mut state, &command_rx, &event_tx);
+            // The spectrum first: it's due at a set moment, and a refill
+            // (a batch of decoding) would otherwise make it late.
             if let Some((bars, peaks)) = state.pipeline.audible_spectrum() {
                 let _ = event_tx.send(EngineEvent::SpectrumUpdate { bars, peaks });
             }
+            refill_output(&mut state, &command_rx, &event_tx);
         }
         publish_clock(&state, &clock);
     }
