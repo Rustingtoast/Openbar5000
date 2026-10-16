@@ -7,6 +7,11 @@ export struct PlaylistRow {
     group-title: string,
     group-subtitle: string,
     group-info: string,
+    group-date: string,
+    // Grouping key shared by a header and its tracks -- what
+    // Collapse/Expand targets.
+    group-key: string,
+    is-collapsed: bool,
     track-number: string,
     title: string,
     duration: string,
@@ -16,11 +21,30 @@ export struct PlaylistRow {
 
 export component PlaylistView inherits Rectangle {
     in property <[PlaylistRow]> rows: [];
+    // Active Grouping submenu id (see `PlaylistGrouping::as_str`), for the
+    // submenu's check mark.
+    in property <string> grouping: "artist-album-disc";
     callback row-clicked(int);
     callback row-properties-clicked(int);
     callback row-open-folder-clicked(int);
     callback row-remove-clicked(int);
+    callback row-cut-clicked(int);
+    callback row-copy-clicked(int);
+    callback row-enqueue-clicked(int);
+    callback group-toggle-clicked(string);
+    callback collapse-all-clicked();
+    callback expand-all-clicked();
+    callback grouping-clicked(string);
+    callback sort-clicked(string);
+    callback show-now-playing-clicked();
+    callback refresh-playlist-clicked();
     callback search-edited(string);
+
+    // Scrolls so content offset `y` (from the top of the list) sits a
+    // third of the way down the visible area.
+    public function scroll-to(y: length) {
+        list.content-y = max(min(0px, -(y - list.visible-height / 3)), list.visible-height - list.content-height);
+    }
 
     background: Theme.bg-base;
 
@@ -41,41 +65,102 @@ export component PlaylistView inherits Rectangle {
                 }
             }
         }
-        ListView {
+        list := ListView {
             vertical-stretch: 1;
             for row[i] in root.rows: Rectangle {
                 height: row.is-header ? 64px : 22px;
                 background: row.is-current ? Theme.accent : transparent;
 
-                if row.is-header: HorizontalLayout {
-                    padding: 8px;
-                    spacing: 10px;
-                    Image {
-                        source: row.cover-image;
-                        width: 48px;
-                        height: 48px;
-                    }
-                    VerticalLayout {
-                        alignment: center;
-                        spacing: 2px;
-                        Text { text: row.group-title; font-size: 15px; font-weight: 700; color: Theme.text-primary; overflow: elide; }
-                        Text { text: row.group-subtitle; font-size: 12px; color: Theme.accent; overflow: elide; }
-                        Text { text: row.group-info; font-size: 10px; color: Theme.text-muted; overflow: elide; }
-                    }
-                }
-
-                if !row.is-header: ContextMenuArea {
+                // One menu for both row kinds, mirroring the reference UI's
+                // playlist context menu; track-only entries are hidden on
+                // group headers, where they'd be ambiguous.
+                ContextMenuArea {
                     Menu {
-                        MenuItem { title: "Play"; activated => { root.row-clicked(row.track-index); } }
-                        MenuItem { title: "Properties..."; activated => { root.row-properties-clicked(row.track-index); } }
-                        MenuItem { title: "Open Containing Folder"; activated => { root.row-open-folder-clicked(row.track-index); } }
+                        MenuItem { title: "Show now playing"; activated => { root.show-now-playing-clicked(); } }
+                        MenuItem { title: "Refresh playlist"; activated => { root.refresh-playlist-clicked(); } }
                         MenuSeparator {}
-                        MenuItem { title: "Remove"; activated => { root.row-remove-clicked(row.track-index); } }
+                        if !row.is-header: MenuItem { title: "Cut"; activated => { root.row-cut-clicked(row.track-index); } }
+                        if !row.is-header: MenuItem { title: "Copy"; activated => { root.row-copy-clicked(row.track-index); } }
+                        if !row.is-header: MenuSeparator {}
+                        if !row.is-header: MenuItem { title: "Remove"; activated => { root.row-remove-clicked(row.track-index); } }
+                        if !row.is-header: MenuSeparator {}
+                        Menu {
+                            title: "Collapse/Expand";
+                            MenuItem {
+                                title: row.is-collapsed ? "Expand this group" : "Collapse this group";
+                                activated => { root.group-toggle-clicked(row.group-key); }
+                            }
+                            MenuSeparator {}
+                            MenuItem { title: "Collapse all"; activated => { root.collapse-all-clicked(); } }
+                            MenuItem { title: "Expand all"; activated => { root.expand-all-clicked(); } }
+                        }
+                        Menu {
+                            title: "Grouping";
+                            MenuItem { title: "Reset to default"; activated => { root.grouping-clicked("artist-album-disc"); } }
+                            MenuSeparator {}
+                            MenuItem { title: "by artist"; checkable: true; checked: root.grouping == "artist"; activated => { root.grouping-clicked("artist"); } }
+                            MenuItem { title: "by artist / album"; checkable: true; checked: root.grouping == "artist-album"; activated => { root.grouping-clicked("artist-album"); } }
+                            MenuItem { title: "by artist / album / disc number [default]"; checkable: true; checked: root.grouping == "artist-album-disc"; activated => { root.grouping-clicked("artist-album-disc"); } }
+                            MenuItem { title: "by path"; checkable: true; checked: root.grouping == "path"; activated => { root.grouping-clicked("path"); } }
+                            MenuItem { title: "by date"; checkable: true; checked: root.grouping == "date"; activated => { root.grouping-clicked("date"); } }
+                        }
+                        Menu {
+                            title: "Sort";
+                            MenuItem { title: "by album"; activated => { root.sort-clicked("album"); } }
+                            MenuItem { title: "by artist"; activated => { root.sort-clicked("artist"); } }
+                            MenuItem { title: "by file path"; activated => { root.sort-clicked("path"); } }
+                            MenuItem { title: "by title"; activated => { root.sort-clicked("title"); } }
+                            MenuItem { title: "by track number"; activated => { root.sort-clicked("track-number"); } }
+                            MenuItem { title: "by date"; activated => { root.sort-clicked("date"); } }
+                            MenuSeparator {}
+                            MenuItem { title: "Randomize"; activated => { root.sort-clicked("randomize"); } }
+                            MenuItem { title: "Reverse"; activated => { root.sort-clicked("reverse"); } }
+                        }
+                        MenuSeparator {}
+                        if !row.is-header: MenuItem { title: "Add to playback queue"; activated => { root.row-enqueue-clicked(row.track-index); } }
+                        MenuItem { title: "Play"; activated => { root.row-clicked(row.track-index); } }
+                        MenuItem { title: "Open containing folder"; activated => { root.row-open-folder-clicked(row.track-index); } }
+                        if !row.is-header: MenuSeparator {}
+                        if !row.is-header: MenuItem { title: "Properties"; activated => { root.row-properties-clicked(row.track-index); } }
                     }
-                    TouchArea {
+
+                    if row.is-header: TouchArea {
+                        clicked => { root.group-toggle-clicked(row.group-key); }
+                        HorizontalLayout {
+                            padding: 8px;
+                            spacing: 10px;
+                            Text {
+                                text: row.is-collapsed ? "\u{25b8}" : "\u{25be}";
+                                width: 10px;
+                                vertical-alignment: center;
+                                color: row.is-current ? Theme.accent-text : Theme.text-muted;
+                            }
+                            Image {
+                                source: row.cover-image;
+                                width: 48px;
+                                height: 48px;
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 2px;
+                                Text { text: row.group-title; font-size: 15px; font-weight: 700; color: row.is-current ? Theme.accent-text : Theme.text-primary; overflow: elide; }
+                                Text { text: row.group-subtitle; font-size: 12px; color: row.is-current ? Theme.accent-text : Theme.accent; overflow: elide; }
+                                Text { text: row.group-info; font-size: 10px; color: row.is-current ? Theme.accent-text : Theme.text-muted; overflow: elide; }
+                            }
+                            Text {
+                                text: row.group-date;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                                font-size: 13px;
+                                color: row.is-current ? Theme.accent-text : Theme.text-muted;
+                            }
+                        }
+                    }
+
+                    if !row.is-header: TouchArea {
                         clicked => { root.row-clicked(row.track-index); }
                         HorizontalLayout {
-                            padding-left: 56px;
+                            padding-left: 76px;
                             padding-right: 4px;
                             spacing: 4px;
                             Text { text: row.track-number; width: 30px; vertical-alignment: center; color: row.is-current ? Theme.accent-text : Theme.text-primary; }

@@ -1,7 +1,7 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Stream, StreamConfig};
 use plugin_api::{OutputError, OutputSink};
-use ringbuf::traits::{Consumer, Producer, Split};
+use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::HeapRb;
 
 /// The built-in [`OutputSink`], backed by `cpal`. Decoding/DSP happen on the
@@ -100,5 +100,13 @@ impl OutputSink for CpalSink {
             }
         }
         Ok(())
+    }
+
+    fn free_samples(&self) -> Option<usize> {
+        self.producer.as_ref().map(|p| p.vacant_len())
+    }
+
+    fn queued_samples(&self) -> usize {
+        self.producer.as_ref().map_or(0, |p| p.occupied_len())
     }
 }

@@ -16,9 +16,9 @@ mod waveform;
 pub use commands::{EngineCommand, PlaybackMode};
 pub use events::{EngineEvent, PlaybackState};
 pub use library::{scan_audio_files, AUDIO_EXTENSIONS};
-pub use metadata::load_metadata;
+pub use metadata::{load_metadata, COVER_THUMBNAIL_SIZE};
 pub use playback_engine::PlaybackEngine;
-pub use playlist::{Playlist, Track, TrackMetadata};
+pub use playlist::{CoverThumbnail, Playlist, Track, TrackMetadata};
 pub use spectrum::{SpectrumChannelMode, SpectrumConfig};
 pub use waveform::compute_peaks;
 

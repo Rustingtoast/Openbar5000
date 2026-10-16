@@ -1,7 +1,8 @@
-use crate::playlist::TrackMetadata;
+use crate::playlist::{CoverThumbnail, TrackMetadata};
 use lofty::file::{FileType, TaggedFileExt};
 use lofty::prelude::{Accessor, AudioFile};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 fn format_label(file_type: FileType) -> String {
@@ -22,6 +23,66 @@ fn format_label(file_type: FileType) -> String {
         _ => "",
     }
     .to_string()
+}
+
+/// Longest edge of a playlist cover thumbnail: the slot is 48px, doubled
+/// for HiDPI displays.
+pub const COVER_THUMBNAIL_SIZE: u32 = 96;
+
+/// Decodes embedded JPEG/PNG art and shrinks it (keeping aspect ratio) to
+/// fit `COVER_THUMBNAIL_SIZE`. `None` if it doesn't decode.
+fn cover_thumbnail(bytes: &[u8]) -> Option<CoverThumbnail> {
+    let thumbnail = image::load_from_memory(bytes)
+        .ok()?
+        .thumbnail(COVER_THUMBNAIL_SIZE, COVER_THUMBNAIL_SIZE)
+        .into_rgba8();
+    let (width, height) = thumbnail.dimensions();
+    Some(CoverThumbnail {
+        width,
+        height,
+        rgba: thumbnail.into_raw(),
+    })
+}
+
+/// Loads metadata for every path, spreading the (disk- and decode-bound)
+/// work over all CPU cores. `on_progress(done, total)` is called from this
+/// thread as tracks finish, for a loading indicator. Output order matches
+/// `paths`.
+pub fn load_metadata_parallel(
+    paths: &[std::path::PathBuf],
+    mut on_progress: impl FnMut(usize, usize),
+) -> Vec<TrackMetadata> {
+    let total = paths.len();
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .min(total.max(1));
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let (done_tx, done_rx) = crossbeam_channel::unbounded();
+
+    let mut results: Vec<Option<TrackMetadata>> = vec![None; total];
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let done_tx = done_tx.clone();
+            let next = &next;
+            scope.spawn(move || loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(path) = paths.get(i) else { break };
+                if done_tx.send((i, load_metadata(path))).is_err() {
+                    break;
+                }
+            });
+        }
+        drop(done_tx);
+        for (done, (i, metadata)) in done_rx.iter().enumerate() {
+            results[i] = Some(metadata);
+            on_progress(done + 1, total);
+        }
+    });
+    results
+        .into_iter()
+        .map(|m| m.expect("every index is loaded exactly once"))
+        .collect()
 }
 
 /// Reads tag + duration metadata for the playlist grid. Best-effort: a file
@@ -51,7 +112,7 @@ pub fn load_metadata(path: &Path) -> TrackMetadata {
         .primary_tag()
         .or_else(|| tagged_file.first_tag());
 
-    let (title, artist, album, track_number, cover_art) = match tag {
+    let (title, artist, album, track_number, disc_number, date, cover_thumbnail) = match tag {
         Some(tag) => (
             tag.title()
                 .map(|s| s.into_owned())
@@ -59,9 +120,22 @@ pub fn load_metadata(path: &Path) -> TrackMetadata {
             tag.artist().map(|s| s.into_owned()).unwrap_or_default(),
             tag.album().map(|s| s.into_owned()).unwrap_or_default(),
             tag.track(),
-            tag.pictures().first().map(|pic| pic.data().to_vec()),
+            tag.disk(),
+            tag.date().map(|d| d.to_string()).unwrap_or_default(),
+            tag.pictures()
+                .first()
+                .and_then(|pic| cover_thumbnail(pic.data()))
+                .map(Arc::new),
         ),
-        None => (fallback_title, String::new(), String::new(), None, None),
+        None => (
+            fallback_title,
+            String::new(),
+            String::new(),
+            None,
+            None,
+            String::new(),
+            None,
+        ),
     };
 
     TrackMetadata {
@@ -69,11 +143,57 @@ pub fn load_metadata(path: &Path) -> TrackMetadata {
         artist,
         album,
         track_number,
+        disc_number,
+        date,
         duration,
-        cover_art,
+        cover_thumbnail,
         format_label,
         bitrate_kbps,
         sample_rate,
         bit_depth,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn png(width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        image::DynamicImage::new_rgba8(width, height)
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        bytes
+    }
+
+    #[test]
+    fn cover_thumbnails_shrink_to_fit_and_keep_aspect_ratio() {
+        let thumb = cover_thumbnail(&png(1000, 500)).unwrap();
+        assert_eq!(
+            (thumb.width, thumb.height),
+            (COVER_THUMBNAIL_SIZE, COVER_THUMBNAIL_SIZE / 2)
+        );
+        assert_eq!(thumb.rgba.len(), (thumb.width * thumb.height * 4) as usize);
+        assert!(cover_thumbnail(b"not an image").is_none());
+    }
+
+    #[test]
+    fn parallel_load_keeps_input_order_and_reports_progress() {
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/test_tone.wav");
+        let paths = vec![
+            fixture.clone(),
+            std::path::PathBuf::from("/nonexistent/b.flac"),
+            fixture,
+        ];
+        let mut last = (0, 0);
+        let metadata = load_metadata_parallel(&paths, |done, total| last = (done, total));
+        assert_eq!(last, (3, 3));
+        // The unreadable file falls back to its file name, in its own slot.
+        assert_eq!(metadata[1].title, "b");
+        assert_ne!(metadata[0].title, "b");
     }
 }

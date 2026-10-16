@@ -1,3 +1,4 @@
+use crate::playlist_rows::PlaylistGrouping;
 use crate::store::Store;
 use engine::{PlaybackMode, SpectrumChannelMode, SpectrumConfig};
 use std::path::PathBuf;
@@ -12,6 +13,10 @@ pub struct Settings {
     pub theme_id: String,
     pub spectrum: SpectrumConfig,
     pub playback_mode: PlaybackMode,
+    pub playlist_grouping: PlaylistGrouping,
+    /// How often the spectrum/seekbar redraw while playing: 60 or 30 (caps
+    /// the redraw rate; see `wiring::poll_interval`).
+    pub visualization_fps: u32,
     /// Off by default: it does nothing until the user supplies their own
     /// Discord Application client ID (see `discord_client_id`), which only
     /// they can create -- see README for the one-time setup steps.
@@ -27,6 +32,8 @@ impl Default for Settings {
             theme_id: "dark".to_string(),
             spectrum: SpectrumConfig::default(),
             playback_mode: PlaybackMode::Normal,
+            playlist_grouping: PlaylistGrouping::default(),
+            visualization_fps: 60,
             discord_presence_enabled: false,
             discord_client_id: String::new(),
         }
@@ -51,6 +58,16 @@ fn playback_mode_from_str(value: &str) -> PlaybackMode {
         "repeat_one" | "loop" => PlaybackMode::RepeatOne,
         "shuffle" => PlaybackMode::Shuffle,
         _ => PlaybackMode::Normal,
+    }
+}
+
+/// Only 30 and 60 are offered; anything else (hand-edited or from a future
+/// build) falls back to 60.
+pub fn normalize_fps(fps: u32) -> u32 {
+    if fps == 30 {
+        30
+    } else {
+        60
     }
 }
 
@@ -111,6 +128,12 @@ impl Settings {
         if let Some(v) = get("playback_mode") {
             settings.playback_mode = playback_mode_from_str(&v);
         }
+        if let Some(v) = get("playlist_grouping") {
+            settings.playlist_grouping = PlaylistGrouping::from_str(&v);
+        }
+        if let Some(v) = get("visualization_fps").and_then(|v| v.parse().ok()) {
+            settings.visualization_fps = normalize_fps(v);
+        }
         if let Some(v) = get("discord_presence_enabled") {
             settings.discord_presence_enabled = v == "true";
         }
@@ -153,6 +176,11 @@ impl Settings {
                 playback_mode_to_str(self.playback_mode).to_string(),
             ),
             (
+                "playlist_grouping",
+                self.playlist_grouping.as_str().to_string(),
+            ),
+            ("visualization_fps", self.visualization_fps.to_string()),
+            (
                 "discord_presence_enabled",
                 self.discord_presence_enabled.to_string(),
             ),
@@ -184,4 +212,23 @@ fn home_dir() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod fps_tests {
+    use super::*;
+
+    #[test]
+    fn visualization_fps_round_trips_and_rejects_unknown_values() {
+        let store = Store::open_in_memory().unwrap();
+        let mut settings = Settings::load(&store);
+        assert_eq!(settings.visualization_fps, 60);
+
+        settings.visualization_fps = 30;
+        settings.save(&store);
+        assert_eq!(Settings::load(&store).visualization_fps, 30);
+
+        store.set_settings(&[("visualization_fps", "144".to_string())]);
+        assert_eq!(Settings::load(&store).visualization_fps, 60);
+    }
 }

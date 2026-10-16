@@ -2,8 +2,11 @@ use crate::discord_presence::{
     NowPlaying, PresenceClient, PresenceCommand, PresenceEvent, DEFAULT_CLIENT_ID,
 };
 use crate::platform;
-use crate::playlist_rows::build_grouped_rows;
-use crate::settings::Settings;
+use crate::playlist_rows::{
+    all_group_keys, build_grouped_rows, group_key_of, sort_order, CoverCache, PlaylistGrouping,
+    PlaylistSort,
+};
+use crate::settings::{normalize_fps, Settings};
 use crate::store::Store;
 use crate::theme::{self, ThemeColors, ThemeRegistry};
 use engine::{
@@ -11,6 +14,7 @@ use engine::{
 };
 use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::rc::Rc;
 use std::time::Duration;
 use ui::{
@@ -18,7 +22,19 @@ use ui::{
     ThemeEditorWindow, ThemeListEntry,
 };
 
-const POLL_INTERVAL: Duration = Duration::from_millis(150);
+/// The workspace version from `Cargo.toml` -- the one number the build
+/// scripts also stamp into the macOS/Windows/Linux packages.
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// How often engine events are drained -- which, since the spectrum and
+/// seekbar only change when they are, is also their redraw rate.
+fn poll_interval(fps: u32) -> Duration {
+    Duration::from_millis(1000 / normalize_fps(fps) as u64)
+}
+
+fn fps_label(fps: u32) -> String {
+    format!("{} fps", normalize_fps(fps))
+}
 
 /// Resources the caller must keep alive for as long as the window's event
 /// loop runs: the timer that drains [`EngineEvent`]s, and the (initially
@@ -26,7 +42,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(150);
 /// are read again after `wire()` returns -- they only need to not be dropped.
 #[allow(dead_code)]
 pub struct UiHandles {
-    pub event_poll_timer: Timer,
+    pub event_poll_timer: Rc<Timer>,
     pub properties_window: PropertiesWindow,
     pub about_window: AboutWindow,
     pub settings_window: SettingsWindow,
@@ -41,6 +57,11 @@ struct PlaylistViewState {
     tracks: Vec<Track>,
     current_index: Option<usize>,
     search_query: String,
+    grouping: PlaylistGrouping,
+    /// Group keys (see `PlaylistGrouping`) the user collapsed; reset when
+    /// the grouping changes, since the keys mean something else then.
+    collapsed: HashSet<String>,
+    covers: CoverCache,
 }
 
 /// Wires every UI callback to an [`EngineCommand`] and starts the timer that
@@ -54,6 +75,9 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         tracks: Vec::new(),
         current_index: None,
         search_query: String::new(),
+        grouping: PlaylistGrouping::default(),
+        collapsed: HashSet::new(),
+        covers: CoverCache::default(),
     }));
     // The currently loaded track, if any -- used by the top-menu
     // "Properties" item, which (unlike the playlist's right-click one) isn't
@@ -76,7 +100,9 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         });
     }
 
+    window.set_app_version(APP_VERSION.into());
     let about_window = AboutWindow::new().expect("failed to create about window");
+    about_window.set_app_version(APP_VERSION.into());
     {
         let about_window_weak = about_window.as_weak();
         about_window.on_close_clicked(move || {
@@ -134,6 +160,9 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         &theme_registry.borrow(),
         &initial_theme_id,
     );
+
+    playlist_view_state.borrow_mut().grouping = settings.borrow().playlist_grouping;
+    window.set_playlist_grouping(settings.borrow().playlist_grouping.as_str().into());
 
     window.set_show_waveform(settings.borrow().show_waveform);
     window.set_show_spectrum(settings.borrow().show_spectrum);
@@ -244,6 +273,21 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                 window.set_show_waveform(enabled);
             }
             engine.send(EngineCommand::SetWaveformEnabled(enabled));
+        });
+    }
+    // Created here (started at the end of `wire`) so the frame-rate setting
+    // can retune it.
+    let event_poll_timer = Rc::new(Timer::default());
+    settings_window.set_visualization_fps(fps_label(settings.borrow().visualization_fps).into());
+    {
+        let settings = settings.clone();
+        let store = store.clone();
+        let event_poll_timer = event_poll_timer.clone();
+        settings_window.on_visualization_fps_changed(move |label| {
+            let fps = normalize_fps(label.trim_end_matches(" fps").parse().unwrap_or(60));
+            settings.borrow_mut().visualization_fps = fps;
+            settings.borrow().save(&store);
+            event_poll_timer.set_interval(poll_interval(fps));
         });
     }
     {
@@ -464,7 +508,9 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                 return;
             }
             let colors = *draft_colors.borrow();
-            let new_id = theme_registry.borrow_mut().add_custom(&store, &name, colors);
+            let new_id = theme_registry
+                .borrow_mut()
+                .add_custom(&store, &name, colors);
             settings.borrow_mut().theme_id = new_id.clone();
             settings.borrow().save(&store);
 
@@ -515,7 +561,9 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             if !is_custom {
                 return;
             }
-            theme_registry.borrow_mut().remove_custom(&store, &current_id);
+            theme_registry
+                .borrow_mut()
+                .remove_custom(&store, &current_id);
 
             let fallback_id = "dark".to_string();
             let colors = theme_registry
@@ -582,16 +630,9 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             let Some(dir) = rfd::FileDialog::new().pick_folder() else {
                 return;
             };
-            let paths = engine::scan_audio_files(&dir);
-            if paths.is_empty() {
-                if let Some(window) = window_weak.upgrade() {
-                    window.set_status_text(
-                        format!("No audio files found in {}", dir.display()).into(),
-                    );
-                }
-                return;
-            }
-            engine.send(EngineCommand::LoadPlaylist(paths));
+            // Scanned on the engine thread: a big (or network) folder would
+            // otherwise freeze the window while it's walked.
+            engine.send(EngineCommand::LoadFolder(dir));
             if let Some(window) = window_weak.upgrade() {
                 window.set_status_text("Loading playlist\u{2026}".into());
             }
@@ -650,6 +691,148 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         window.on_row_remove_clicked(move |index| {
             engine.send(EngineCommand::RemoveIndex(index as usize));
         });
+    }
+
+    // Created on first use and then kept alive: on Linux/X11 the copied
+    // text is only served while the `Clipboard` that set it still exists.
+    let clipboard: Rc<RefCell<Option<arboard::Clipboard>>> = Rc::new(RefCell::new(None));
+    {
+        let playlist_view_state = playlist_view_state.clone();
+        let clipboard = clipboard.clone();
+        window.on_row_copy_clicked(move |index| {
+            if let Some(track) = playlist_view_state.borrow().tracks.get(index as usize) {
+                copy_to_clipboard(&clipboard, track.path.display().to_string());
+            }
+        });
+    }
+    {
+        let playlist_view_state = playlist_view_state.clone();
+        let clipboard = clipboard.clone();
+        let engine = engine.clone();
+        window.on_row_cut_clicked(move |index| {
+            let Some(path) = playlist_view_state
+                .borrow()
+                .tracks
+                .get(index as usize)
+                .map(|t| t.path.display().to_string())
+            else {
+                return;
+            };
+            if copy_to_clipboard(&clipboard, path) {
+                engine.send(EngineCommand::RemoveIndex(index as usize));
+            }
+        });
+    }
+    {
+        let playlist_view_state = playlist_view_state.clone();
+        let engine = engine.clone();
+        let window_weak = window.as_weak();
+        window.on_row_enqueue_clicked(move |index| {
+            let Some(title) = playlist_view_state
+                .borrow()
+                .tracks
+                .get(index as usize)
+                .map(|t| t.metadata.title.clone())
+            else {
+                return;
+            };
+            engine.send(EngineCommand::EnqueueIndex(index as usize));
+            if let Some(window) = window_weak.upgrade() {
+                window.set_status_text(format!("Queued: {title}").into());
+            }
+        });
+    }
+    {
+        let playlist_model = playlist_model.clone();
+        let playlist_view_state = playlist_view_state.clone();
+        window.on_group_toggle_clicked(move |key| {
+            {
+                let mut state = playlist_view_state.borrow_mut();
+                let key = key.to_string();
+                if !state.collapsed.remove(&key) {
+                    state.collapsed.insert(key);
+                }
+            }
+            refresh_playlist_rows(&playlist_model, &playlist_view_state);
+        });
+    }
+    {
+        let playlist_model = playlist_model.clone();
+        let playlist_view_state = playlist_view_state.clone();
+        window.on_collapse_all_clicked(move || {
+            {
+                let mut state = playlist_view_state.borrow_mut();
+                state.collapsed = all_group_keys(&state.tracks, state.grouping);
+            }
+            refresh_playlist_rows(&playlist_model, &playlist_view_state);
+        });
+    }
+    {
+        let playlist_model = playlist_model.clone();
+        let playlist_view_state = playlist_view_state.clone();
+        window.on_expand_all_clicked(move || {
+            playlist_view_state.borrow_mut().collapsed.clear();
+            refresh_playlist_rows(&playlist_model, &playlist_view_state);
+        });
+    }
+    {
+        let playlist_model = playlist_model.clone();
+        let playlist_view_state = playlist_view_state.clone();
+        let settings = settings.clone();
+        let store = store.clone();
+        let window_weak = window.as_weak();
+        window.on_grouping_clicked(move |id| {
+            let grouping = PlaylistGrouping::from_str(&id);
+            {
+                let mut state = playlist_view_state.borrow_mut();
+                state.grouping = grouping;
+                state.collapsed.clear();
+            }
+            settings.borrow_mut().playlist_grouping = grouping;
+            settings.borrow().save(&store);
+            if let Some(window) = window_weak.upgrade() {
+                window.set_playlist_grouping(grouping.as_str().into());
+            }
+            refresh_playlist_rows(&playlist_model, &playlist_view_state);
+        });
+    }
+    {
+        let playlist_view_state = playlist_view_state.clone();
+        let engine = engine.clone();
+        window.on_sort_clicked(move |id| {
+            let Some(sort) = PlaylistSort::from_str(&id) else {
+                return;
+            };
+            let order = sort_order(&playlist_view_state.borrow().tracks, sort);
+            engine.send(EngineCommand::ReorderPlaylist(order));
+        });
+    }
+    {
+        let playlist_model = playlist_model.clone();
+        let playlist_view_state = playlist_view_state.clone();
+        let window_weak = window.as_weak();
+        window.on_show_now_playing_clicked(move || {
+            let Some(window) = window_weak.upgrade() else {
+                return;
+            };
+            {
+                let mut state = playlist_view_state.borrow_mut();
+                let Some(current) = state.current_index else {
+                    return;
+                };
+                if let Some(key) = group_key_of(&state.tracks, current, state.grouping) {
+                    state.collapsed.remove(&key);
+                }
+            }
+            refresh_playlist_rows(&playlist_model, &playlist_view_state);
+            if let Some(y) = current_row_offset(&playlist_model) {
+                window.invoke_scroll_playlist_to(y);
+            }
+        });
+    }
+    {
+        let engine = engine.clone();
+        window.on_refresh_playlist_clicked(move || engine.send(EngineCommand::RefreshMetadata));
     }
 
     {
@@ -767,14 +950,46 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         });
     }
 
-    let event_poll_timer = Timer::default();
+    // Kept for the window's lifetime and updated row by row: handing Slint a
+    // fresh model every frame would make it rebuild every bar element.
+    let spectrum_bars = Rc::new(VecModel::<f32>::default());
+    let spectrum_peaks = Rc::new(VecModel::<f32>::default());
+    window.set_spectrum_bars(ModelRc::from(spectrum_bars.clone()));
+    window.set_spectrum_peaks(ModelRc::from(spectrum_peaks.clone()));
+
     let window_weak = window.as_weak();
     let settings_window_weak = settings_window.as_weak();
-    event_poll_timer.start(TimerMode::Repeated, POLL_INTERVAL, move || {
+    let initial_poll_interval = poll_interval(settings.borrow().visualization_fps);
+    event_poll_timer.start(TimerMode::Repeated, initial_poll_interval, move || {
         let Some(window) = window_weak.upgrade() else {
             return;
         };
+        // Position and spectrum updates can arrive several per tick; only
+        // the newest of each is worth drawing.
+        let mut latest_position = None;
+        let mut latest_spectrum = None;
         while let Some(event) = engine.try_recv_event() {
+            match event {
+                EngineEvent::PositionUpdate { .. } => latest_position = Some(event),
+                EngineEvent::SpectrumUpdate { bars, peaks } => latest_spectrum = Some((bars, peaks)),
+                event => {
+                    if matches!(event, EngineEvent::TrackChanged { .. }) {
+                        // Belongs to the previous track.
+                        latest_position = None;
+                    }
+                    apply_event(
+                        &window,
+                        &playlist_model,
+                        &playlist_view_state,
+                        &current_track,
+                        &store,
+                        &presence,
+                        event,
+                    );
+                }
+            }
+        }
+        if let Some(event) = latest_position {
             apply_event(
                 &window,
                 &playlist_model,
@@ -784,6 +999,10 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                 &presence,
                 event,
             );
+        }
+        if let Some((bars, peaks)) = latest_spectrum {
+            update_in_place(&spectrum_bars, bars);
+            update_in_place(&spectrum_peaks, peaks);
         }
         while let Some(event) = presence.try_recv_event() {
             if let Some(settings_window) = settings_window_weak.upgrade() {
@@ -808,9 +1027,52 @@ fn refresh_playlist_rows(
     playlist_model: &Rc<VecModel<PlaylistRow>>,
     playlist_view_state: &Rc<RefCell<PlaylistViewState>>,
 ) {
-    let state = playlist_view_state.borrow();
-    let rows = build_grouped_rows(&state.tracks, state.current_index, &state.search_query);
+    let mut state = playlist_view_state.borrow_mut();
+    let state = &mut *state;
+    let rows = build_grouped_rows(
+        &state.tracks,
+        state.current_index,
+        &state.search_query,
+        state.grouping,
+        &state.collapsed,
+        &mut state.covers,
+    );
     playlist_model.set_vec(rows);
+}
+
+/// Pixel offset of the now-playing track row from the top of the playlist.
+/// Row heights must match `playlist_view.slint` (64px headers, 22px tracks).
+fn current_row_offset(playlist_model: &VecModel<PlaylistRow>) -> Option<f32> {
+    let mut y = 0.0;
+    for row in playlist_model.iter() {
+        if row.is_current && !row.is_header {
+            return Some(y);
+        }
+        y += if row.is_header { 64.0 } else { 22.0 };
+    }
+    None
+}
+
+/// Puts `text` on the system clipboard, returning whether it worked.
+fn copy_to_clipboard(clipboard: &RefCell<Option<arboard::Clipboard>>, text: String) -> bool {
+    let mut clipboard = clipboard.borrow_mut();
+    if clipboard.is_none() {
+        match arboard::Clipboard::new() {
+            Ok(c) => *clipboard = Some(c),
+            Err(e) => {
+                tracing::warn!("clipboard unavailable: {e}");
+                return false;
+            }
+        }
+    }
+    let result = clipboard
+        .as_mut()
+        .expect("initialized above")
+        .set_text(text);
+    if let Err(e) = &result {
+        tracing::warn!("failed to copy to clipboard: {e}");
+    }
+    result.is_ok()
 }
 
 fn refresh_theme_list(
@@ -960,9 +1222,14 @@ fn apply_event(
                 let mut state = playlist_view_state.borrow_mut();
                 state.tracks = tracks;
                 state.current_index = current_index;
+                // Covers may have changed (new playlist, Refresh playlist).
+                state.covers.clear();
             }
             refresh_playlist_rows(playlist_model, playlist_view_state);
             window.set_status_text(format!("{track_count} track(s) loaded").into());
+        }
+        EngineEvent::LoadProgress { done, total } => {
+            window.set_status_text(format!("Loading playlist\u{2026} {done}/{total}").into());
         }
         EngineEvent::WaveformReady { index, peaks } => {
             if playlist_view_state.borrow().current_index == Some(index) {
@@ -970,9 +1237,22 @@ fn apply_event(
                 window.set_waveform_played_bucket_index(0);
             }
         }
-        EngineEvent::SpectrumUpdate { bars, peaks } => {
-            window.set_spectrum_bars(ModelRc::from(Rc::new(VecModel::from(bars))));
-            window.set_spectrum_peaks(ModelRc::from(Rc::new(VecModel::from(peaks))));
+        // Coalesced and applied by the poll timer instead (see `wire`).
+        EngineEvent::SpectrumUpdate { .. } => {}
+    }
+}
+
+/// Overwrites `model`'s rows with `values`, only replacing the whole
+/// contents when the length changes (e.g. peaks toggled), so a repeater
+/// bound to it keeps its existing elements.
+fn update_in_place(model: &VecModel<f32>, values: Vec<f32>) {
+    if model.row_count() != values.len() {
+        model.set_vec(values);
+        return;
+    }
+    for (row, value) in values.into_iter().enumerate() {
+        if model.row_data(row) != Some(value) {
+            model.set_row_data(row, value);
         }
     }
 }

@@ -36,11 +36,26 @@ pub enum EngineCommand {
     /// 0.0 (silent) to 1.0 (unity gain).
     SetVolume(f32),
     LoadPlaylist(Vec<std::path::PathBuf>),
+    /// Recursively scans a folder for audio files and loads them as the
+    /// playlist (done on the engine thread so a big or slow folder never
+    /// blocks the UI). Sends `EngineEvent::Error` instead, leaving the
+    /// playlist untouched, if nothing playable is found.
+    LoadFolder(std::path::PathBuf),
     /// Jump to a specific index in the current playlist and play it.
     PlayIndex(usize),
     /// Removes a single track from the playlist by index.
     RemoveIndex(usize),
     ClearPlaylist,
+    /// Reorders the playlist so position `k` holds the track currently at
+    /// `order[k]` (the playlist's Sort submenu). Ignored unless `order` is a
+    /// permutation of the playlist's current indices.
+    ReorderPlaylist(Vec<usize>),
+    /// Re-reads tag metadata for every playlist entry from disk, keeping
+    /// order and what's playing.
+    RefreshMetadata,
+    /// Appends a track to the playback queue: queued tracks play next, in
+    /// order, ahead of whatever the playback mode would otherwise pick.
+    EnqueueIndex(usize),
     /// Gates the (otherwise per-chunk) live FFT work in the pipeline --
     /// disabled by default so playback never pays for it unless the
     /// spectrum view is actually visible.

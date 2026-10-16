@@ -16,6 +16,8 @@ export component AboutWindow inherits Window {
         Palette.color-scheme = root.theme-is-dark ? ColorScheme.dark : ColorScheme.light;
     }
 
+    // Set from Cargo.toml's version at startup (see `app::wiring`).
+    in property <string> app-version;
     callback close-clicked();
 
     VerticalLayout {
@@ -32,6 +34,7 @@ export component AboutWindow inherits Window {
             VerticalLayout {
                 alignment: center;
                 Text { text: "Openbar5000"; font-size: 20px; font-weight: 700; color: Theme.text-primary; }
+                Text { text: "Version " + root.app-version; color: Theme.text-muted; }
                 Text {
                     text: "An open-source, cross-platform alternative to foobar2000.";
                     color: Theme.text-muted;
