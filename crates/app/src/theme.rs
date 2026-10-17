@@ -1,7 +1,7 @@
 use crate::store::Store;
 use slint::ComponentHandle;
 use ui::{
-    AboutWindow, LyricsEditorWindow, MainWindow, PropertiesWindow, SettingsWindow, Theme,
+    AboutWindow, LyricsEditorWindow, PlaylistManagerWindow, MainWindow, PropertiesWindow, SettingsWindow, Theme,
     ThemeEditorWindow,
 };
 
@@ -170,6 +170,210 @@ fn builtin_entries() -> Vec<ThemeEntry> {
                 spectrum_bar: rgb(0x50, 0xfa, 0x7b),
             },
         },
+        // Stellaris, from the game's planet view: dark teal-green panels,
+        // off-white text, and the mint-teal of its bars, arrows and
+        // selected buttons -- quiet spectrum bars dim teal, loud ones mint.
+        ThemeEntry {
+            id: "stellaris".into(),
+            label: "Stellaris".into(),
+            is_custom: false,
+            colors: ThemeColors {
+                bg_base: rgb(0x0f, 0x1c, 0x19),
+                bg_raised: rgb(0x17, 0x29, 0x25),
+                bg_sunken: rgb(0x0a, 0x13, 0x11),
+                text_primary: rgb(0xe3, 0xec, 0xe8),
+                text_muted: rgb(0x8a, 0xa6, 0x9c),
+                accent: rgb(0x3f, 0xbf, 0x9a),
+                accent_text: rgb(0x0a, 0x13, 0x11),
+                waveform_unplayed: rgb(0x28, 0x4a, 0x42),
+                spectrum_bar: rgb(0x1e, 0x5a, 0x4c),
+            },
+        },
+        ThemeEntry {
+            id: "nord".into(),
+            label: "Nord".into(),
+            is_custom: false,
+            colors: ThemeColors {
+                bg_base: rgb(0x2e, 0x34, 0x40),
+                bg_raised: rgb(0x3b, 0x42, 0x52),
+                bg_sunken: rgb(0x27, 0x2c, 0x36),
+                text_primary: rgb(0xec, 0xef, 0xf4),
+                text_muted: rgb(0x7b, 0x88, 0xa1),
+                accent: rgb(0x88, 0xc0, 0xd0),
+                accent_text: rgb(0x2e, 0x34, 0x40),
+                waveform_unplayed: rgb(0x43, 0x4c, 0x5e),
+                spectrum_bar: rgb(0x81, 0xa1, 0xc1),
+            },
+        },
+        ThemeEntry {
+            id: "solarized_dark".into(),
+            label: "Solarized Dark".into(),
+            is_custom: false,
+            colors: ThemeColors {
+                bg_base: rgb(0x00, 0x2b, 0x36),
+                bg_raised: rgb(0x07, 0x36, 0x42),
+                bg_sunken: rgb(0x00, 0x21, 0x2b),
+                text_primary: rgb(0x93, 0xa1, 0xa1),
+                text_muted: rgb(0x58, 0x6e, 0x75),
+                accent: rgb(0x26, 0x8b, 0xd2),
+                accent_text: rgb(0xfd, 0xf6, 0xe3),
+                waveform_unplayed: rgb(0x1d, 0x4a, 0x55),
+                spectrum_bar: rgb(0x2a, 0xa1, 0x98),
+            },
+        },
+        ThemeEntry {
+            id: "solarized_light".into(),
+            label: "Solarized Light".into(),
+            is_custom: false,
+            colors: ThemeColors {
+                bg_base: rgb(0xfd, 0xf6, 0xe3),
+                bg_raised: rgb(0xee, 0xe8, 0xd5),
+                bg_sunken: rgb(0xe4, 0xdd, 0xc8),
+                text_primary: rgb(0x07, 0x36, 0x42),
+                text_muted: rgb(0x93, 0xa1, 0xa1),
+                accent: rgb(0x26, 0x8b, 0xd2),
+                accent_text: rgb(0xfd, 0xf6, 0xe3),
+                waveform_unplayed: rgb(0xd3, 0xcb, 0xb7),
+                spectrum_bar: rgb(0x2a, 0xa1, 0x98),
+            },
+        },
+        ThemeEntry {
+            id: "gruvbox_dark".into(),
+            label: "Gruvbox Dark".into(),
+            is_custom: false,
+            colors: ThemeColors {
+                bg_base: rgb(0x28, 0x28, 0x28),
+                bg_raised: rgb(0x32, 0x30, 0x2f),
+                bg_sunken: rgb(0x1d, 0x20, 0x21),
+                text_primary: rgb(0xeb, 0xdb, 0xb2),
+                text_muted: rgb(0xa8, 0x99, 0x84),
+                accent: rgb(0xfe, 0x80, 0x19),
+                accent_text: rgb(0x28, 0x28, 0x28),
+                waveform_unplayed: rgb(0x50, 0x49, 0x45),
+                spectrum_bar: rgb(0xb8, 0xbb, 0x26),
+            },
+        },
+        ThemeEntry {
+            id: "monokai".into(),
+            label: "Monokai".into(),
+            is_custom: false,
+            colors: ThemeColors {
+                bg_base: rgb(0x27, 0x28, 0x22),
+                bg_raised: rgb(0x2f, 0x30, 0x2a),
+                bg_sunken: rgb(0x1e, 0x1f, 0x1c),
+                text_primary: rgb(0xf8, 0xf8, 0xf2),
+                text_muted: rgb(0x75, 0x71, 0x5e),
+                accent: rgb(0xa6, 0xe2, 0x2e),
+                accent_text: rgb(0x27, 0x28, 0x22),
+                waveform_unplayed: rgb(0x49, 0x48, 0x3e),
+                spectrum_bar: rgb(0xf9, 0x26, 0x72),
+            },
+        },
+        ThemeEntry {
+            id: "catppuccin_mocha".into(),
+            label: "Catppuccin Mocha".into(),
+            is_custom: false,
+            colors: ThemeColors {
+                bg_base: rgb(0x1e, 0x1e, 0x2e),
+                bg_raised: rgb(0x26, 0x26, 0x37),
+                bg_sunken: rgb(0x18, 0x18, 0x25),
+                text_primary: rgb(0xcd, 0xd6, 0xf4),
+                text_muted: rgb(0x7f, 0x84, 0x9c),
+                accent: rgb(0xcb, 0xa6, 0xf7),
+                accent_text: rgb(0x1e, 0x1e, 0x2e),
+                waveform_unplayed: rgb(0x45, 0x47, 0x5a),
+                spectrum_bar: rgb(0x89, 0xb4, 0xfa),
+            },
+        },
+        ThemeEntry {
+            id: "tokyo_night".into(),
+            label: "Tokyo Night".into(),
+            is_custom: false,
+            colors: ThemeColors {
+                bg_base: rgb(0x1a, 0x1b, 0x26),
+                bg_raised: rgb(0x1f, 0x23, 0x35),
+                bg_sunken: rgb(0x16, 0x16, 0x1e),
+                text_primary: rgb(0xc0, 0xca, 0xf5),
+                text_muted: rgb(0x56, 0x5f, 0x89),
+                accent: rgb(0x7a, 0xa2, 0xf7),
+                accent_text: rgb(0x1a, 0x1b, 0x26),
+                waveform_unplayed: rgb(0x29, 0x2e, 0x42),
+                spectrum_bar: rgb(0xbb, 0x9a, 0xf7),
+            },
+        },
+        ThemeEntry {
+            id: "github_dark".into(),
+            label: "GitHub Dark".into(),
+            is_custom: false,
+            colors: ThemeColors {
+                bg_base: rgb(0x0d, 0x11, 0x17),
+                bg_raised: rgb(0x16, 0x1b, 0x22),
+                bg_sunken: rgb(0x01, 0x04, 0x09),
+                text_primary: rgb(0xe6, 0xed, 0xf3),
+                text_muted: rgb(0x7d, 0x85, 0x90),
+                accent: rgb(0x2f, 0x81, 0xf7),
+                accent_text: rgb(0xff, 0xff, 0xff),
+                waveform_unplayed: rgb(0x30, 0x36, 0x3d),
+                spectrum_bar: rgb(0x3f, 0xb9, 0x50),
+            },
+        },
+        // Clair Obscur: Expedition 33: Belle Époque/Art Deco -- warm
+        // near-black, ivory text, gold ornament, and the Paintress's crimson
+        // in the spectrum, flaring into gold as it gets loud.
+        ThemeEntry {
+            id: "clair_obscur".into(),
+            label: "Clair Obscur: Expedition 33".into(),
+            is_custom: false,
+            colors: ThemeColors {
+                bg_base: rgb(0x0d, 0x0b, 0x0a),
+                bg_raised: rgb(0x17, 0x13, 0x11),
+                bg_sunken: rgb(0x08, 0x07, 0x06),
+                text_primary: rgb(0xec, 0xe3, 0xd0),
+                text_muted: rgb(0x8c, 0x82, 0x73),
+                accent: rgb(0xc9, 0xa4, 0x5c),
+                accent_text: rgb(0x0d, 0x0b, 0x0a),
+                waveform_unplayed: rgb(0x3a, 0x30, 0x2a),
+                spectrum_bar: rgb(0x8e, 0x1f, 0x26),
+            },
+        },
+        // Fallout's Pip-Boy: everything in one green phosphor on a dark CRT,
+        // brighter where it matters.
+        ThemeEntry {
+            id: "pip_boy".into(),
+            label: "Pip-Boy".into(),
+            is_custom: false,
+            colors: ThemeColors {
+                bg_base: rgb(0x07, 0x12, 0x0a),
+                bg_raised: rgb(0x0b, 0x1b, 0x0f),
+                bg_sunken: rgb(0x04, 0x0b, 0x06),
+                text_primary: rgb(0x3c, 0xff, 0x7a),
+                text_muted: rgb(0x2a, 0x9a, 0x4c),
+                accent: rgb(0x3c, 0xff, 0x7a),
+                accent_text: rgb(0x04, 0x10, 0x0a),
+                waveform_unplayed: rgb(0x14, 0x38, 0x1f),
+                spectrum_bar: rgb(0x1b, 0x5c, 0x30),
+            },
+        },
+        // Cyberpunk: Edgerunners, from the series' key visuals: the electric
+        // blue/indigo night (#0327d2, #010c60 in the posters), the city's
+        // neon pink (#f26cfc), and Lucy's lavender-white hair (#ddbcee) for
+        // text. The spectrum glows blue and flares into pink when loud.
+        ThemeEntry {
+            id: "cyberpunk".into(),
+            label: "Cyberpunk: Edgerunners".into(),
+            is_custom: false,
+            colors: ThemeColors {
+                bg_base: rgb(0x0a, 0x0a, 0x33),
+                bg_raised: rgb(0x14, 0x12, 0x4a),
+                bg_sunken: rgb(0x06, 0x06, 0x1f),
+                text_primary: rgb(0xe7, 0xd9, 0xf7),
+                text_muted: rgb(0x8f, 0x86, 0xc9),
+                accent: rgb(0xf2, 0x6c, 0xfc),
+                accent_text: rgb(0x0a, 0x0a, 0x33),
+                waveform_unplayed: rgb(0x2a, 0x24, 0x70),
+                spectrum_bar: rgb(0x03, 0x27, 0xd2),
+            },
+        },
     ]
 }
 
@@ -274,6 +478,7 @@ pub struct ThemedWindows {
     settings: slint::Weak<SettingsWindow>,
     theme_editor: slint::Weak<ThemeEditorWindow>,
     lyrics_editor: slint::Weak<LyricsEditorWindow>,
+    playlist_manager: slint::Weak<PlaylistManagerWindow>,
 }
 
 impl ThemedWindows {
@@ -284,6 +489,7 @@ impl ThemedWindows {
         settings: &SettingsWindow,
         theme_editor: &ThemeEditorWindow,
         lyrics_editor: &LyricsEditorWindow,
+        playlist_manager: &PlaylistManagerWindow,
     ) -> Self {
         Self {
             main: main.as_weak(),
@@ -292,6 +498,7 @@ impl ThemedWindows {
             settings: settings.as_weak(),
             theme_editor: theme_editor.as_weak(),
             lyrics_editor: lyrics_editor.as_weak(),
+            playlist_manager: playlist_manager.as_weak(),
         }
     }
 
@@ -305,13 +512,48 @@ impl ThemedWindows {
                 }
             )*};
         }
-        apply_to!(main, properties, about, settings, theme_editor, lyrics_editor);
+        apply_to!(main, properties, about, settings, theme_editor, lyrics_editor, playlist_manager);
+    }
+
+    /// Shows `logo` in every window (title bar, now-playing bar, About).
+    pub fn set_logo(&self, logo: &slint::Image) {
+        macro_rules! apply_to {
+            ($($window:ident),*) => {$(
+                if let Some(window) = self.$window.upgrade() {
+                    window.global::<Theme>().set_logo(logo.clone());
+                }
+            )*};
+        }
+        apply_to!(main, properties, about, settings, theme_editor, lyrics_editor, playlist_manager);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn builtin_themes_have_unique_ids_and_readable_text() {
+        let entries = builtin_entries();
+        let ids: std::collections::HashSet<_> = entries.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids.len(), entries.len(), "duplicate built-in theme id");
+        let luma = |c: slint::Color| {
+            0.299 * c.red() as f32 + 0.587 * c.green() as f32 + 0.114 * c.blue() as f32
+        };
+        for entry in &entries {
+            let colors = entry.colors;
+            for (what, fg, bg) in [
+                ("text", colors.text_primary, colors.bg_base),
+                ("accent text", colors.accent_text, colors.accent),
+            ] {
+                assert!(
+                    (luma(fg) - luma(bg)).abs() > 80.0,
+                    "{}: {what} too close to its background",
+                    entry.label
+                );
+            }
+        }
+    }
 
     #[test]
     fn hex_color_round_trips_through_parse_and_format() {

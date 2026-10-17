@@ -1,25 +1,34 @@
 use crate::discord_presence::{
     NowPlaying, PresenceClient, PresenceCommand, PresenceEvent, DEFAULT_CLIENT_ID,
 };
+use crate::display_power::DisplayPower;
 use crate::layout::{drop_at, drop_preview, Axis, DragStart, Drop, Layout, PanelKind, Placement, Side};
 use crate::artist_info::{self, ArtistInfo, Candidate, Outcome, WIKIPEDIA_LANGUAGES};
+use crate::audio_output::AudioOutput;
+use crate::equalizer::Equalizer;
+use crate::media_library::MediaLibrary;
+use crate::now_playing_file::{self, NowPlayingFile};
+use crate::playlists::Playlists;
+use crate::properties::PropertiesEditor;
 use crate::lyrics::Lyrics;
 use crate::media_keys::{MediaAction, MediaKeys};
 use crate::platform;
 use crate::playlist_rows::{
-    all_group_keys, build_grouped_rows, group_key_of, sort_order, CoverCache, PlaylistGrouping,
-    PlaylistSort,
+    all_group_keys, build_grouped_rows, build_list_rows, current_rows, group_key_of, smart_order, sort_order,
+    sorted_order, CoverCache, PlaylistGrouping, PlaylistSort, SortMode,
 };
 use crate::settings::{
-    note_from_name, note_name, normalize_fps, valid_note_range, Settings, A4_MAX_HZ, A4_MIN_HZ,
+    note_from_name, note_name, normalize_fps, FPS_CHOICES, valid_note_range, Settings, A4_MAX_HZ, A4_MIN_HZ,
     HIGHEST_NOTE, LOWEST_NOTE,
 };
+use crate::spectrum_bars;
 use crate::store::Store;
 use crate::theme::{self, ThemeColors, ThemeRegistry};
 use engine::{
-    AudioInfo, EngineCommand, EngineEvent, PlaybackEngine, PlaybackMode, PlaybackState, Track,
+    EngineCommand, EngineEvent, PlaybackClock, PlaybackEngine, PlaybackMode, PlaybackState, Track,
+    TEMP_PLAYLIST_ID,
 };
-use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, Timer, TimerMode, VecModel};
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -29,12 +38,25 @@ use std::sync::Arc;
 use std::time::Duration;
 use ui::{
     cover_image_from_rgba, format_duration, AboutWindow, ArtistCandidate, DropPreview, InfoRow, LayoutDivider, LyricLine, SpectrumNote, TabStripSlot, MainWindow, PanelChoice, PanelSlot, PlaylistRow, PropertiesWindow, SettingsWindow,
-    LyricsEditorWindow, ThemeEditorWindow, ThemeListEntry,
+    LyricsEditorWindow, PlaylistManagerWindow, SortChoice, ThemeEditorWindow, ThemeListEntry,
 };
 
 /// The workspace version from `Cargo.toml` -- the one number the build
 /// scripts also stamp into the macOS/Windows/Linux packages.
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// `version` as the title bar and About show it: a pre-release named the
+/// way it's said, so "0.7.1-alpha" reads "0.7.1 Alpha".
+fn display_version(version: &str) -> String {
+    match version.split_once('-') {
+        Some((release, stage)) => {
+            let mut stage = stage.chars();
+            let first = stage.next().map(|c| c.to_uppercase().collect::<String>()).unwrap_or_default();
+            format!("{release} {first}{}", stage.as_str())
+        }
+        None => version.to_string(),
+    }
+}
 
 /// How often engine events are drained -- which, since the spectrum and
 /// seekbar only change when they are, is also their redraw rate.
@@ -42,9 +64,11 @@ fn poll_interval(fps: u32) -> Duration {
     Duration::from_millis(1000 / normalize_fps(fps) as u64)
 }
 
-fn fps_label(fps: u32) -> String {
-    format!("{} fps", normalize_fps(fps))
-}
+/// The event poll's interval while the window can't be seen.
+const HIDDEN_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+/// The FFT sizes Preferences offers, in its ComboBox's order.
+const FFT_SIZES: [usize; 5] = [1024, 2048, 4096, 8192, 16384];
 
 /// Resources the caller must keep alive for as long as the window's event
 /// loop runs: the timer that drains [`EngineEvent`]s, and the (initially
@@ -58,6 +82,15 @@ pub struct UiHandles {
     pub settings_window: SettingsWindow,
     pub theme_editor_window: ThemeEditorWindow,
     pub lyrics_editor_window: LyricsEditorWindow,
+    pub equalizer: Rc<Equalizer>,
+    pub media_library: Rc<MediaLibrary>,
+    pub audio_output: Rc<AudioOutput>,
+    /// Re-checks the date for the holiday logo.
+    pub logo_timer: Timer,
+    pub playlist_manager_window: PlaylistManagerWindow,
+    pub playlists: Rc<Playlists>,
+    pub media_keys_timer: Rc<Timer>,
+    pub properties_editor: Rc<PropertiesEditor>,
 }
 
 /// Shared UI-thread state kept in sync with the engine's playlist, so any
@@ -73,6 +106,31 @@ struct PlaylistViewState {
     /// the grouping changes, since the keys mean something else then.
     collapsed: HashSet<String>,
     covers: CoverCache,
+    /// Plain song list instead of album groups.
+    list_view: bool,
+    /// Albums matched loosely and gathered (see `playlist_rows::smart_order`).
+    smart_grouping: bool,
+    /// Selected tracks (playlist indices), and where a Shift+click range
+    /// starts.
+    selected: HashSet<usize>,
+    anchor: Option<usize>,
+    /// For each track, the row that shows it playing (see
+    /// `playlist_rows::current_rows`), as of the last time they were built.
+    current_rows: Vec<Option<usize>>,
+}
+
+impl PlaylistViewState {
+    /// What a row action applies to: the selection if `index` is in it
+    /// (highest first), else just `index`.
+    fn targets(&self, index: usize) -> Vec<usize> {
+        let mut targets: Vec<usize> = if self.selected.contains(&index) {
+            self.selected.iter().copied().collect()
+        } else {
+            vec![index]
+        };
+        targets.sort_unstable();
+        targets
+    }
 }
 
 /// Wires every UI callback to an [`EngineCommand`] and starts the timer that
@@ -87,33 +145,26 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         current_index: None,
         search_query: String::new(),
         grouping: PlaylistGrouping::default(),
+        list_view: false,
+        smart_grouping: false,
         collapsed: HashSet::new(),
         covers: CoverCache::default(),
+        selected: HashSet::new(),
+        anchor: None,
+        current_rows: Vec::new(),
     }));
     // The currently loaded track, if any -- used by the top-menu
     // "Properties" item, which (unlike the playlist's right-click one) isn't
     // tied to a specific row.
     let current_track: Rc<RefCell<Option<Track>>> = Rc::new(RefCell::new(None));
 
-    let restored_paths = store.load_playlist();
-    if !restored_paths.is_empty() {
-        engine.send(EngineCommand::LoadPlaylist(restored_paths));
-        window.set_status_text("Restoring playlist\u{2026}".into());
-    }
 
     let properties_window = PropertiesWindow::new().expect("failed to create properties window");
-    {
-        let properties_window_weak = properties_window.as_weak();
-        properties_window.on_close_clicked(move || {
-            if let Some(window) = properties_window_weak.upgrade() {
-                window.hide().expect("failed to hide properties window");
-            }
-        });
-    }
+    let properties_editor = PropertiesEditor::wire(&properties_window, engine.clone(), store.clone());
 
-    window.set_app_version(APP_VERSION.into());
+    window.set_app_version(display_version(APP_VERSION).into());
     let about_window = AboutWindow::new().expect("failed to create about window");
-    about_window.set_app_version(APP_VERSION.into());
+    about_window.set_app_version(display_version(APP_VERSION).into());
     {
         let about_window_weak = about_window.as_weak();
         about_window.on_close_clicked(move || {
@@ -136,6 +187,8 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         ThemeEditorWindow::new().expect("failed to create theme editor window");
     let lyrics_editor_window =
         LyricsEditorWindow::new().expect("failed to create lyrics editor window");
+    let playlist_manager_window =
+        PlaylistManagerWindow::new().expect("failed to create playlist manager window");
 
     // --- Theme setup -----------------------------------------------------
     let settings = Rc::new(RefCell::new(Settings::load(&store)));
@@ -167,8 +220,84 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         &settings_window,
         &theme_editor_window,
         &lyrics_editor_window,
+        &playlist_manager_window,
     );
     themed_windows.apply(&initial_colors);
+
+    // --- Holiday logos (issue #23) --------------------------------------
+    let logo_windows = Rc::new(theme::ThemedWindows::new(
+        window,
+        &properties_window,
+        &about_window,
+        &settings_window,
+        &theme_editor_window,
+        &lyrics_editor_window,
+        &playlist_manager_window,
+    ));
+    let show_logo = {
+        let settings = settings.clone();
+        let logo_windows = logo_windows.clone();
+        let settings_window_weak = settings_window.as_weak();
+        let shown = RefCell::new(None::<crate::holiday::LogoChoice>);
+        Rc::new(move || {
+            let (month, day) = crate::holiday::today();
+            let choice = {
+                let settings = settings.borrow();
+                crate::holiday::LogoChoice::for_date(
+                    month,
+                    day,
+                    settings.holiday_logos,
+                    settings.holiday_special_mode,
+                )
+            };
+            if shown.borrow().as_ref() == Some(&choice) {
+                return;
+            }
+            let logo = if choice.is_plain() {
+                // The built-in logo, as shipped.
+                slint::Image::load_from_svg_data(include_bytes!("../../ui/ui/assets/icons/app-icon.svg"))
+            } else {
+                slint::Image::load_from_svg_data(choice.svg().as_bytes())
+            };
+            match logo {
+                Ok(logo) => logo_windows.set_logo(&logo),
+                Err(e) => tracing::warn!("couldn't draw the holiday logo: {e:?}"),
+            }
+            if let Some(settings_window) = settings_window_weak.upgrade() {
+                settings_window.set_logo_occasion(choice.describe().into());
+            }
+            *shown.borrow_mut() = Some(choice);
+        })
+    };
+    show_logo();
+    // Hourly is plenty to switch on the right day.
+    let logo_timer = Timer::default();
+    {
+        let show_logo = show_logo.clone();
+        logo_timer.start(TimerMode::Repeated, Duration::from_secs(3600), move || show_logo());
+    }
+    settings_window.set_holiday_logos(settings.borrow().holiday_logos);
+    settings_window.set_holiday_special_mode(settings.borrow().holiday_special_mode);
+    {
+        let settings = settings.clone();
+        let store = store.clone();
+        let show_logo = show_logo.clone();
+        settings_window.on_holiday_logos_toggled(move |on| {
+            settings.borrow_mut().holiday_logos = on;
+            settings.borrow().save(&store);
+            show_logo();
+        });
+    }
+    {
+        let settings = settings.clone();
+        let store = store.clone();
+        let show_logo = show_logo.clone();
+        settings_window.on_holiday_special_mode_toggled(move |on| {
+            settings.borrow_mut().holiday_special_mode = on;
+            settings.borrow().save(&store);
+            show_logo();
+        });
+    }
     refresh_theme_list(
         &settings_window,
         &theme_registry.borrow(),
@@ -176,7 +305,103 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     );
 
     playlist_view_state.borrow_mut().grouping = settings.borrow().playlist_grouping;
+    playlist_view_state.borrow_mut().list_view = settings.borrow().playlist_list_view;
+    playlist_view_state.borrow_mut().smart_grouping = settings.borrow().playlist_smart_grouping;
+    settings_window.set_playlist_smart_grouping(settings.borrow().playlist_smart_grouping);
+    {
+        let settings = settings.clone();
+        let store = store.clone();
+        let engine = engine.clone();
+        let playlist_model = playlist_model.clone();
+        let playlist_view_state = playlist_view_state.clone();
+        settings_window.on_playlist_smart_grouping_toggled(move |on| {
+            settings.borrow_mut().playlist_smart_grouping = on;
+            settings.borrow().save(&store);
+            {
+                let mut state = playlist_view_state.borrow_mut();
+                state.smart_grouping = on;
+                // Group keys mean something else now.
+                state.collapsed.clear();
+            }
+            refresh_playlist_rows(&playlist_model, &playlist_view_state);
+            let state = playlist_view_state.borrow();
+            if on && settings.borrow().playlist_sort == SortMode::Manual {
+                if let Some(order) = smart_order(&state.tracks, state.grouping) {
+                    engine.send(EngineCommand::ReorderPlaylist(order));
+                }
+            }
+        });
+    }
+    window.set_playlist_list_view(settings.borrow().playlist_list_view);
+    settings_window.set_playlist_view_index(settings.borrow().playlist_list_view as i32);
+    {
+        let settings = settings.clone();
+        let store = store.clone();
+        let window_weak = window.as_weak();
+        let playlist_model = playlist_model.clone();
+        let playlist_view_state = playlist_view_state.clone();
+        settings_window.on_playlist_view_changed(move |index| {
+            let list_view = index == 1;
+            if settings.borrow().playlist_list_view == list_view {
+                return;
+            }
+            settings.borrow_mut().playlist_list_view = list_view;
+            settings.borrow().save(&store);
+            playlist_view_state.borrow_mut().list_view = list_view;
+            if let Some(window) = window_weak.upgrade() {
+                window.set_playlist_list_view(list_view);
+            }
+            refresh_playlist_rows(&playlist_model, &playlist_view_state);
+        });
+    }
     window.set_playlist_grouping(settings.borrow().playlist_grouping.as_str().into());
+
+    let equalizer = Equalizer::wire(
+        window,
+        &settings_window,
+        engine.clone(),
+        store.clone(),
+        settings.clone(),
+    );
+
+    let audio_output = AudioOutput::wire(&settings_window, engine.clone(), store.clone(), settings.clone());
+
+    // Playlists (issue #33): shows -- and so restores -- the active one.
+    let (playlists, restored) = Playlists::wire(
+        window,
+        &playlist_manager_window,
+        engine.clone(),
+        store.clone(),
+        settings.clone(),
+    );
+    {
+        let playlists = playlists.clone();
+        let playlist_view_state = playlist_view_state.clone();
+        window.on_send_to_playlist(move |track, playlist| {
+            let paths = selected_track_paths(&playlist_view_state.borrow(), track as usize);
+            playlists.send_to(playlist, paths);
+        });
+    }
+    {
+        let playlists = playlists.clone();
+        let playlist_view_state = playlist_view_state.clone();
+        window.on_send_to_new_playlist(move |track| {
+            let paths = selected_track_paths(&playlist_view_state.borrow(), track as usize);
+            playlists.send_to_new(paths);
+        });
+    }
+    if restored > 0 {
+        window.set_status_text("Restoring playlist\u{2026}".into());
+        show_loading(window, "Restoring playlist\u{2026}", 0, restored);
+    }
+
+    let media_library = MediaLibrary::wire(
+        window,
+        &settings_window,
+        playlists.clone(),
+        store.clone(),
+        settings.clone(),
+    );
 
     let track_panels = Rc::new(TrackPanels::new(window, store.clone(), settings.clone()));
     {
@@ -238,12 +463,12 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     }
     {
         let editor = lyrics_editor_window.as_weak();
-        let window_weak = window.as_weak();
+        let clock = engine.clock().clone();
         lyrics_editor_window.on_sync_clicked(move || {
-            let (Some(editor), Some(window)) = (editor.upgrade(), window_weak.upgrade()) else {
+            let Some(editor) = editor.upgrade() else {
                 return;
             };
-            let position = Duration::from_secs_f32(window.get_position_seconds().max(0.0));
+            let position = clock.position();
             let (text, cursor) =
                 crate::lyrics::sync_line(&editor.get_text(), editor.get_cursor().max(0) as usize, position);
             editor.set_text(text.into());
@@ -264,9 +489,10 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     }
     for (forward, step) in [(false, -5.0f32), (true, 5.0)] {
         let window_weak = window.as_weak();
+        let clock = engine.clock().clone();
         let seek = move || {
             if let Some(window) = window_weak.upgrade() {
-                let target = (window.get_position_seconds() + step).clamp(0.0, window.get_duration_seconds().max(0.0));
+                let target = (clock.position().as_secs_f32() + step).clamp(0.0, clock.duration().as_secs_f32());
                 window.invoke_seek_requested(target);
             }
         };
@@ -377,15 +603,25 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     window.set_spectrum_max_db(settings.borrow().spectrum.max_db as i32);
     {
         let spectrum = settings.borrow().spectrum;
-        settings_window.set_spectrum_channels(spectrum_channel_label(spectrum.channel_mode).into());
+        settings_window.set_spectrum_channels_index(match spectrum.channel_mode {
+            engine::SpectrumChannelMode::All => 0,
+            engine::SpectrumChannelMode::Left => 1,
+            engine::SpectrumChannelMode::Right => 2,
+        });
         settings_window.set_spectrum_min_db(spectrum.min_db as i32);
         settings_window.set_spectrum_max_db(spectrum.max_db as i32);
-        settings_window.set_spectrum_fft_size(spectrum.fft_size.to_string().into());
+        settings_window.set_spectrum_fft_size_index(
+            FFT_SIZES.iter().position(|&size| size == spectrum.fft_size).unwrap_or(1) as i32,
+        );
         settings_window.set_spectrum_peaks_enabled(spectrum.peaks_enabled);
         settings_window.set_spectrum_peak_hold_ms(spectrum.peak_hold_ms as i32);
         settings_window.set_spectrum_gravity(spectrum.gravity_db_per_s2 as i32);
         settings_window.set_spectrum_interval_ms(spectrum.interval_ms as i32);
     }
+
+    // The now-playing file for stream overlays (issue #2), kept up to date
+    // by the poll tick below.
+    let now_playing_file = NowPlayingFile::wire(&settings_window, store.clone(), settings.clone());
 
     // --- Discord Rich Presence setup --------------------------------------
     let presence = Rc::new(PresenceClient::spawn(&settings.borrow()));
@@ -450,7 +686,10 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     }
     {
         let settings_window_weak = settings_window.as_weak();
+        let audio_output = audio_output.clone();
         window.on_settings_clicked(move || {
+            // Devices may have come and gone since it was last open.
+            audio_output.refresh();
             if let Some(window) = settings_window_weak.upgrade() {
                 window.show().expect("failed to show settings window");
             }
@@ -459,7 +698,12 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     // Created here (started at the end of `wire`) so the frame-rate setting
     // can retune it.
     let event_poll_timer = Rc::new(Timer::default());
-    settings_window.set_visualization_fps(fps_label(settings.borrow().visualization_fps).into());
+    settings_window.set_visualization_fps_index(
+        FPS_CHOICES
+            .iter()
+            .position(|&fps| fps == normalize_fps(settings.borrow().visualization_fps))
+            .unwrap_or(1) as i32,
+    );
     {
         let settings = settings.clone();
         let store = store.clone();
@@ -765,6 +1009,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     {
         let window_weak = window.as_weak();
         let engine = engine.clone();
+        let playlists = playlists.clone();
         window.on_open_files_clicked(move || {
             let Some(paths) = rfd::FileDialog::new()
                 .add_filter("Audio", engine::AUDIO_EXTENSIONS)
@@ -772,9 +1017,13 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             else {
                 return;
             };
+            let count = paths.len();
+            // Into a named playlist, where they're kept (issue #37).
+            playlists.leave_library();
             engine.send(EngineCommand::LoadPlaylist(paths));
             if let Some(window) = window_weak.upgrade() {
                 window.set_status_text("Loading playlist\u{2026}".into());
+                show_loading(&window, "Loading playlist\u{2026}", 0, count);
             }
         });
     }
@@ -782,15 +1031,19 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     {
         let window_weak = window.as_weak();
         let engine = engine.clone();
+        let playlists = playlists.clone();
         window.on_open_folder_clicked(move || {
             let Some(dir) = rfd::FileDialog::new().pick_folder() else {
                 return;
             };
+            playlists.leave_library();
             // Scanned on the engine thread: a big (or network) folder would
             // otherwise freeze the window while it's walked.
             engine.send(EngineCommand::LoadFolder(dir));
             if let Some(window) = window_weak.upgrade() {
                 window.set_status_text("Loading playlist\u{2026}".into());
+                // No total until the folder has been searched.
+                show_loading(&window, "Scanning folder\u{2026}", 0, 0);
             }
         });
     }
@@ -802,34 +1055,30 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
 
     {
         let current_track = current_track.clone();
-        let properties_window_weak = properties_window.as_weak();
+        let properties_editor = properties_editor.clone();
         window.on_properties_clicked(move || {
             let Some(track) = current_track.borrow().clone() else {
                 return;
             };
-            let Some(properties_window) = properties_window_weak.upgrade() else {
-                return;
-            };
-            show_properties(&properties_window, &track);
+            properties_editor.open(vec![(track.path, track.metadata.title)]);
         });
     }
 
     {
+        // The selection, if the clicked track is in it (issue #34).
         let playlist_view_state = playlist_view_state.clone();
-        let properties_window_weak = properties_window.as_weak();
+        let properties_editor = properties_editor.clone();
         window.on_row_properties_clicked(move |index| {
-            let Some(track) = playlist_view_state
-                .borrow()
-                .tracks
-                .get(index as usize)
-                .cloned()
-            else {
-                return;
+            let tracks: Vec<(PathBuf, String)> = {
+                let state = playlist_view_state.borrow();
+                state
+                    .targets(index as usize)
+                    .iter()
+                    .filter_map(|&i| state.tracks.get(i))
+                    .map(|t| (t.path.clone(), t.metadata.title.clone()))
+                    .collect()
             };
-            let Some(properties_window) = properties_window_weak.upgrade() else {
-                return;
-            };
-            show_properties(&properties_window, &track);
+            properties_editor.open(tracks);
         });
     }
 
@@ -844,8 +1093,10 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
 
     {
         let engine = engine.clone();
+        let playlist_view_state = playlist_view_state.clone();
         window.on_row_remove_clicked(move |index| {
-            engine.send(EngineCommand::RemoveIndex(index as usize));
+            let targets = playlist_view_state.borrow().targets(index as usize);
+            engine.send(EngineCommand::RemoveIndices(targets));
         });
     }
 
@@ -856,8 +1107,9 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         let playlist_view_state = playlist_view_state.clone();
         let clipboard = clipboard.clone();
         window.on_row_copy_clicked(move |index| {
-            if let Some(track) = playlist_view_state.borrow().tracks.get(index as usize) {
-                copy_to_clipboard(&clipboard, track.path.display().to_string());
+            let paths = selected_paths(&playlist_view_state.borrow(), index as usize);
+            if !paths.is_empty() {
+                copy_to_clipboard(&clipboard, paths);
             }
         });
     }
@@ -866,17 +1118,46 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         let clipboard = clipboard.clone();
         let engine = engine.clone();
         window.on_row_cut_clicked(move |index| {
-            let Some(path) = playlist_view_state
-                .borrow()
-                .tracks
-                .get(index as usize)
-                .map(|t| t.path.display().to_string())
-            else {
-                return;
+            let (paths, targets) = {
+                let state = playlist_view_state.borrow();
+                (selected_paths(&state, index as usize), state.targets(index as usize))
             };
-            if copy_to_clipboard(&clipboard, path) {
-                engine.send(EngineCommand::RemoveIndex(index as usize));
+            if !paths.is_empty() && copy_to_clipboard(&clipboard, paths) {
+                engine.send(EngineCommand::RemoveIndices(targets));
             }
+        });
+    }
+    {
+        let playlist_view_state = playlist_view_state.clone();
+        let playlist_model = playlist_model.clone();
+        window.on_row_selected(move |index, range, toggle| {
+            let index = index as usize;
+            {
+                let mut state = playlist_view_state.borrow_mut();
+                match (range, toggle, state.anchor) {
+                    // Shift: everything from the anchor to here (added to
+                    // the selection with Ctrl/Cmd too).
+                    (true, _, Some(anchor)) => {
+                        if !toggle {
+                            state.selected.clear();
+                        }
+                        state.selected.extend(anchor.min(index)..=anchor.max(index));
+                    }
+                    // Ctrl/Cmd: in or out.
+                    (_, true, _) => {
+                        if !state.selected.remove(&index) {
+                            state.selected.insert(index);
+                        }
+                        state.anchor = Some(index);
+                    }
+                    _ => {
+                        state.selected.clear();
+                        state.selected.insert(index);
+                        state.anchor = Some(index);
+                    }
+                }
+            }
+            refresh_playlist_rows(&playlist_model, &playlist_view_state);
         });
     }
     {
@@ -918,7 +1199,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         window.on_collapse_all_clicked(move || {
             {
                 let mut state = playlist_view_state.borrow_mut();
-                state.collapsed = all_group_keys(&state.tracks, state.grouping);
+                state.collapsed = all_group_keys(&state.tracks, state.grouping, state.smart_grouping);
             }
             refresh_playlist_rows(&playlist_model, &playlist_view_state);
         });
@@ -937,6 +1218,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         let settings = settings.clone();
         let store = store.clone();
         let window_weak = window.as_weak();
+        let engine = engine.clone();
         window.on_grouping_clicked(move |id| {
             let grouping = PlaylistGrouping::from_str(&id);
             {
@@ -950,17 +1232,55 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                 window.set_playlist_grouping(grouping.as_str().into());
             }
             refresh_playlist_rows(&playlist_model, &playlist_view_state);
+            // Smart grouping gathers by the new grouping's groups.
+            let state = playlist_view_state.borrow();
+            if state.smart_grouping && settings.borrow().playlist_sort == SortMode::Manual {
+                if let Some(order) = smart_order(&state.tracks, grouping) {
+                    engine.send(EngineCommand::ReorderPlaylist(order));
+                }
+            }
+        });
+    }
+    // The Sorting menu's mode, kept applied (see the event poll below).
+    let sort_mode = Rc::new(Cell::new(settings.borrow().playlist_sort));
+    show_sort_choices(window, sort_mode.get());
+    let set_sort_mode = {
+        let sort_mode = sort_mode.clone();
+        let settings = settings.clone();
+        let store = store.clone();
+        let window_weak = window.as_weak();
+        Rc::new(move |mode: SortMode| {
+            sort_mode.set(mode);
+            settings.borrow_mut().playlist_sort = mode;
+            settings.borrow().save(&store);
+            if let Some(window) = window_weak.upgrade() {
+                show_sort_choices(&window, mode);
+            }
+        })
+    };
+    {
+        let playlist_view_state = playlist_view_state.clone();
+        let engine = engine.clone();
+        let set_sort_mode = set_sort_mode.clone();
+        window.on_sort_clicked(move |id| {
+            let Some(sort) = PlaylistSort::from_str(&id) else {
+                return;
+            };
+            // A one-off reorder: a kept sort would undo it.
+            set_sort_mode(SortMode::Manual);
+            let order = sort_order(&playlist_view_state.borrow().tracks, sort);
+            engine.send(EngineCommand::ReorderPlaylist(order));
         });
     }
     {
         let playlist_view_state = playlist_view_state.clone();
         let engine = engine.clone();
-        window.on_sort_clicked(move |id| {
-            let Some(sort) = PlaylistSort::from_str(&id) else {
-                return;
-            };
-            let order = sort_order(&playlist_view_state.borrow().tracks, sort);
-            engine.send(EngineCommand::ReorderPlaylist(order));
+        window.on_sorting_chosen(move |id| {
+            let mode = SortMode::from_str(&id);
+            set_sort_mode(mode);
+            if let Some(order) = sorted_order(&playlist_view_state.borrow().tracks, mode) {
+                engine.send(EngineCommand::ReorderPlaylist(order));
+            }
         });
     }
     {
@@ -976,7 +1296,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                 let Some(current) = state.current_index else {
                     return;
                 };
-                if let Some(key) = group_key_of(&state.tracks, current, state.grouping) {
+                if let Some(key) = group_key_of(&state.tracks, current, state.grouping, state.smart_grouping) {
                     state.collapsed.remove(&key);
                 }
             }
@@ -1051,8 +1371,30 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         });
     }
     {
+        // The slider only shows `volume` while it isn't being dragged, so
+        // it must be written back here -- otherwise it snaps back to the
+        // old value on release (issue #27). Saved once the slider settles.
+        let initial = settings.borrow().volume;
+        window.set_volume(initial);
+        engine.send(EngineCommand::SetVolume(initial));
         let engine = engine.clone();
-        window.on_volume_changed(move |volume| engine.send(EngineCommand::SetVolume(volume)));
+        let window_weak = window.as_weak();
+        let settings = settings.clone();
+        let store = store.clone();
+        let save_timer = Rc::new(Timer::default());
+        window.on_volume_changed(move |volume| {
+            let volume = volume.clamp(0.0, 1.0);
+            if let Some(window) = window_weak.upgrade() {
+                window.set_volume(volume);
+            }
+            engine.send(EngineCommand::SetVolume(volume));
+            settings.borrow_mut().volume = volume;
+            let settings = settings.clone();
+            let store = store.clone();
+            save_timer.start(TimerMode::SingleShot, Duration::from_millis(500), move || {
+                settings.borrow().save(&store);
+            });
+        });
     }
     {
         let engine = engine.clone();
@@ -1106,25 +1448,81 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         });
     }
 
-    // Kept for the window's lifetime and updated row by row: handing Slint a
-    // fresh model every frame would make it rebuild every bar element.
-    let spectrum_bars = Rc::new(VecModel::<f32>::default());
-    let spectrum_peaks = Rc::new(VecModel::<f32>::default());
-    window.set_spectrum_bars(ModelRc::from(spectrum_bars.clone()));
-    window.set_spectrum_peaks(ModelRc::from(spectrum_peaks.clone()));
+    let spectrum = Rc::new(SpectrumDisplay::new(window));
+    {
+        let spectrum = spectrum.clone();
+        window.on_spectrum_plot_changed(move |plot| spectrum.plot_changed(plot));
+    }
 
     // OS media keys (issue #17). Registered once the event loop runs: on
     // Windows it needs the native window, which only exists once shown.
     let media_keys: Rc<RefCell<Option<MediaKeys>>> = Rc::new(RefCell::new(None));
+    // On Windows the native window can appear a little after the event loop
+    // starts (issue #31): wait for it rather than register without one.
+    let media_keys_timer = Rc::new(Timer::default());
     {
         let media_keys = media_keys.clone();
         let window_weak = window.as_weak();
-        Timer::single_shot(Duration::ZERO, move || {
-            if let Some(window) = window_weak.upgrade() {
-                *media_keys.borrow_mut() = MediaKeys::new(native_window_handle(&window));
+        let attempts = Cell::new(0u32);
+        let timer = Rc::downgrade(&media_keys_timer);
+        media_keys_timer.start(TimerMode::Repeated, Duration::from_millis(250), move || {
+            let Some(window) = window_weak.upgrade() else { return };
+            let handle = native_window_handle(&window);
+            attempts.set(attempts.get() + 1);
+            let ready = handle.is_some() || !cfg!(windows);
+            if ready {
+                *media_keys.borrow_mut() = MediaKeys::new(handle);
+            } else if attempts.get() < 40 {
+                return; // try again in a moment
+            } else {
+                tracing::warn!("media keys unavailable: the window has no native handle");
+            }
+            if let Some(timer) = timer.upgrade() {
+                timer.stop();
             }
         });
     }
+
+    // Whether frames still reach the screen (see `FrameWatch`).
+    let frames = Rc::new(FrameWatch::default());
+    report_renderer(window, &settings_window, frames.clone());
+    // Playback statistics (issue #34): a play counts once the song reaches
+    // half its length or four minutes, whichever is first -- the usual
+    // scrobbling rule -- once per time it's started.
+    let play_count: RefCell<Option<(PathBuf, Duration, bool)>> = RefCell::new(None);
+    let play_count_store = store.clone();
+    let playlists_for_poll = playlists.clone();
+    // Which files are in the playlist, to tell additions from reorders.
+    let playlist_fingerprint = Cell::new(0u64);
+    let audio_output_events = audio_output.clone();
+
+    // Minimized, entirely covered or on displays that are off, nothing is
+    // seen: stop the spectrum's FFT, don't push visualization frames (some
+    // Linux window managers still redraw a minimized window's contents,
+    // issue #21) or move the position (Windows draws every change even
+    // then), and tick only a few times a second -- enough for play counts
+    // and media keys. X11, macOS and Windows say so; on Wayland, which
+    // doesn't, it shows as frames no longer being drawn (see `FrameWatch`).
+    let occluded = Rc::new(Cell::new(false));
+    {
+        use slint::winit_030::{winit::event::WindowEvent, EventResult, WinitWindowAccessor};
+        let occluded = occluded.clone();
+        window.window().on_winit_window_event(move |_, event| {
+            if let WindowEvent::Occluded(now) = event {
+                occluded.set(*now);
+            }
+            EventResult::Propagate
+        });
+    }
+    let out_of_sight = OutOfSightCheck::default();
+    let display_power = DisplayPower::watch();
+    // What the engine was last told, so it's only told about changes.
+    let spectrum_requested = Cell::new(None);
+    let poll_timer = event_poll_timer.clone();
+
+    let clock = engine.clock().clone();
+    let shown_position = Cell::new(Duration::ZERO);
+    let playback_state = Cell::new(PlaybackState::Stopped);
 
     let window_weak = window.as_weak();
     let settings_window_weak = settings_window.as_weak();
@@ -1133,26 +1531,31 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         let Some(window) = window_weak.upgrade() else {
             return;
         };
-        // Position and spectrum updates can arrive several per tick; only
-        // the newest of each is worth drawing.
-        let mut latest_position = None;
+        // Spectrum updates can arrive several per tick; only the newest is
+        // worth drawing.
         let mut latest_spectrum = None;
+        let mut playlist_changed = false;
         while let Some(event) = engine.try_recv_event() {
             match event {
-                EngineEvent::PositionUpdate { .. } => latest_position = Some(event),
                 EngineEvent::SpectrumUpdate { bars, peaks } => latest_spectrum = Some((bars, peaks)),
+                EngineEvent::OutputDeviceChanged { name, fallback } => {
+                    audio_output_events.device_changed(&name, fallback);
+                }
                 event => {
-                    if matches!(event, EngineEvent::TrackChanged { .. }) {
-                        // Belongs to the previous track.
-                        latest_position = None;
+                    playlist_changed |= matches!(event, EngineEvent::PlaylistUpdated { .. });
+                    if let EngineEvent::PlaybackStateChanged(state) = event {
+                        playback_state.set(state);
+                    }
+                    if let EngineEvent::TrackChanged { track, .. } = &event {
+                        let threshold = (track.metadata.duration / 2)
+                            .min(Duration::from_secs(240))
+                            .max(Duration::from_secs(1));
+                        *play_count.borrow_mut() = Some((track.path.clone(), threshold, false));
                     }
                     if let Some(media) = media_keys.borrow_mut().as_mut() {
                         match &event {
                             EngineEvent::TrackChanged { track, .. } => media.set_track(track),
-                            EngineEvent::PlaybackStateChanged(state) => media.set_state(
-                                *state,
-                                Duration::from_secs_f32(window.get_position_seconds()),
-                            ),
+                            EngineEvent::PlaybackStateChanged(state) => media.set_state(*state, clock.position()),
                             _ => {}
                         }
                     }
@@ -1164,36 +1567,95 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                         &store,
                         &presence,
                         &track_panels,
+                        &clock,
+                        &playlists_for_poll,
                         event,
                     );
                 }
             }
         }
-        if let Some(event) = latest_position {
-            apply_event(
-                &window,
-                &playlist_model,
-                &playlist_view_state,
-                &current_track,
-                &store,
-                &presence,
-                &track_panels,
-                event,
-            );
+        // Tracks added or loaded: put them where the kept sort says. The
+        // reorder comes back as one more update, already in order.
+        if playlist_changed {
+            // Item counts in the playlist menu and manager.
+            playlists_for_poll.refresh();
+            let state = playlist_view_state.borrow();
+            // Smart grouping gathers albums when tracks come or go -- not
+            // after a reorder the user asked for (e.g. Randomize).
+            let mut paths: Vec<&std::path::Path> = state.tracks.iter().map(|t| t.path.as_path()).collect();
+            paths.sort_unstable();
+            let fingerprint = {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                paths.hash(&mut hasher);
+                hasher.finish()
+            };
+            let tracks_changed = playlist_fingerprint.replace(fingerprint) != fingerprint;
+            let order = if sort_mode.get() != SortMode::Manual {
+                sorted_order(&state.tracks, sort_mode.get())
+            } else if state.smart_grouping && !state.list_view && tracks_changed {
+                smart_order(&state.tracks, state.grouping)
+            } else {
+                None
+            };
+            if let Some(order) = order {
+                engine.send(EngineCommand::ReorderPlaylist(order));
+            }
         }
-        if let Some((bars, peaks)) = latest_spectrum {
-            sync_model(&spectrum_bars, bars);
-            sync_model(&spectrum_peaks, peaks);
+        // Read when it's drawn: the playback thread doesn't wake for it.
+        let position = clock.position();
+        now_playing_file.update(&now_playing_file::NowPlaying {
+            track: current_track.borrow().as_ref(),
+            state: playback_state.get(),
+            elapsed: position,
+        });
+        if let Some((path, threshold, counted)) = play_count.borrow_mut().as_mut() {
+            if !*counted && position >= *threshold {
+                *counted = true;
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs() as i64);
+                play_count_store.record_play(path, now);
+            }
+        }
+        // Not shown while the system says it can't be seen, and shown as
+        // soon as it can. (A window starved of frames still is: that keeps a
+        // frame asked for, which a Wayland compositor answers once the
+        // window is in sight again.)
+        let unseen = occluded.get() || out_of_sight.get(&window) || display_power.is_off();
+        if !unseen && position != shown_position.replace(position) {
+            apply_position(&window, &track_panels, position, clock.duration());
+            frames.changed();
+        }
+        if frames.take_probe() {
+            window.window().request_redraw();
+        }
+        let hidden = unseen || frames.starved();
+        let spectrum_shown = window.get_panel_slots().iter().any(|slot| slot.kind == "spectrum");
+        let want_spectrum = spectrum_shown && !hidden;
+        if spectrum_requested.replace(Some(want_spectrum)) != Some(want_spectrum) {
+            engine.send(EngineCommand::SetSpectrumEnabled(want_spectrum));
+        }
+        let interval = if hidden {
+            HIDDEN_POLL_INTERVAL
+        } else {
+            poll_interval(settings.borrow().visualization_fps)
+        };
+        if poll_timer.interval() != interval {
+            poll_timer.set_interval(interval);
+        }
+        if let Some((bars, peaks)) = latest_spectrum.filter(|_| !hidden) {
+            spectrum.show(bars, peaks);
         }
         track_panels.poll(&window);
-        lyrics_editor.poll(&window, &track_panels);
+        lyrics_editor.poll(&window, &track_panels, position);
         let actions: Vec<MediaAction> = media_keys
             .borrow()
             .as_ref()
             .map(|media| std::iter::from_fn(|| media.try_recv()).collect())
             .unwrap_or_default();
         for action in actions {
-            apply_media_action(&window, action);
+            apply_media_action(&window, &clock, action);
         }
         while let Some(event) = presence.try_recv_event() {
             if let Some(settings_window) = settings_window_weak.upgrade() {
@@ -1205,6 +1667,19 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         }
     });
 
+    // Right-click menus drawn by Slint instead of the OS: a native context
+    // menu on macOS/Windows runs its own modal loop, freezing the spectrum,
+    // seekbar and every other timer while it's open. Slint reads this switch
+    // when a menu opens, but decides native-or-not for the top menu bar
+    // once, when it's first built -- so setting it after the window is up
+    // keeps the native menu bar (and macOS's app menu) as it is.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    Timer::single_shot(Duration::from_secs(1), || {
+        if std::env::var_os("SLINT_NO_MUDA").is_none() {
+            std::env::set_var("SLINT_NO_MUDA", "1");
+        }
+    });
+
     UiHandles {
         event_poll_timer,
         properties_window,
@@ -1212,7 +1687,37 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         settings_window,
         theme_editor_window,
         lyrics_editor_window,
+        equalizer,
+        media_library,
+        audio_output,
+        logo_timer,
+        playlist_manager_window,
+        playlists,
+        media_keys_timer,
+        properties_editor,
     }
+}
+
+/// Shows the playback position (and the length, which a refresh of the
+/// track's tags may have changed).
+fn apply_position(window: &MainWindow, track_panels: &TrackPanels, position: Duration, duration: Duration) {
+    track_panels.position_changed(window, position);
+    window.set_position_seconds(position.as_secs_f32());
+    window.set_position_text(format_duration(position).into());
+    if duration > Duration::ZERO {
+        window.set_duration_seconds(duration.as_secs_f32());
+        window.set_duration_text(format_duration(duration).into());
+    }
+    show_remaining(window);
+}
+
+/// "-m:ss" left in the track, from the position and length shown. Set from
+/// here rather than worked out in Slint from `position-seconds`: that
+/// changes every frame, and the text (and the layout around it) would be
+/// redone on each one, when it only changes once a second.
+fn show_remaining(window: &MainWindow) {
+    let left = (window.get_duration_seconds() - window.get_position_seconds()).floor().max(0.0) as u64;
+    window.set_remaining_text(format!("-{}:{:02}", left / 60, left % 60).into());
 }
 
 /// UI-thread state for the panel layout (see `crate::layout`).
@@ -1229,7 +1734,6 @@ struct LayoutState {
     tab_drag: Option<TabDrag>,
     /// What the engine was last told, so it's only told about changes.
     waveform_enabled: Option<bool>,
-    spectrum_enabled: Option<bool>,
 }
 
 /// How long a track must stay current before the open BIO panel looks its
@@ -1649,8 +2153,10 @@ fn track_info_rows(track: &Track) -> Vec<InfoRow> {
 }
 
 /// Runs an OS media-key action through the same callbacks as the
-/// on-screen controls, so both behave identically.
-fn apply_media_action(window: &MainWindow, action: MediaAction) {
+/// on-screen controls, so both behave identically. Seeks go from the
+/// `clock`, not the window: media keys work while it's minimized, when
+/// the position isn't shown.
+fn apply_media_action(window: &MainWindow, clock: &PlaybackClock, action: MediaAction) {
     match action {
         MediaAction::Play => window.invoke_menu_play_clicked(),
         MediaAction::Pause => window.invoke_menu_pause_clicked(),
@@ -1659,8 +2165,7 @@ fn apply_media_action(window: &MainWindow, action: MediaAction) {
         MediaAction::Next => window.invoke_next_clicked(),
         MediaAction::Previous => window.invoke_previous_clicked(),
         MediaAction::SeekBy(seconds) => {
-            let duration = window.get_duration_seconds().max(0.0);
-            let target = (window.get_position_seconds() as f64 + seconds).clamp(0.0, duration as f64);
+            let target = (clock.position().as_secs_f64() + seconds).clamp(0.0, clock.duration().as_secs_f64());
             window.invoke_seek_requested(target as f32);
         }
         MediaAction::SeekTo(position) => window.invoke_seek_requested(position.as_secs_f32()),
@@ -1676,7 +2181,7 @@ fn apply_media_action(window: &MainWindow, action: MediaAction) {
 }
 
 /// The main window's native handle where the OS media controls need one
-/// (Windows' SMTC); `None` elsewhere.
+/// (Windows' SMTC) or it's asked about (`is_cloaked`); `None` elsewhere.
 #[cfg(windows)]
 fn native_window_handle(window: &MainWindow) -> Option<*mut std::ffi::c_void> {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -1740,10 +2245,12 @@ impl LyricsEditor {
             .expect("failed to spawn lyrics save thread");
     }
 
-    /// Finished saves, plus the live playback time while it's open.
-    fn poll(&self, main: &MainWindow, track_panels: &TrackPanels) {
+    /// Finished saves, plus the live playback time (`position`) while it's
+    /// open -- also while the main window, where it's otherwise shown, is
+    /// out of sight.
+    fn poll(&self, main: &MainWindow, track_panels: &TrackPanels, position: Duration) {
         if self.window.window().is_visible() {
-            self.window.set_playback_time(main.get_position_text());
+            self.window.set_playback_time(format_duration(position).into());
             self.window.set_is_playing(main.get_is_playing());
         }
         while let Ok((path, text, result)) = self.saves.1.try_recv() {
@@ -1810,9 +2317,13 @@ impl AlbumArtLoader {
             if let Some(window) = self.window.upgrade() {
                 window.set_has_album_art(false);
                 window.set_album_art(slint::Image::default());
+                window.set_album_art_loading(false);
             }
             return;
         };
+        if let Some(window) = self.window.upgrade() {
+            window.set_album_art_loading(true);
+        }
         let window = self.window.clone();
         let latest = self.generation.clone();
         std::thread::Builder::new()
@@ -1827,6 +2338,7 @@ impl AlbumArtLoader {
                     if latest.load(Ordering::SeqCst) != generation {
                         return;
                     }
+                    window.set_album_art_loading(false);
                     match art {
                         Some(art) => {
                             window.set_album_art(cover_image_from_rgba(art.width, art.height, &art.rgba));
@@ -1838,6 +2350,114 @@ impl AlbumArtLoader {
             })
             .expect("failed to spawn album art thread");
     }
+}
+
+/// Shows (or updates) the loading card over the window; `total` 0 while
+/// the number of tracks isn't known yet.
+fn show_loading(window: &MainWindow, title: &str, done: usize, total: usize) {
+    window.set_loading_title(title.into());
+    window.set_loading_done(done as i32);
+    window.set_loading_total(total as i32);
+    window.set_loading_active(true);
+}
+
+/// Fills the Sorting menu with `selected` checked -- always as a new model,
+/// so the menu items are rebuilt rather than keeping a check mark their
+/// own activation toggled.
+fn show_sort_choices(window: &MainWindow, selected: SortMode) {
+    let choices: Vec<SortChoice> = SortMode::ALL
+        .iter()
+        .map(|&(mode, title)| SortChoice {
+            id: mode.as_str().into(),
+            title: title.into(),
+            checked: mode == selected,
+        })
+        .collect();
+    window.set_sort_choices(ModelRc::from(Rc::new(VecModel::from(choices))));
+}
+
+/// Logs which renderer draws the window, and shows it in Preferences >
+/// Visualizations. Skia draws through the system's GPU interface (through
+/// wgpu, which only reports it with Slint's `unstable-wgpu-30`), but falls
+/// back to drawing on the CPU when none can be set up (e.g. a missing or
+/// broken graphics driver on Linux), which makes every frame far more
+/// expensive (issue #21). That fallback never reports a graphics setup, so
+/// a window that has been on screen for a while without one is drawn on
+/// the CPU -- and should a setup still come, it corrects the report.
+///
+/// The same notifier tells `frames` about every frame drawn.
+fn report_renderer(window: &MainWindow, settings_window: &SettingsWindow, frames: Rc<FrameWatch>) {
+    let gpu_reported = Rc::new(Cell::new(false));
+    let settings_window_weak = settings_window.as_weak();
+    let reported = gpu_reported.clone();
+    let drawn = frames.clone();
+    let result = window.window().set_rendering_notifier(move |state, api| {
+        if matches!(state, slint::RenderingState::AfterRendering) {
+            drawn.drawn();
+        }
+        if !matches!(state, slint::RenderingState::RenderingSetup) || reported.replace(true) {
+            return;
+        }
+        let label = match api {
+            slint::GraphicsAPI::NativeOpenGL { .. } => "Skia on OpenGL (GPU accelerated)".to_string(),
+            // Whichever interface wgpu settled on, and on which GPU.
+            slint::GraphicsAPI::WGPU30 { device, .. } => {
+                use slint::wgpu_30::wgpu::Backend;
+                let info = device.adapter_info();
+                let interface = match info.backend {
+                    Backend::Metal => "Metal",
+                    Backend::Dx12 => "Direct3D 12",
+                    Backend::Vulkan => "Vulkan",
+                    Backend::Gl => "OpenGL",
+                    _ => "the GPU",
+                };
+                // A driver that emulates a GPU on the CPU (Mesa's llvmpipe/
+                // lavapipe) is what's left when the real one can't be used --
+                // e.g. NVIDIA's driver in a Flatpak without its matching
+                // GL.nvidia extension. Every frame then costs CPU as with
+                // the software renderer.
+                if info.device_type == slint::wgpu_30::wgpu::DeviceType::Cpu {
+                    format!(
+                        "Skia on {interface}, {} \u{2014} a CPU emulation of a GPU, so drawing uses \
+                         much more CPU (check the graphics driver). The 30 fps frame rate halves it.",
+                        info.name
+                    )
+                } else {
+                    format!("Skia on {interface}, {} (GPU accelerated)", info.name)
+                }
+            }
+            _ => "Skia (GPU accelerated)".to_string(),
+        };
+        tracing::info!("renderer: {label}");
+        if let Some(settings_window) = settings_window_weak.upgrade() {
+            settings_window.set_renderer_info(label.into());
+        }
+    });
+    let software_label = if std::env::var_os("SLINT_BACKEND").is_some() {
+        "Software (CPU only), chosen by SLINT_BACKEND"
+    } else {
+        "Software (CPU only) \u{2014} no GPU drawing could be set up, so drawing uses much \
+         more CPU. The 30 fps frame rate halves it."
+    };
+    if result.is_err() {
+        // Slint's own software renderer, which takes no notifier at all.
+        tracing::warn!("renderer: {software_label}");
+        settings_window.set_renderer_info(software_label.into());
+        return;
+    }
+    let window_weak = window.as_weak();
+    let settings_window_weak = settings_window.as_weak();
+    Timer::single_shot(Duration::from_secs(5), move || {
+        let (Some(window), Some(settings_window)) = (window_weak.upgrade(), settings_window_weak.upgrade())
+        else {
+            return;
+        };
+        let shown = window.window().is_visible() && !window.window().is_minimized();
+        if shown && !gpu_reported.get() {
+            tracing::warn!("renderer: {software_label}");
+            settings_window.set_renderer_info(software_label.into());
+        }
+    });
 }
 
 /// The closed outline of one channel's waveform as SVG path commands, in a
@@ -2009,7 +2629,6 @@ fn wire_layout(
         panel_drag: None,
         tab_drag: None,
         waveform_enabled: None,
-        spectrum_enabled: None,
     }));
 
     // Re-places the layout and pushes it to Slint (in place, so panels
@@ -2091,9 +2710,10 @@ fn wire_layout(
             // Only panels actually on screen do work -- a panel in a hidden
             // tab costs nothing until its tab is shown.
             let visible = |kind| state.placement.slots.iter().any(|slot| slot.kind == kind);
-            let (waveform, spectrum, album_art, biography) = (
+            // (The spectrum is switched by the event poll, which also knows
+            // whether the window can be seen at all.)
+            let (waveform, album_art, biography) = (
                 visible(PanelKind::Waveform),
-                visible(PanelKind::Spectrum),
                 visible(PanelKind::AlbumArt),
                 visible(PanelKind::Biography),
             );
@@ -2104,10 +2724,6 @@ fn wire_layout(
             track_panels.album_art.set_enabled(album_art);
             if let Some(window) = window_weak.upgrade() {
                 track_panels.set_biography_visible(&window, biography);
-            }
-            if state.spectrum_enabled != Some(spectrum) {
-                state.spectrum_enabled = Some(spectrum);
-                engine.send(EngineCommand::SetSpectrumEnabled(spectrum));
             }
         })
     };
@@ -2449,6 +3065,202 @@ fn wire_layout(
     }
 }
 
+/// How often to ask the windowing system whether the window is out of
+/// sight.
+const OUT_OF_SIGHT_CHECK_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Whether the windowing system has the main window out of sight, asked of
+/// it directly: minimized -- Slint's own flag only follows resizes and
+/// occlusion events, and minimizing on X11 brings neither -- or, on
+/// Windows, cloaked, as on another virtual desktop, which no event says.
+/// Asking X11 is a round trip to the server, so the answer is kept for a
+/// moment. (Wayland doesn't say; there `FrameWatch` notices instead.)
+#[derive(Default)]
+struct OutOfSightCheck {
+    last: Cell<Option<(std::time::Instant, bool)>>,
+}
+
+impl OutOfSightCheck {
+    fn get(&self, window: &MainWindow) -> bool {
+        use slint::winit_030::WinitWindowAccessor;
+        if let Some((at, out_of_sight)) = self.last.get() {
+            if at.elapsed() < OUT_OF_SIGHT_CHECK_INTERVAL {
+                return out_of_sight;
+            }
+        }
+        let out_of_sight = window.window().is_minimized()
+            || window
+                .window()
+                .with_winit_window(|winit| winit.is_minimized())
+                .flatten()
+                .unwrap_or(false)
+            || is_cloaked(window);
+        self.last.set(Some((std::time::Instant::now(), out_of_sight)));
+        out_of_sight
+    }
+}
+
+/// Whether Windows keeps the window from being shown though it's open --
+/// on another virtual desktop, say.
+#[cfg(windows)]
+fn is_cloaked(window: &MainWindow) -> bool {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
+    let Some(hwnd) = native_window_handle(window) else {
+        return false;
+    };
+    let mut cloaked = 0u32;
+    // SAFETY: a live window's handle, and a buffer of the size given.
+    let result = unsafe {
+        DwmGetWindowAttribute(
+            HWND(hwnd),
+            DWMWA_CLOAKED,
+            (&mut cloaked as *mut u32).cast(),
+            size_of::<u32>() as u32,
+        )
+    };
+    result.is_ok() && cloaked != 0
+}
+
+#[cfg(not(windows))]
+fn is_cloaked(_window: &MainWindow) -> bool {
+    false
+}
+
+/// How long a change may go without a frame before one is asked for
+/// outright: what changed may not be on screen (no seekbar in the layout,
+/// a silent spectrum), and then nothing else asks.
+const PROBE_AFTER: Duration = Duration::from_millis(250);
+
+/// How long a change may wait for a frame before the window is taken to
+/// be out of sight -- a visible one draws the frame asked for at once.
+const STARVED_AFTER: Duration = Duration::from_secs(1);
+
+/// Notices a window that isn't being drawn although its contents changed:
+/// a Wayland compositor stops asking a minimized or covered window for
+/// frames, and doesn't otherwise say it's out of sight.
+#[derive(Default)]
+struct FrameWatch {
+    /// Only once a frame has been reported at all: drawing on the CPU,
+    /// they may never be.
+    watching: Cell<bool>,
+    /// The oldest change no frame has shown yet.
+    waiting_since: Cell<Option<std::time::Instant>>,
+    /// Whether a frame has been asked for during this wait.
+    probed: Cell<bool>,
+}
+
+impl FrameWatch {
+    /// Something on screen may have changed.
+    fn changed(&self) {
+        if self.waiting_since.get().is_none() {
+            self.waiting_since.set(Some(std::time::Instant::now()));
+            self.probed.set(false);
+        }
+    }
+
+    fn drawn(&self) {
+        self.watching.set(true);
+        self.waiting_since.set(None);
+    }
+
+    /// Whether to ask for a frame now: once per wait, when nothing has
+    /// drawn one for a while. A window that can be seen draws it, which
+    /// ends the wait; one that can't, doesn't.
+    fn take_probe(&self) -> bool {
+        self.take_probe_at(std::time::Instant::now())
+    }
+
+    fn take_probe_at(&self, now: std::time::Instant) -> bool {
+        let due = self.watching.get()
+            && !self.probed.get()
+            && self
+                .waiting_since
+                .get()
+                .is_some_and(|since| now.saturating_duration_since(since) >= PROBE_AFTER);
+        if due {
+            self.probed.set(true);
+        }
+        due
+    }
+
+    /// Whether a change has gone undrawn for long.
+    fn starved(&self) -> bool {
+        self.starved_at(std::time::Instant::now())
+    }
+
+    fn starved_at(&self, now: std::time::Instant) -> bool {
+        self.watching.get()
+            && self
+                .waiting_since
+                .get()
+                .is_some_and(|since| now.saturating_duration_since(since) >= STARVED_AFTER)
+    }
+}
+
+/// What the spectrum panel draws: its last frame, drawn into an image for
+/// the plot it's shown in (see `spectrum_bars`).
+struct SpectrumDisplay {
+    window: slint::Weak<MainWindow>,
+    plot: Cell<Option<spectrum_bars::Plot>>,
+    /// The last (bars, peaks), drawn again when the plot changes.
+    frame: RefCell<(Vec<f32>, Vec<f32>)>,
+    /// Drawn into in turn: while one is on screen (shared with Slint, so
+    /// drawing into it would copy it), the other one -- let go of by Slint
+    /// once it was replaced -- takes the next frame without allocating.
+    buffers: RefCell<[SharedPixelBuffer<Rgba8Pixel>; 2]>,
+    next: Cell<usize>,
+}
+
+impl SpectrumDisplay {
+    fn new(window: &MainWindow) -> Self {
+        Self {
+            window: window.as_weak(),
+            plot: Cell::new(None),
+            frame: RefCell::new((Vec::new(), Vec::new())),
+            buffers: RefCell::new([SharedPixelBuffer::new(0, 0), SharedPixelBuffer::new(0, 0)]),
+            next: Cell::new(0),
+        }
+    }
+
+    fn show(&self, bars: Vec<f32>, peaks: Vec<f32>) {
+        *self.frame.borrow_mut() = (bars, peaks);
+        self.draw();
+    }
+
+    fn plot_changed(&self, plot: ui::SpectrumPlot) {
+        let plot = spectrum_bars::Plot {
+            height: plot.height.max(0) as usize,
+            scale: plot.scale,
+            bar: plot.bar,
+            accent: plot.accent,
+        };
+        if self.plot.replace(Some(plot)) != Some(plot) {
+            self.draw();
+        }
+    }
+
+    fn draw(&self) {
+        let (Some(window), Some(plot)) = (self.window.upgrade(), self.plot.get()) else {
+            return;
+        };
+        let frame = self.frame.borrow();
+        let (width, height) = (frame.0.len(), plot.height);
+        if width == 0 || height == 0 {
+            window.set_spectrum_bars(slint::Image::default());
+            return;
+        }
+        let mut buffers = self.buffers.borrow_mut();
+        let buffer = &mut buffers[self.next.get()];
+        if (buffer.width() as usize, buffer.height() as usize) != (width, height) {
+            *buffer = SharedPixelBuffer::new(width as u32, height as u32);
+        }
+        spectrum_bars::draw(buffer.make_mut_slice(), &plot, &frame.0, &frame.1);
+        window.set_spectrum_bars(slint::Image::from_rgba8_premultiplied(buffer.clone()));
+        self.next.set(1 - self.next.get());
+    }
+}
+
 /// Makes `model` hold `rows`, updating changed rows in place when the
 /// length is unchanged so a repeater bound to it keeps its elements (and
 /// their state, like the playlist's scroll position).
@@ -2468,17 +3280,62 @@ fn refresh_playlist_rows(
     playlist_model: &Rc<VecModel<PlaylistRow>>,
     playlist_view_state: &Rc<RefCell<PlaylistViewState>>,
 ) {
+    let started = std::time::Instant::now();
     let mut state = playlist_view_state.borrow_mut();
     let state = &mut *state;
-    let rows = build_grouped_rows(
-        &state.tracks,
-        state.current_index,
-        &state.search_query,
-        state.grouping,
-        &state.collapsed,
-        &mut state.covers,
-    );
-    playlist_model.set_vec(rows);
+    let rows = if state.list_view {
+        build_list_rows(&state.tracks, state.current_index, &state.search_query, &mut state.covers)
+    } else {
+        build_grouped_rows(
+            &state.tracks,
+            state.current_index,
+            &state.search_query,
+            state.grouping,
+            state.smart_grouping,
+            &state.collapsed,
+            &mut state.covers,
+        )
+    };
+    let rows: Vec<PlaylistRow> = rows
+        .into_iter()
+        .map(|mut row| {
+            row.is_selected = !row.is_header && state.selected.contains(&(row.track_index as usize));
+            row
+        })
+        .collect();
+    let count = rows.len();
+    state.current_rows = current_rows(&rows, state.tracks.len());
+    // Row by row: what didn't change keeps its elements instead of every
+    // row the list shows being replaced.
+    sync_model(playlist_model, rows);
+    tracing::debug!("playlist rows refreshed: {count} in {:.2?}", started.elapsed());
+}
+
+/// Moves the "playing" mark to track `index`, on just the rows that show
+/// it (see `PlaylistViewState::current_rows`): building every row again
+/// for it took ~7ms per 500 tracks, on every skip.
+fn show_current_track(
+    playlist_model: &VecModel<PlaylistRow>,
+    playlist_view_state: &RefCell<PlaylistViewState>,
+    index: usize,
+) {
+    let mut state = playlist_view_state.borrow_mut();
+    let previous = state.current_index.replace(index);
+    let row_of = |track: Option<usize>| track.and_then(|track| state.current_rows.get(track).copied().flatten());
+    let (old_row, new_row) = (row_of(previous), row_of(Some(index)));
+    let mark = |row: Option<usize>, current: bool| {
+        let Some(row) = row else {
+            return;
+        };
+        if let Some(mut data) = playlist_model.row_data(row).filter(|data| data.is_current != current) {
+            data.is_current = current;
+            playlist_model.set_row_data(row, data);
+        }
+    };
+    if old_row != new_row {
+        mark(old_row, false);
+    }
+    mark(new_row, true);
 }
 
 /// Pixel offset of the now-playing track row from the top of the playlist.
@@ -2492,6 +3349,22 @@ fn current_row_offset(playlist_model: &VecModel<PlaylistRow>) -> Option<f32> {
         y += if row.is_header { 64.0 } else { 22.0 };
     }
     None
+}
+
+/// The files a row action on `index` applies to (see `targets`).
+fn selected_track_paths(state: &PlaylistViewState, index: usize) -> Vec<PathBuf> {
+    state.targets(index).iter().filter_map(|&i| state.tracks.get(i)).map(|t| t.path.clone()).collect()
+}
+
+/// The paths a Copy/Cut on `index` takes, one per line.
+fn selected_paths(state: &PlaylistViewState, index: usize) -> String {
+    state
+        .targets(index)
+        .iter()
+        .filter_map(|&i| state.tracks.get(i))
+        .map(|t| t.path.display().to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Puts `text` on the system clipboard, returning whether it worked.
@@ -2588,6 +3461,8 @@ fn apply_event(
     store: &Store,
     presence: &PresenceClient,
     track_panels: &TrackPanels,
+    clock: &PlaybackClock,
+    playlists: &Playlists,
     event: EngineEvent,
 ) {
     match event {
@@ -2605,11 +3480,12 @@ fn apply_event(
                     .join(" - ")
                     .into(),
             );
-            // Reset right away rather than waiting for the next
-            // `PositionUpdate` -- otherwise a RepeatOne/RepeatAll loop back
-            // onto the same track briefly keeps showing the old end position.
+            // Reset right away rather than waiting for the clock to catch
+            // up -- otherwise a RepeatOne/RepeatAll loop back onto the same
+            // track briefly keeps showing the old end position.
             window.set_position_seconds(0.0);
             window.set_position_text(format_duration(Duration::ZERO).into());
+            show_remaining(window);
             window.set_waveform_paths(ModelRc::default());
             // Not just `PlaybackStateChanged`: advancing to the next track
             // while already playing doesn't re-fire that event (the state
@@ -2617,17 +3493,7 @@ fn apply_event(
             // presence for a plain track-to-track advance.
             send_presence_for_track(presence, &track, Duration::ZERO, window.get_is_playing());
             *current_track.borrow_mut() = Some(*track);
-            playlist_view_state.borrow_mut().current_index = Some(index);
-            refresh_playlist_rows(playlist_model, playlist_view_state);
-        }
-        EngineEvent::PositionUpdate { position, duration } => {
-            track_panels.position_changed(window, position);
-            window.set_position_seconds(position.as_secs_f32());
-            window.set_position_text(format_duration(position).into());
-            if duration.as_secs_f32() > 0.0 {
-                window.set_duration_seconds(duration.as_secs_f32());
-                window.set_duration_text(format_duration(duration).into());
-            }
+            show_current_track(playlist_model, playlist_view_state, index);
         }
         EngineEvent::PlaybackStateChanged(state) => {
             window.set_is_playing(state == PlaybackState::Playing);
@@ -2638,11 +3504,10 @@ fn apply_event(
                 }
                 PlaybackState::Playing | PlaybackState::Paused => {
                     if let Some(track) = current_track.borrow().clone() {
-                        let elapsed = Duration::from_secs_f32(window.get_position_seconds());
                         send_presence_for_track(
                             presence,
                             &track,
-                            elapsed,
+                            clock.position(),
                             state == PlaybackState::Playing,
                         );
                     }
@@ -2650,6 +3515,7 @@ fn apply_event(
             }
         }
         EngineEvent::Error(message) => {
+            window.set_loading_active(false);
             window.set_status_text(format!("Error: {message}").into());
         }
         EngineEvent::Underrun => {
@@ -2658,16 +3524,35 @@ fn apply_event(
         EngineEvent::PlaylistUpdated {
             tracks,
             current_index,
+            playlist_id,
         } => {
+            window.set_loading_active(false);
+            playlists.engine_reported(playlist_id);
             let track_count = tracks.len();
-            store.save_playlist(&tracks.iter().map(|t| t.path.clone()).collect::<Vec<_>>());
+            // Only when the playlist's contents or order changed.
+            let same_paths = {
+                let state = playlist_view_state.borrow();
+                state.tracks.len() == tracks.len()
+                    && state.tracks.iter().zip(&tracks).all(|(a, b)| a.path == b.path)
+            };
+            if !same_paths && playlist_id != TEMP_PLAYLIST_ID {
+                // To the playlist the engine says this is -- an update
+                // still in flight after a switch belongs to the old one.
+                // The media library's throwaway playlist (issue #37) is
+                // never saved.
+                store.save_playlist(playlist_id, &tracks.iter().map(|t| t.path.clone()).collect::<Vec<_>>());
+            }
             *current_track.borrow_mut() = current_index.and_then(|i| tracks.get(i).cloned());
             {
                 let mut state = playlist_view_state.borrow_mut();
                 state.tracks = tracks;
                 state.current_index = current_index;
-                // Covers may have changed (new playlist, Refresh playlist).
-                state.covers.clear();
+                // Indices mean other tracks now.
+                state.selected.clear();
+                state.anchor = None;
+                // Keep the images of covers still in use; drop the rest.
+                let state = &mut *state;
+                state.covers.retain_used(&state.tracks);
             }
             refresh_playlist_rows(playlist_model, playlist_view_state);
             window.set_status_text(format!("{track_count} track(s) loaded").into());
@@ -2675,6 +3560,13 @@ fn apply_event(
         }
         EngineEvent::LoadProgress { done, total } => {
             window.set_status_text(format!("Loading playlist\u{2026} {done}/{total}").into());
+            // Also covers loads started elsewhere (the media library).
+            let title = if window.get_loading_active() && window.get_loading_title() != "Scanning folder\u{2026}" {
+                window.get_loading_title().to_string()
+            } else {
+                "Loading playlist\u{2026}".to_string()
+            };
+            show_loading(window, &title, done, total);
         }
         EngineEvent::WaveformReady { index, channels } => {
             if playlist_view_state.borrow().current_index == Some(index) {
@@ -2686,7 +3578,7 @@ fn apply_event(
             }
         }
         // Coalesced and applied by the poll timer instead (see `wire`).
-        EngineEvent::SpectrumUpdate { .. } => {}
+        EngineEvent::SpectrumUpdate { .. } | EngineEvent::OutputDeviceChanged { .. } => {}
     }
 }
 
@@ -2729,14 +3621,6 @@ fn presence_status_label(enabled: bool, connected: bool) -> &'static str {
     }
 }
 
-fn spectrum_channel_label(mode: engine::SpectrumChannelMode) -> &'static str {
-    match mode {
-        engine::SpectrumChannelMode::All => "All Channels",
-        engine::SpectrumChannelMode::Left => "Left",
-        engine::SpectrumChannelMode::Right => "Right",
-    }
-}
-
 fn spectrum_channel_from_label(label: &str) -> engine::SpectrumChannelMode {
     match label {
         "Left" => engine::SpectrumChannelMode::Left,
@@ -2745,49 +3629,47 @@ fn spectrum_channel_from_label(label: &str) -> engine::SpectrumChannelMode {
     }
 }
 
-fn show_properties(properties_window: &PropertiesWindow, track: &Track) {
-    properties_window.set_file_path(track.path.display().to_string().into());
-    properties_window.set_prop_title(track.metadata.title.clone().into());
-    properties_window.set_prop_artist(track.metadata.artist.clone().into());
-    properties_window.set_prop_album(track.metadata.album.clone().into());
-    properties_window.set_prop_track_number(
-        track
-            .metadata
-            .track_number
-            .map(|n| n.to_string())
-            .unwrap_or_default()
-            .into(),
-    );
-    properties_window.set_prop_duration(format_duration(track.metadata.duration).into());
-
-    match engine::probe_audio_info(&track.path) {
-        Ok(AudioInfo {
-            sample_rate,
-            channels,
-            bits_per_sample,
-            ..
-        }) => {
-            properties_window.set_prop_sample_rate(format!("{sample_rate} Hz").into());
-            properties_window.set_prop_channels(channels.to_string().into());
-            properties_window.set_prop_bits_per_sample(bits_per_sample.to_string().into());
-        }
-        Err(e) => {
-            properties_window.set_prop_sample_rate("unknown".into());
-            properties_window.set_prop_channels("unknown".into());
-            properties_window.set_prop_bits_per_sample("unknown".into());
-            tracing::warn!("failed to probe audio info for properties view: {e}");
-        }
-    }
-
-    properties_window
-        .show()
-        .expect("failed to show properties window");
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_change_left_undrawn_for_a_second_means_out_of_sight() {
+        let frames = FrameWatch::default();
+        frames.changed();
+        let since = frames.waiting_since.get().unwrap();
+        // No frame reported yet at all: can't tell, so never starved.
+        assert!(!frames.starved_at(since + STARVED_AFTER));
+
+        frames.drawn();
+        frames.changed();
+        let since = frames.waiting_since.get().unwrap();
+        // Later changes keep the oldest undrawn one.
+        frames.changed();
+        assert_eq!(frames.waiting_since.get(), Some(since));
+        // A frame is asked for once, after a while without one.
+        assert!(!frames.take_probe_at(since + PROBE_AFTER / 2));
+        assert!(frames.take_probe_at(since + PROBE_AFTER));
+        assert!(!frames.take_probe_at(since + PROBE_AFTER * 2));
+        assert!(!frames.starved_at(since + STARVED_AFTER / 2));
+        assert!(frames.starved_at(since + STARVED_AFTER));
+
+        // A frame shows it all; the next wait may ask again.
+        frames.drawn();
+        assert!(!frames.starved_at(since + STARVED_AFTER * 2));
+        frames.changed();
+        let since = frames.waiting_since.get().unwrap();
+        assert!(frames.take_probe_at(since + PROBE_AFTER));
+    }
     use engine::TrackMetadata;
+
+    #[test]
+    fn versions_show_their_pre_release_by_name() {
+        assert_eq!(display_version("0.7.1-alpha"), "0.7.1 Alpha");
+        assert_eq!(display_version("1.0.0-beta.2"), "1.0.0 Beta.2");
+        assert_eq!(display_version("0.7.1"), "0.7.1");
+    }
 
     #[test]
     fn now_playing_text_matches_issue_10_and_skips_missing_tags() {

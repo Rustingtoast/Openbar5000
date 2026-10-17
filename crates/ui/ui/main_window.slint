@@ -1,17 +1,21 @@
 import { Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { PlaylistView, PlaylistRow } from "playlist_view.slint";
+import { PlaylistView, PlaylistRow, PlaylistChoice } from "playlist_view.slint";
 import { TransportBar, PlaybackButtons, SeekBar, SeekSlider, PlaybackOptions } from "transport_bar.slint";
 import { InfoView, InfoRow, LyricsView, LyricLine, PlaceholderView, TabStripView, ArtistView, ArtistCandidate } from "side_panels.slint";
 import { StatusBar } from "status_bar.slint";
 import { WaveformSeekbar } from "waveform_seekbar.slint";
-import { SpectrumView, SpectrumNote } from "spectrum_view.slint";
+import { SpectrumView, SpectrumNote, SpectrumPlot } from "spectrum_view.slint";
 import { NowPlayingBar, AlbumArtView } from "now_playing.slint";
-import { PropertiesWindow } from "properties_window.slint";
+import { PropertiesWindow, PropertyField, DetailRow, ArtworkRow } from "properties_window.slint";
 import { AboutWindow } from "about_window.slint";
 import { SettingsWindow, ThemeListEntry } from "settings_window.slint";
 import { ThemeEditorWindow } from "theme_editor_window.slint";
 import { LyricsEditorWindow } from "lyrics_editor_window.slint";
+import { VintageEqualizer, Vfd } from "vintage_equalizer.slint";
+import { LibraryView, LibraryRow } from "library_view.slint";
+import { LoadingOverlay } from "loading_overlay.slint";
+import { PlaylistManagerWindow, PlaylistManagerRow } from "playlist_manager_window.slint";
 
 /// One placed panel (see `app::layout`): which panel to draw and where,
 /// relative to the panel area below the menu bar.
@@ -64,18 +68,24 @@ export struct LayoutDivider {
 }
 
 /// An entry in a panel's "Replace with" menu -- the panel registry.
+export struct SortChoice {
+    id: string,
+    title: string,
+    checked: bool,
+}
+
 export struct PanelChoice {
     id: string,
     label: string,
 }
 
-export { PlaylistRow, PropertiesWindow, AboutWindow, SettingsWindow, ThemeListEntry, ThemeEditorWindow, LyricsEditorWindow, Theme }
+export { Vfd, PropertyField, DetailRow, ArtworkRow, LibraryRow, PlaylistManagerWindow, PlaylistManagerRow, PlaylistRow, PropertiesWindow, AboutWindow, SettingsWindow, ThemeListEntry, ThemeEditorWindow, LyricsEditorWindow, Theme }
 
 export component MainWindow inherits Window {
     // Set from Cargo.toml's version at startup (see `app::wiring`).
     in property <string> app-version;
     title: root.app-version == "" ? "Openbar5000" : "Openbar5000 v" + root.app-version;
-    icon: @image-url("assets/icons/app-icon.svg");
+    icon: Theme.logo;
     preferred-width: 1400px;
     preferred-height: 700px;
     min-width: 760px;
@@ -108,12 +118,14 @@ export component MainWindow inherits Window {
     in property <float> position-seconds: 0;
     in property <float> duration-seconds: 0;
     in property <string> position-text: "0:00";
+    /// "-m:ss" left in the track, updated with `position-text`.
+    in property <string> remaining-text: "-0:00";
     in property <string> duration-text: "0:00";
     in property <float> volume: 1.0;
     in property <bool> shuffle-active: false;
     in property <bool> loop-active: false;
     in property <bool> repeat-one-active: false;
-    in property <string> status-text: "Openbar5000 — an open-source foobar2000-alike";
+    in property <string> status-text: "Openbar5000 — an open-source music player";
 
     in property <[PanelSlot]> panel-slots: [];
     in property <[LayoutDivider]> layout-dividers: [];
@@ -152,16 +164,26 @@ export component MainWindow inherits Window {
     callback artist-candidate-clicked(int);
     callback artist-none-of-these-clicked();
     in property <bool> layout-editing: false;
+    // Escape leaves the layout editor: the key handler below takes focus
+    // whenever editing starts.
+    changed layout-editing => {
+        if root.layout-editing {
+            layout-keys.focus();
+        }
+    }
     in property <[string]> waveform-paths: [];
     in property <int> waveform-bucket-count: 1;
-    in property <[float]> spectrum-bars: [];
-    in property <[float]> spectrum-peaks: [];
+    /// The spectrum's bars and peak markers (see `app::spectrum_bars`),
+    /// drawn for the plot last reported by `spectrum-plot-changed`.
+    in property <image> spectrum-bars;
+    callback spectrum-plot-changed(SpectrumPlot);
     in property <[SpectrumNote]> spectrum-notes: [];
     in property <int> spectrum-min-db: -80;
     in property <int> spectrum-max-db: 0;
     in property <string> now-playing-text;
     in property <image> album-art;
     in property <bool> has-album-art: false;
+    in property <bool> album-art-loading: false;
 
     callback play-pause-clicked();
     callback menu-play-clicked();
@@ -189,7 +211,21 @@ export component MainWindow inherits Window {
     callback refresh-playlist-clicked();
     callback search-edited(string);
     in property <string> playlist-grouping: "artist-album-disc";
+    in property <bool> playlist-list-view: false;
+    // The Sorting menu (see `app::playlist_rows::SortMode`).
+    in property <[SortChoice]> sort-choices: [];
+    callback sorting-chosen(string);
     in property <string> playlist-summary: "";
+    // Playlists (issue #33): the summary bar's menu, File > New Playlist,
+    // File > Playlist Manager.
+    in property <[PlaylistChoice]> playlist-choices: [];
+    in property <string> playlist-name;
+    callback row-selected(int, bool, bool);
+    callback playlist-chosen(int);
+    callback new-playlist-clicked();
+    callback playlist-manager-clicked();
+    callback send-to-playlist(int, int);
+    callback send-to-new-playlist(int);
 
     // The playlist lives inside a panel slot, where it can't be addressed
     // by id; bumping the serial asks whichever playlist panel exists to
@@ -223,6 +259,48 @@ export component MainWindow inherits Window {
     callback panel-drag-moved(length, length);
     callback panel-drag-released();
     in property <DropPreview> drop-preview;
+    // Equalizer (issue #7): Playback > Equalizer and the Vintage
+    // Equalizer panel, both driven by `app::equalizer`.
+    in property <bool> eq-enabled: false;
+    in property <[string]> eq-band-labels: [];
+    in property <string> eq-lit-dots;
+    in property <string> eq-half-dots;
+    in property <string> eq-dim-dots;
+    in property <string> eq-readout-band;
+    in property <string> eq-readout-gain;
+    in property <string> eq-message-dots;
+    in property <int> eq-message-columns;
+    in property <string> eq-grid-dots;
+    in property <int> eq-grid-columns;
+    // Media library (LIB panel, see `app::media_library`).
+    in property <[LibraryRow]> library-rows: [];
+    in property <[string]> library-groupings: [];
+    in property <int> library-grouping-index: 0;
+    in property <string> library-status;
+    in property <bool> library-has-folders: false;
+    in property <int> library-selected: -1;
+    callback library-grouping-changed(int);
+    callback library-search-edited(string);
+    callback library-row-clicked(int);
+    callback library-row-toggled(int);
+    callback library-row-activated(int);
+    callback library-row-add-clicked(int);
+    callback library-collapse-all-clicked();
+    callback library-rescan-clicked();
+    callback library-add-folder-clicked();
+    callback library-folders-clicked();
+
+    callback eq-settings-clicked();
+    callback eq-enabled-toggled();
+    callback eq-step(int, int);
+    callback eq-flat-clicked();
+
+    // The loading card (see `LoadingOverlay`); total 0 while still unknown.
+    in property <bool> loading-active: false;
+    in property <string> loading-title;
+    in property <int> loading-done;
+    in property <int> loading-total;
+
     callback open-files-clicked();
     callback open-folder-clicked();
     callback properties-clicked();
@@ -236,6 +314,9 @@ export component MainWindow inherits Window {
             title: "File";
             MenuItem { title: "Open Files..."; activated => { root.open-files-clicked(); } }
             MenuItem { title: "Open Folder..."; activated => { root.open-folder-clicked(); } }
+            MenuSeparator {}
+            MenuItem { title: "New Playlist"; activated => { root.new-playlist-clicked(); } }
+            MenuItem { title: "Playlist Manager..."; activated => { root.playlist-manager-clicked(); } }
             MenuSeparator {}
             MenuItem { title: "Preferences..."; activated => { root.settings-clicked(); } }
             MenuSeparator {}
@@ -255,6 +336,29 @@ export component MainWindow inherits Window {
             MenuSeparator {}
             MenuItem { title: "Previous"; activated => { root.previous-clicked(); } }
             MenuItem { title: "Next"; activated => { root.next-clicked(); } }
+            MenuSeparator {}
+            Menu {
+                title: "Equalizer";
+                MenuItem {
+                    title: "Enable Equalizer";
+                    checkable: true;
+                    checked: root.eq-enabled;
+                    activated => { root.eq-enabled-toggled(); }
+                }
+                MenuItem { title: "Equalizer Settings..."; activated => { root.eq-settings-clicked(); } }
+            }
+        }
+        Menu {
+            title: "Sorting";
+            // Rebuilt by the app after every choice: activating a checkable
+            // item toggles its own `checked`, which would otherwise leave
+            // stale check marks behind.
+            for choice in root.sort-choices: MenuItem {
+                title: choice.title;
+                checkable: true;
+                checked: choice.checked;
+                activated => { root.sorting-chosen(choice.id); }
+            }
         }
         Menu {
             title: "View";
@@ -282,13 +386,30 @@ export component MainWindow inherits Window {
             width: slot.width;
             height: slot.height;
             clip: true;
+            // Every frame redraws the whole window, but while playing only
+            // the visualizations and the position change: keep the other
+            // panels as cached layers, redrawn only when their own content
+            // does (a scroll, a hover, a new track). Not the ones that
+            // change every frame -- for those a layer is only extra work.
+            cache-rendering-hint: slot.kind != "waveform" && slot.kind != "spectrum"
+                && slot.kind != "transport" && slot.kind != "seek-bar"
+                && slot.kind != "seek-slider" && slot.kind != "equalizer";
 
             if slot.kind == "playlist": PlaylistView {
                 width: parent.width;
                 height: parent.height;
                 rows: root.playlist-rows;
                 grouping: root.playlist-grouping;
+                list-view: root.playlist-list-view;
                 summary: root.playlist-summary;
+                playlists: root.playlist-choices;
+                playlist-name: root.playlist-name;
+                row-selected(i, range, toggle) => { root.row-selected(i, range, toggle); }
+                playlist-chosen(i) => { root.playlist-chosen(i); }
+                new-playlist-clicked => { root.new-playlist-clicked(); }
+                playlist-manager-clicked => { root.playlist-manager-clicked(); }
+                send-to-playlist(track, playlist) => { root.send-to-playlist(track, playlist); }
+                send-to-new-playlist(track) => { root.send-to-new-playlist(track); }
                 scroll-serial: root.playlist-scroll-serial;
                 scroll-y: root.playlist-scroll-y;
                 row-clicked(i) => { root.row-clicked(i); }
@@ -320,7 +441,7 @@ export component MainWindow inherits Window {
                 width: parent.width;
                 height: parent.height;
                 bars: root.spectrum-bars;
-                peaks: root.spectrum-peaks;
+                plot-changed(plot) => { root.spectrum-plot-changed(plot); }
                 notes: root.spectrum-notes;
                 min-db: root.spectrum-min-db;
                 max-db: root.spectrum-max-db;
@@ -332,6 +453,7 @@ export component MainWindow inherits Window {
                 position-seconds: root.position-seconds;
                 duration-seconds: root.duration-seconds;
                 position-text: root.position-text;
+                remaining-text: root.remaining-text;
                 duration-text: root.duration-text;
                 volume: root.volume;
                 shuffle-active: root.shuffle-active;
@@ -356,6 +478,7 @@ export component MainWindow inherits Window {
                 height: parent.height;
                 art: root.album-art;
                 has-art: root.has-album-art;
+                loading: root.album-art-loading;
             }
             if slot.kind == "playback-buttons": PlaybackButtons {
                 width: parent.width;
@@ -374,6 +497,7 @@ export component MainWindow inherits Window {
                 position-seconds: root.position-seconds;
                 duration-seconds: root.duration-seconds;
                 position-text: root.position-text;
+                remaining-text: root.remaining-text;
                 volume: root.volume;
                 shuffle-active: root.shuffle-active;
                 loop-active: root.loop-active;
@@ -393,9 +517,8 @@ export component MainWindow inherits Window {
             if slot.kind == "playback-options": PlaybackOptions {
                 width: parent.width;
                 height: parent.height;
-                position-seconds: root.position-seconds;
-                duration-seconds: root.duration-seconds;
                 position-text: root.position-text;
+                remaining-text: root.remaining-text;
                 volume: root.volume;
                 shuffle-active: root.shuffle-active;
                 loop-active: root.loop-active;
@@ -438,11 +561,43 @@ export component MainWindow inherits Window {
                 candidate-clicked(i) => { root.artist-candidate-clicked(i); }
                 none-of-these-clicked => { root.artist-none-of-these-clicked(); }
             }
-            if slot.kind == "library": PlaceholderView {
+            if slot.kind == "library": LibraryView {
                 width: parent.width;
                 height: parent.height;
-                title: "Media library";
-                message: "Not available yet. Use File > Open Folder to load music.";
+                rows: root.library-rows;
+                groupings: root.library-groupings;
+                grouping-index: root.library-grouping-index;
+                status: root.library-status;
+                has-folders: root.library-has-folders;
+                selected: root.library-selected;
+                grouping-changed(i) => { root.library-grouping-changed(i); }
+                search-edited(text) => { root.library-search-edited(text); }
+                row-clicked(i) => { root.library-row-clicked(i); }
+                row-toggled(i) => { root.library-row-toggled(i); }
+                row-activated(i) => { root.library-row-activated(i); }
+                row-add-clicked(i) => { root.library-row-add-clicked(i); }
+                collapse-all-clicked => { root.library-collapse-all-clicked(); }
+                rescan-clicked => { root.library-rescan-clicked(); }
+                add-folder-clicked => { root.library-add-folder-clicked(); }
+                folders-clicked => { root.library-folders-clicked(); }
+            }
+            if slot.kind == "equalizer": VintageEqualizer {
+                width: parent.width;
+                height: parent.height;
+                band-labels: root.eq-band-labels;
+                enabled: root.eq-enabled;
+                lit-dots: root.eq-lit-dots;
+                half-dots: root.eq-half-dots;
+                dim-dots: root.eq-dim-dots;
+                readout-band: root.eq-readout-band;
+                readout-gain: root.eq-readout-gain;
+                message-dots: root.eq-message-dots;
+                message-columns: root.eq-message-columns;
+                grid-dots: root.eq-grid-dots;
+                grid-columns: root.eq-grid-columns;
+                step(band, delta) => { root.eq-step(band, delta); }
+                power-clicked => { root.eq-enabled-toggled(); }
+                flat-clicked => { root.eq-flat-clicked(); }
             }
             if slot.kind == "status-bar": StatusBar {
                 width: parent.width;
@@ -596,5 +751,29 @@ export component MainWindow inherits Window {
             }
             }
         }
+    }
+
+    layout-keys := FocusScope {
+        width: 0;
+        height: 0;
+        key-pressed(event) => {
+            if root.layout-editing && event.text == Key.Escape {
+                root.layout-edit-toggled();
+                return accept;
+            }
+            reject
+        }
+    }
+
+    // Over everything: progress while a playlist loads.
+    LoadingOverlay {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        active: root.loading-active;
+        title: root.loading-title;
+        done: root.loading-done;
+        total: root.loading-total;
     }
 }

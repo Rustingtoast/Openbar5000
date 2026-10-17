@@ -1,5 +1,6 @@
 import { Button, CheckBox, ComboBox, GroupBox, LineEdit, Palette, ScrollView, SpinBox, TabWidget } from "std-widgets.slint";
 import { Theme } from "theme.slint";
+import { EqualizerSettingsPage } from "equalizer_settings.slint";
 
 export struct ThemeListEntry {
     id: string,
@@ -67,11 +68,27 @@ component HintText inherits Text {
     color: Theme.text-muted;
 }
 
+/// A tab's contents, scrolling once the window is too short for them, so
+/// they never push the Close button below out of the window. Taller
+/// windows still stretch them to fill the tab.
+component TabPage inherits ScrollView {
+    content-width: self.visible-width;
+    content-height: Math.max(self.visible-height, page.min-height);
+
+    page := VerticalLayout {
+        width: root.visible-width;
+        height: root.content-height;
+        @children
+    }
+}
+
 export component SettingsWindow inherits Window {
     title: "Preferences";
-    icon: @image-url("assets/icons/app-icon.svg");
+    icon: Theme.logo;
     preferred-width: 680px;
-    preferred-height: 520px;
+    // Tall enough for every tab without scrolling. Shorter, they scroll
+    // (see `TabPage`).
+    preferred-height: 720px;
     min-width: 560px;
     min-height: 420px;
     // See MainWindow: an explicit max keeps the window resizable.
@@ -87,14 +104,32 @@ export component SettingsWindow inherits Window {
         Palette.color-scheme = root.theme-is-dark ? ColorScheme.dark : ColorScheme.light;
     }
 
-    in property <string> visualization-fps: "60 fps";
+    // The fixed-choice ComboBoxes below are two-way bound by index, like
+    // the note-range boxes: a ComboBox overwrites a `current-value:`
+    // binding the first time it syncs, so a value the app set after
+    // startup never showed (issue #28).
+    in-out property <int> visualization-fps-index: 1;
+    /// 0: album view, 1: list view.
+    in-out property <int> playlist-view-index: 0;
+    in property <bool> playlist-smart-grouping: false;
+    // Holiday logos (see `app::holiday`).
+    in property <bool> holiday-logos: true;
+    in property <bool> holiday-special-mode: false;
+    /// "Christmas", "Bisexual flag", ... or "" on ordinary days.
+    in property <string> logo-occasion;
+    callback holiday-logos-toggled(bool);
+    callback holiday-special-mode-toggled(bool);
+    callback playlist-smart-grouping-toggled(bool);
+    callback playlist-view-changed(int);
+    /// How the window is drawn (see `app::wiring::report_renderer`).
+    in property <string> renderer-info: "\u{2014}";
     in property <[ThemeListEntry]> themes: [];
     in property <bool> current-theme-is-custom: false;
 
-    in property <string> spectrum-channels: "All Channels";
+    in-out property <int> spectrum-channels-index: 0;
     in property <int> spectrum-min-db: -80;
     in property <int> spectrum-max-db: 0;
-    in property <string> spectrum-fft-size: "2048";
+    in-out property <int> spectrum-fft-size-index: 1;
     in property <bool> spectrum-peaks-enabled: true;
     in property <int> spectrum-peak-hold-ms: 250;
     in property <int> spectrum-gravity: 50;
@@ -111,6 +146,11 @@ export component SettingsWindow inherits Window {
     in property <bool> discord-presence-enabled: false;
     in property <string> discord-client-id: "";
     in property <string> discord-status-text: "Disabled";
+    // The now-playing file for stream overlays (see `app::now_playing_file`).
+    // In-out: the box is unticked again when no file gets chosen.
+    in-out property <bool> now-playing-file-enabled: false;
+    /// The chosen file, or "" for none yet.
+    in property <string> now-playing-file-path: "";
 
     in property <bool> artist-wikipedia: true;
     in property <[string]> wikipedia-languages: [];
@@ -128,6 +168,8 @@ export component SettingsWindow inherits Window {
 
     callback discord-presence-toggled(bool);
     callback discord-client-id-edited(string);
+    callback now-playing-file-toggled(bool);
+    callback now-playing-file-choose-clicked();
 
     callback spectrum-channels-changed(string);
     callback spectrum-min-db-changed(int);
@@ -140,50 +182,147 @@ export component SettingsWindow inherits Window {
     callback spectrum-note-range-changed(string, string);
     callback spectrum-a4-changed(int);
 
+    /// The selected tab; set to open Preferences on a given page.
+    in-out property <int> current-tab: 0;
+
+    // Equalizer tab (issue #7), driven by `app::equalizer`.
+    in property <[string]> eq-band-labels;
+    in property <[int]> eq-gains;
+    in property <int> eq-max-db: 20;
+    in property <bool> eq-enabled;
+    in property <bool> eq-vintage;
+    in property <string> eq-lit-dots;
+    in property <string> eq-half-dots;
+    in property <string> eq-dim-dots;
+    in property <color> eq-vfd-color: #6fd6ff;
+    in property <string> eq-vfd-color-hex;
+    callback eq-vfd-color-chosen(color);
+    callback eq-vfd-color-edited(string);
+    callback eq-vintage-toggled(bool);
+    in property <[string]> eq-preset-names;
+    in property <int> eq-preset-index;
+    in property <string> eq-status;
+    // Output tab, driven by `app::audio_output`. Index 0 is the system
+    // default; bound by index (see `visualization-fps-index`).
+    in property <[string]> output-devices: [];
+    in-out property <int> output-device-index: 0;
+    in property <string> output-status;
+    callback output-device-chosen(int);
+    callback output-refresh-clicked();
+
+    // Media Library tab, driven by `app::media_library`.
+    in property <[string]> library-folders: [];
+    in property <string> library-status;
+    callback library-add-folder-clicked();
+    callback library-remove-folder-clicked(int);
+    callback library-rescan-clicked();
+
+    callback eq-band-changed(int, int);
+    callback eq-enabled-toggled(bool);
+    callback eq-zero-all-clicked();
+    callback eq-auto-level-clicked();
+    callback eq-load-preset-clicked();
+    callback eq-save-preset-clicked();
+    callback eq-preset-chosen(int);
+
     VerticalLayout {
         padding: 16px;
         spacing: 12px;
 
         TabWidget {
             vertical-stretch: 1;
+            current-index <=> root.current-tab;
 
             Tab {
                 title: "Appearance";
-                VerticalLayout {
-                    padding: 16px;
-                    spacing: 8px;
+                TabPage {
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 8px;
 
-                    SectionHeading { text: "Theme"; }
-                    HintText { text: "Pick a built-in theme or create your own. Changes apply immediately."; }
+                        SectionHeading { text: "Playlist"; }
+                        GridLayout {
+                            spacing: 8px;
+                            Row {
+                                FieldLabel { text: "View:"; }
+                                ComboBox {
+                                    model: ["Album view", "List view"];
+                                    current-index <=> root.playlist-view-index;
+                                    selected => { root.playlist-view-changed(self.current-index); }
+                                }
+                                Rectangle { horizontal-stretch: 1; }
+                            }
+                        }
+                        HintText { text: "Album view groups songs under album headers with cover art; list view shows every song as a plain row with artist and album columns."; }
+                        CheckBox {
+                            text: "Smart grouping";
+                            checked: root.playlist-smart-grouping;
+                            toggled => { root.playlist-smart-grouping-toggled(self.checked); }
+                        }
+                        HintText { text: "Keeps an album together even when its files are tagged inconsistently: \u{201c}feat.\u{201d} credits and small differences in the album name are ignored, files without an album tag group by folder, and an album's tracks are moved next to each other in track order when they're added."; }
 
-                    Rectangle {
-                        vertical-stretch: 1;
-                        min-height: 120px;
-                        border-width: 1px;
-                        border-radius: 4px;
-                        border-color: Theme.text-muted.transparentize(0.6);
-                        background: Theme.bg-sunken;
-                        ScrollView {
+                        Rectangle { height: 8px; }
+                        SectionHeading { text: "Logo"; }
+                        HorizontalLayout {
+                            spacing: 14px;
+                            Image {
+                                source: Theme.logo;
+                                width: 56px;
+                                height: 56px;
+                            }
                             VerticalLayout {
-                                padding: 4px;
-                                spacing: 2px;
-                                alignment: start;
-                                for entry in root.themes: ThemeRow {
-                                    entry: entry;
-                                    clicked => { root.theme-row-clicked(entry.id); }
+                                spacing: 4px;
+                                alignment: center;
+                                CheckBox {
+                                    text: "Holiday logos";
+                                    checked: root.holiday-logos;
+                                    toggled => { root.holiday-logos-toggled(self.checked); }
+                                }
+                                CheckBox {
+                                    text: "Special holiday mode (a different pride flag each month)";
+                                    checked: root.holiday-special-mode;
+                                    toggled => { root.holiday-special-mode-toggled(self.checked); }
+                                }
+                                UnitText {
+                                    text: root.logo-occasion == "" ? "Today: the regular logo" : "Today: " + root.logo-occasion;
                                 }
                             }
                         }
-                    }
+                        HintText { text: "International Workers' Day (1 May), Pride Month (June, always shown), Christmas (24\u{2013}26 December and 6 January), New Year (31 December\u{2013}1 January) and Chinese New Year (15 January\u{2013}15 February). The launcher and Dock icons keep the regular logo."; }
 
-                    HorizontalLayout {
-                        spacing: 8px;
-                        alignment: start;
-                        Button { text: "New Theme..."; clicked => { root.new-theme-clicked(); } }
-                        Button {
-                            text: "Delete Theme";
-                            enabled: root.current-theme-is-custom;
-                            clicked => { root.delete-theme-clicked(); }
+                        Rectangle { height: 8px; }
+                        SectionHeading { text: "Theme"; }
+                        HintText { text: "Pick a built-in theme or create your own. Changes apply immediately."; }
+
+                        Rectangle {
+                            vertical-stretch: 1;
+                            min-height: 120px;
+                            border-width: 1px;
+                            border-radius: 4px;
+                            border-color: Theme.text-muted.transparentize(0.6);
+                            background: Theme.bg-sunken;
+                            ScrollView {
+                                VerticalLayout {
+                                    padding: 4px;
+                                    spacing: 2px;
+                                    alignment: start;
+                                    for entry in root.themes: ThemeRow {
+                                        entry: entry;
+                                        clicked => { root.theme-row-clicked(entry.id); }
+                                    }
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: start;
+                            Button { text: "New Theme..."; clicked => { root.new-theme-clicked(); } }
+                            Button {
+                                text: "Delete Theme";
+                                enabled: root.current-theme-is-custom;
+                                clicked => { root.delete-theme-clicked(); }
+                            }
                         }
                     }
                 }
@@ -191,27 +330,33 @@ export component SettingsWindow inherits Window {
 
             Tab {
                 title: "Visualizations";
-                VerticalLayout {
-                    padding: 16px;
-                    spacing: 8px;
-                    alignment: start;
-
-                    SectionHeading { text: "Panels"; }
-                    HintText { text: "Add, remove, move and resize the waveform seekbar, spectrum analyzer and other panels with View > Edit Layout. Panels that aren't in the layout cost no CPU."; }
-
-                    Rectangle { height: 8px; }
-                    SectionHeading { text: "Performance"; }
-                    HintText { text: "How often the waveform, seekbar and spectrum redraw while playing. 30 fps draws fewer frames, which can help on slower machines or integrated graphics."; }
-                    GridLayout {
+                TabPage {
+                    VerticalLayout {
+                        padding: 16px;
                         spacing: 8px;
-                        Row {
-                            FieldLabel { text: "Frame rate:"; }
-                            ComboBox {
-                                model: ["60 fps", "30 fps"];
-                                current-value: root.visualization-fps;
-                                selected(value) => { root.visualization-fps-changed(value); }
+                        alignment: start;
+
+                        SectionHeading { text: "Panels"; }
+                        HintText { text: "Add, remove, move and resize the waveform seekbar, spectrum analyzer and other panels with View > Edit Layout. Panels that aren't in the layout cost no CPU."; }
+
+                        Rectangle { height: 8px; }
+                        SectionHeading { text: "Performance"; }
+                        HintText { text: "How often the waveform, seekbar and spectrum redraw while playing. 120 fps is smoother on 120 Hz and faster displays but costs about twice the CPU of 60; 30 and 15 fps draw fewer frames, which helps on slower machines or integrated graphics."; }
+                        GridLayout {
+                            spacing: 8px;
+                            Row {
+                                FieldLabel { text: "Frame rate:"; }
+                                ComboBox {
+                                    model: ["120 fps", "60 fps", "30 fps", "15 fps"];
+                                    current-index <=> root.visualization-fps-index;
+                                    selected(value) => { root.visualization-fps-changed(value); }
+                                }
+                                Rectangle { horizontal-stretch: 1; }
                             }
-                            Rectangle { horizontal-stretch: 1; }
+                            Row {
+                                FieldLabel { text: "Renderer:"; }
+                                UnitText { text: root.renderer-info; colspan: 2; wrap: word-wrap; }
+                            }
                         }
                     }
                 }
@@ -219,125 +364,250 @@ export component SettingsWindow inherits Window {
 
             Tab {
                 title: "Spectrum Analyzer";
-                VerticalLayout {
-                    padding: 16px;
-                    alignment: start;
+                TabPage {
                     VerticalLayout {
-                        spacing: 12px;
+                        padding: 16px;
+                        alignment: start;
+                        VerticalLayout {
+                            spacing: 12px;
 
-                        GroupBox {
-                            title: "Processing";
-                            GridLayout {
-                                spacing: 8px;
-                                Row {
-                                    FieldLabel { text: "Notes:"; }
-                                    first-note := ComboBox {
-                                        model: root.note-names;
-                                        current-index <=> root.spectrum-first-note-index;
-                                        selected(value) => { root.spectrum-note-range-changed(value, last-note.current-value); }
+                            GroupBox {
+                                title: "Processing";
+                                GridLayout {
+                                    spacing: 8px;
+                                    Row {
+                                        FieldLabel { text: "Notes:"; }
+                                        first-note := ComboBox {
+                                            model: root.note-names;
+                                            current-index <=> root.spectrum-first-note-index;
+                                            selected(value) => { root.spectrum-note-range-changed(value, last-note.current-value); }
+                                        }
+                                        UnitText { text: "to"; horizontal-alignment: center; }
+                                        last-note := ComboBox {
+                                            model: root.note-names;
+                                            current-index <=> root.spectrum-last-note-index;
+                                            selected(value) => { root.spectrum-note-range-changed(first-note.current-value, value); }
+                                        }
                                     }
-                                    UnitText { text: "to"; horizontal-alignment: center; }
-                                    last-note := ComboBox {
-                                        model: root.note-names;
-                                        current-index <=> root.spectrum-last-note-index;
-                                        selected(value) => { root.spectrum-note-range-changed(first-note.current-value, value); }
+                                    Row {
+                                        FieldLabel { text: "Pitch (A4):"; }
+                                        SpinBox {
+                                            minimum: 400;
+                                            maximum: 480;
+                                            value: root.spectrum-a4-hz;
+                                            edited(v) => { root.spectrum-a4-changed(v); }
+                                        }
+                                        UnitText { text: "Hz"; colspan: 2; }
+                                    }
+                                    Row {
+                                        FieldLabel { text: "Channels:"; }
+                                        ComboBox {
+                                            colspan: 3;
+                                            model: ["All Channels", "Left", "Right"];
+                                            current-index <=> root.spectrum-channels-index;
+                                            selected(value) => { root.spectrum-channels-changed(value); }
+                                        }
+                                    }
+                                    Row {
+                                        FieldLabel { text: "Amplitude:"; }
+                                        SpinBox {
+                                            minimum: -120;
+                                            maximum: root.spectrum-max-db - 1;
+                                            value: root.spectrum-min-db;
+                                            edited(v) => { root.spectrum-min-db-changed(v); }
+                                        }
+                                        UnitText { text: "to"; horizontal-alignment: center; }
+                                        SpinBox {
+                                            minimum: root.spectrum-min-db + 1;
+                                            maximum: 20;
+                                            value: root.spectrum-max-db;
+                                            edited(v) => { root.spectrum-max-db-changed(v); }
+                                        }
+                                        UnitText { text: "dB"; }
+                                    }
+                                    Row {
+                                        FieldLabel { text: "FFT size:"; }
+                                        ComboBox {
+                                            model: ["1024", "2048", "4096", "8192", "16384"];
+                                            current-index <=> root.spectrum-fft-size-index;
+                                            selected(value) => { root.spectrum-fft-size-changed(value); }
+                                        }
+                                        UnitText { text: "samples"; colspan: 2; }
+                                    }
+                                    Row {
+                                        FieldLabel { text: "Interval:"; }
+                                        SpinBox {
+                                            minimum: 10;
+                                            maximum: 1000;
+                                            step-size: 10;
+                                            value: root.spectrum-interval-ms;
+                                            edited(v) => { root.spectrum-interval-changed(v); }
+                                        }
+                                        UnitText { text: "ms"; colspan: 2; }
                                     }
                                 }
-                                Row {
-                                    FieldLabel { text: "Pitch (A4):"; }
-                                    SpinBox {
-                                        minimum: 400;
-                                        maximum: 480;
-                                        value: root.spectrum-a4-hz;
-                                        edited(v) => { root.spectrum-a4-changed(v); }
+                            }
+
+                            GroupBox {
+                                title: "Peaks";
+                                GridLayout {
+                                    spacing: 8px;
+                                    Row {
+                                        CheckBox {
+                                            colspan: 3;
+                                            text: "Show peak markers";
+                                            checked: root.spectrum-peaks-enabled;
+                                            toggled => { root.spectrum-peaks-toggled(self.checked); }
+                                        }
                                     }
-                                    UnitText { text: "Hz"; colspan: 2; }
-                                }
-                                Row {
-                                    FieldLabel { text: "Channels:"; }
-                                    ComboBox {
-                                        colspan: 3;
-                                        model: ["All Channels", "Left", "Right"];
-                                        current-value: root.spectrum-channels;
-                                        selected(value) => { root.spectrum-channels-changed(value); }
+                                    Row {
+                                        FieldLabel { text: "Hold time:"; }
+                                        SpinBox {
+                                            minimum: 0;
+                                            maximum: 5000;
+                                            step-size: 50;
+                                            value: root.spectrum-peak-hold-ms;
+                                            enabled: root.spectrum-peaks-enabled;
+                                            edited(v) => { root.spectrum-peak-hold-changed(v); }
+                                        }
+                                        UnitText { text: "ms"; }
                                     }
-                                }
-                                Row {
-                                    FieldLabel { text: "Amplitude:"; }
-                                    SpinBox {
-                                        minimum: -120;
-                                        maximum: root.spectrum-max-db - 1;
-                                        value: root.spectrum-min-db;
-                                        edited(v) => { root.spectrum-min-db-changed(v); }
+                                    Row {
+                                        FieldLabel { text: "Gravity:"; }
+                                        SpinBox {
+                                            minimum: 0;
+                                            maximum: 500;
+                                            step-size: 10;
+                                            value: root.spectrum-gravity;
+                                            enabled: root.spectrum-peaks-enabled;
+                                            edited(v) => { root.spectrum-gravity-changed(v); }
+                                        }
+                                        UnitText { text: "dB/s\u{00b2}"; }
                                     }
-                                    UnitText { text: "to"; horizontal-alignment: center; }
-                                    SpinBox {
-                                        minimum: root.spectrum-min-db + 1;
-                                        maximum: 20;
-                                        value: root.spectrum-max-db;
-                                        edited(v) => { root.spectrum-max-db-changed(v); }
-                                    }
-                                    UnitText { text: "dB"; }
-                                }
-                                Row {
-                                    FieldLabel { text: "FFT size:"; }
-                                    ComboBox {
-                                        model: ["1024", "2048", "4096", "8192", "16384"];
-                                        current-value: root.spectrum-fft-size;
-                                        selected(value) => { root.spectrum-fft-size-changed(value); }
-                                    }
-                                    UnitText { text: "samples"; colspan: 2; }
-                                }
-                                Row {
-                                    FieldLabel { text: "Interval:"; }
-                                    SpinBox {
-                                        minimum: 10;
-                                        maximum: 1000;
-                                        step-size: 10;
-                                        value: root.spectrum-interval-ms;
-                                        edited(v) => { root.spectrum-interval-changed(v); }
-                                    }
-                                    UnitText { text: "ms"; colspan: 2; }
                                 }
                             }
                         }
+                    }
+                }
+            }
 
-                        GroupBox {
-                            title: "Peaks";
-                            GridLayout {
-                                spacing: 8px;
-                                Row {
-                                    CheckBox {
-                                        colspan: 3;
-                                        text: "Show peak markers";
-                                        checked: root.spectrum-peaks-enabled;
-                                        toggled => { root.spectrum-peaks-toggled(self.checked); }
+            Tab {
+                title: "Equalizer";
+                TabPage {
+                    EqualizerSettingsPage {
+                        band-labels: root.eq-band-labels;
+                        gains: root.eq-gains;
+                        max-db: root.eq-max-db;
+                        enabled: root.eq-enabled;
+                        vintage: root.eq-vintage;
+                        lit-dots: root.eq-lit-dots;
+                        half-dots: root.eq-half-dots;
+                        dim-dots: root.eq-dim-dots;
+                        vfd-color: root.eq-vfd-color;
+                        vfd-color-hex: root.eq-vfd-color-hex;
+                        vfd-color-chosen(c) => { root.eq-vfd-color-chosen(c); }
+                        vfd-color-edited(text) => { root.eq-vfd-color-edited(text); }
+                        vintage-toggled(on) => { root.eq-vintage-toggled(on); }
+                        preset-names: root.eq-preset-names;
+                        preset-index: root.eq-preset-index;
+                        status: root.eq-status;
+                        band-changed(band, gain) => { root.eq-band-changed(band, gain); }
+                        enabled-toggled(on) => { root.eq-enabled-toggled(on); }
+                        zero-all-clicked => { root.eq-zero-all-clicked(); }
+                        auto-level-clicked => { root.eq-auto-level-clicked(); }
+                        load-preset-clicked => { root.eq-load-preset-clicked(); }
+                        save-preset-clicked => { root.eq-save-preset-clicked(); }
+                        preset-chosen(index) => { root.eq-preset-chosen(index); }
+                    }
+                }
+            }
+
+            Tab {
+                title: "Media Library";
+                TabPage {
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 8px;
+
+                        SectionHeading { text: "Music folders"; }
+                        HintText { text: "Everything in these folders shows up in the LIB panel. They're watched, so added, changed and removed files are picked up automatically."; }
+                        Rectangle {
+                            vertical-stretch: 1;
+                            min-height: 120px;
+                            border-width: 1px;
+                            border-radius: 4px;
+                            border-color: Theme.text-muted.transparentize(0.6);
+                            background: Theme.bg-sunken;
+                            if root.library-folders.length == 0: Text {
+                                text: "No music folders yet.";
+                                color: Theme.text-muted;
+                            }
+                            ScrollView {
+                                VerticalLayout {
+                                    padding: 4px;
+                                    spacing: 2px;
+                                    alignment: start;
+                                    for folder[i] in root.library-folders: HorizontalLayout {
+                                        spacing: 8px;
+                                        padding-left: 6px;
+                                        Text {
+                                            horizontal-stretch: 1;
+                                            text: folder;
+                                            overflow: elide;
+                                            vertical-alignment: center;
+                                            color: Theme.text-primary;
+                                        }
+                                        Button {
+                                            text: "Remove";
+                                            clicked => { root.library-remove-folder-clicked(i); }
+                                        }
                                     }
                                 }
-                                Row {
-                                    FieldLabel { text: "Hold time:"; }
-                                    SpinBox {
-                                        minimum: 0;
-                                        maximum: 5000;
-                                        step-size: 50;
-                                        value: root.spectrum-peak-hold-ms;
-                                        enabled: root.spectrum-peaks-enabled;
-                                        edited(v) => { root.spectrum-peak-hold-changed(v); }
-                                    }
-                                    UnitText { text: "ms"; }
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Button { text: "Add Folder..."; clicked => { root.library-add-folder-clicked(); } }
+                            Button { text: "Rescan"; clicked => { root.library-rescan-clicked(); } }
+                            Text {
+                                horizontal-stretch: 1;
+                                text: root.library-status;
+                                vertical-alignment: center;
+                                horizontal-alignment: right;
+                                overflow: elide;
+                                font-size: 11px;
+                                color: Theme.text-muted;
+                            }
+                        }
+                    }
+                }
+            }
+
+            Tab {
+                title: "Output";
+                TabPage {
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 8px;
+                        alignment: start;
+
+                        SectionHeading { text: "Audio device"; }
+                        HintText { text: "\u{201c}System default\u{201d} plays wherever your system sends sound, and follows it when that changes, e.g. when headphones are plugged in. A device you pick is used whenever it's connected; while it isn't, the system default stands in."; }
+                        GridLayout {
+                            spacing: 8px;
+                            Row {
+                                FieldLabel { text: "Device:"; }
+                                ComboBox {
+                                    horizontal-stretch: 1;
+                                    model: root.output-devices;
+                                    current-index <=> root.output-device-index;
+                                    selected => { root.output-device-chosen(self.current-index); }
                                 }
-                                Row {
-                                    FieldLabel { text: "Gravity:"; }
-                                    SpinBox {
-                                        minimum: 0;
-                                        maximum: 500;
-                                        step-size: 10;
-                                        value: root.spectrum-gravity;
-                                        enabled: root.spectrum-peaks-enabled;
-                                        edited(v) => { root.spectrum-gravity-changed(v); }
-                                    }
-                                    UnitText { text: "dB/s\u{00b2}"; }
-                                }
+                                Button { text: "Refresh"; clicked => { root.output-refresh-clicked(); } }
+                            }
+                            Row {
+                                FieldLabel { text: "Status:"; }
+                                UnitText { text: root.output-status; colspan: 2; wrap: word-wrap; }
                             }
                         }
                     }
@@ -346,61 +616,89 @@ export component SettingsWindow inherits Window {
 
             Tab {
                 title: "Integrations";
-                VerticalLayout {
-                    padding: 16px;
-                    spacing: 8px;
-                    alignment: start;
-
-                    SectionHeading { text: "Discord Rich Presence"; }
-                    HintText {
-                        text: "Shows the track you're listening to on your Discord profile. Requires your own Discord Application client ID -- see the README for the one-time setup.";
-                    }
-                    CheckBox {
-                        text: "Enable Discord Rich Presence";
-                        checked: root.discord-presence-enabled;
-                        toggled => { root.discord-presence-toggled(self.checked); }
-                    }
-                    GridLayout {
+                TabPage {
+                    VerticalLayout {
+                        padding: 16px;
                         spacing: 8px;
-                        Row {
-                            FieldLabel { text: "Client ID:"; }
-                            LineEdit {
-                                horizontal-stretch: 1;
-                                text: root.discord-client-id;
-                                placeholder-text: "e.g. 1234567890123456789";
-                                edited(text) => { root.discord-client-id-edited(text); }
+                        alignment: start;
+
+                        SectionHeading { text: "Discord Rich Presence"; }
+                        HintText {
+                            text: "Shows the track you're listening to on your Discord profile. Requires your own Discord Application client ID -- see the README for the one-time setup.";
+                        }
+                        CheckBox {
+                            text: "Enable Discord Rich Presence";
+                            checked: root.discord-presence-enabled;
+                            toggled => { root.discord-presence-toggled(self.checked); }
+                        }
+                        GridLayout {
+                            spacing: 8px;
+                            Row {
+                                FieldLabel { text: "Client ID:"; }
+                                LineEdit {
+                                    horizontal-stretch: 1;
+                                    text: root.discord-client-id;
+                                    placeholder-text: "e.g. 1234567890123456789";
+                                    edited(text) => { root.discord-client-id-edited(text); }
+                                }
+                            }
+                            Row {
+                                FieldLabel { text: "Status:"; }
+                                UnitText { text: root.discord-status-text; }
                             }
                         }
-                        Row {
-                            FieldLabel { text: "Status:"; }
-                            UnitText { text: root.discord-status-text; }
-                        }
-                    }
 
-                    Rectangle { height: 8px; }
-                    SectionHeading { text: "Artist information"; }
-                    HintText {
-                        text: "While the BIO tab is open, the playing artist is looked up online from the track's artist and title -- MusicBrainz identifies the artist (type, country, active years, genres). Nothing is sent while the tab is closed, and results are kept, so each artist is looked up once.";
-                    }
-                    CheckBox {
-                        text: "Include biography and photo from Wikipedia";
-                        checked: root.artist-wikipedia;
-                        toggled => { root.artist-wikipedia-toggled(self.checked); }
-                    }
-                    GridLayout {
-                        spacing: 8px;
-                        Row {
-                            FieldLabel { text: "Language:"; }
-                            ComboBox {
-                                enabled: root.artist-wikipedia;
-                                model: root.wikipedia-languages;
-                                current-index <=> root.wikipedia-language-index;
-                                selected => { root.wikipedia-language-changed(self.current-index); }
-                            }
-                            Rectangle { horizontal-stretch: 1; }
+                        Rectangle { height: 8px; }
+                        SectionHeading { text: "Now playing file (OBS)"; }
+                        HintText {
+                            text: "Keeps what's playing -- artist, album, title, time, and the track's folder for its folder.jpg -- in a JSON file for a stream overlay to show. It's the format of foobar2000's foo_np_simple, so an overlay made for it, like the OBS \u{201c}nowplaying\u{201d} browser source, works as it is: choose the nowplaying.json in the overlay's folder.";
                         }
+                        CheckBox {
+                            text: "Write the now playing file";
+                            checked <=> root.now-playing-file-enabled;
+                            toggled => { root.now-playing-file-toggled(self.checked); }
+                        }
+                        GridLayout {
+                            spacing: 8px;
+                            Row {
+                                FieldLabel { text: "File:"; }
+                                UnitText {
+                                    horizontal-stretch: 1;
+                                    overflow: elide;
+                                    text: root.now-playing-file-path == "" ? "None chosen yet" : root.now-playing-file-path;
+                                }
+                                Button {
+                                    text: "Choose\u{2026}";
+                                    clicked => { root.now-playing-file-choose-clicked(); }
+                                }
+                            }
+                        }
+
+                        Rectangle { height: 8px; }
+                        SectionHeading { text: "Artist information"; }
+                        HintText {
+                            text: "While the BIO tab is open, the playing artist is looked up online from the track's artist and title -- MusicBrainz identifies the artist (type, country, active years, genres). Nothing is sent while the tab is closed, and results are kept, so each artist is looked up once.";
+                        }
+                        CheckBox {
+                            text: "Include biography and photo from Wikipedia";
+                            checked: root.artist-wikipedia;
+                            toggled => { root.artist-wikipedia-toggled(self.checked); }
+                        }
+                        GridLayout {
+                            spacing: 8px;
+                            Row {
+                                FieldLabel { text: "Language:"; }
+                                ComboBox {
+                                    enabled: root.artist-wikipedia;
+                                    model: root.wikipedia-languages;
+                                    current-index <=> root.wikipedia-language-index;
+                                    selected => { root.wikipedia-language-changed(self.current-index); }
+                                }
+                                Rectangle { horizontal-stretch: 1; }
+                            }
+                        }
+                        HintText { text: "Articles missing in the chosen language fall back to English."; }
                     }
-                    HintText { text: "Articles missing in the chosen language fall back to English."; }
                 }
             }
         }

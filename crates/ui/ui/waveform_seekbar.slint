@@ -26,20 +26,26 @@ export component WaveformSeekbar inherits Rectangle {
         background: Theme.accent.transparentize(0.88);
     }
 
-    for path[i] in root.channel-paths: Path {
-        x: 4px;
-        y: 4px + i * root.lane-height + 2px;
-        width: root.width - 8px;
-        height: root.lane-height - 4px;
-        commands: path;
-        viewbox-x: 0;
-        viewbox-y: -1;
-        viewbox-width: root.bucket-count;
-        viewbox-height: 2;
-        fit: fill;
-        stroke: Theme.accent;
-        stroke-width: 1px;
-        fill: transparent;
+    // The outlines only change with the track or the size, but a Path is
+    // re-parsed and re-tessellated on every frame it's drawn in -- and the
+    // playhead moves every frame. Kept as a cached layer instead.
+    Rectangle {
+        cache-rendering-hint: true;
+        for path[i] in root.channel-paths: Path {
+            x: 4px;
+            y: 4px + i * root.lane-height + 2px;
+            width: root.width - 8px;
+            height: root.lane-height - 4px;
+            commands: path;
+            viewbox-x: 0;
+            viewbox-y: -1;
+            viewbox-width: root.bucket-count;
+            viewbox-height: 2;
+            fit: fill;
+            stroke: Theme.accent;
+            stroke-width: 1px;
+            fill: transparent;
+        }
     }
 
     // Playback position.

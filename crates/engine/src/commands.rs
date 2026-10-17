@@ -1,3 +1,4 @@
+use crate::dsp::EqualizerSettings;
 use crate::spectrum::SpectrumConfig;
 use std::time::Duration;
 
@@ -22,6 +23,12 @@ pub enum PlaybackMode {
     Shuffle,
 }
 
+/// The id the engine reports in `PlaylistUpdated` for the throwaway
+/// playlist the media library plays into (see [`EngineCommand::PlayLibrary`]).
+/// Real stored playlists have ids of 1 or more, so `0` can never collide
+/// with one -- and the app knows not to persist it.
+pub const TEMP_PLAYLIST_ID: i64 = 0;
+
 /// Sent from the UI thread to the playback thread. See
 /// [`crate::PlaybackEngine`] for how these are consumed.
 #[derive(Debug, Clone)]
@@ -36,6 +43,14 @@ pub enum EngineCommand {
     /// 0.0 (silent) to 1.0 (unity gain).
     SetVolume(f32),
     LoadPlaylist(Vec<std::path::PathBuf>),
+    /// Loads `paths` as a throwaway "Library" playlist and starts playing at
+    /// `start` (the media library's double-click, issue #37). Unlike
+    /// `LoadPlaylist`, the tracks are *not* saved to the active named
+    /// playlist: the engine reports [`TEMP_PLAYLIST_ID`] in `PlaylistUpdated`,
+    /// and they're discarded the moment a named playlist is chosen again.
+    PlayLibrary { paths: Vec<std::path::PathBuf>, start: usize },
+    /// Adds tracks to the end of the playlist, keeping what's playing.
+    AppendToPlaylist(Vec<std::path::PathBuf>),
     /// Recursively scans a folder for audio files and loads them as the
     /// playlist (done on the engine thread so a big or slow folder never
     /// blocks the UI). Sends `EngineEvent::Error` instead, leaving the
@@ -45,6 +60,13 @@ pub enum EngineCommand {
     PlayIndex(usize),
     /// Removes a single track from the playlist by index.
     RemoveIndex(usize),
+    /// Removes several tracks at once (indices into the current playlist).
+    RemoveIndices(Vec<usize>),
+    /// Shows another playlist (`id` is the app's, echoed back in
+    /// `PlaylistUpdated`). Unlike `LoadPlaylist`, playback isn't
+    /// interrupted: the song playing carries on, and the next one comes
+    /// from the new playlist.
+    SwitchPlaylist { id: i64, paths: Vec<std::path::PathBuf> },
     ClearPlaylist,
     /// Reorders the playlist so position `k` holds the track currently at
     /// `order[k]` (the playlist's Sort submenu). Ignored unless `order` is a
@@ -67,4 +89,12 @@ pub enum EngineCommand {
     /// spectrum analyzer.
     SetSpectrumConfig(SpectrumConfig),
     SetPlaybackMode(PlaybackMode),
+    /// The graphic equalizer's bands and on/off switch (issue #7); takes
+    /// effect from the next decoded chunk.
+    SetEqualizer(EqualizerSettings),
+    /// Plays through the output device with this id (see
+    /// [`crate::output_devices`]), or `None` to follow the system default
+    /// -- including when it changes, e.g. headphones plugged in. A chosen
+    /// device that's unplugged falls back to the default until it returns.
+    SetOutputDevice(Option<String>),
 }

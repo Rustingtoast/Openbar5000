@@ -18,5 +18,22 @@ rustfft.workspace = true
 rand.workspace = true
 image.workspace = true
 
+# Realtime scheduling for the audio thread, from RTKit or the desktop
+# portal (see `output::realtime`). zbus is already built for Slint's tray
+# icon; its blocking API is what's added.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
+libc = "0.2"
+
+# Windows: cpal's `realtime` has the audio callback thread join MMCSS, the
+# system's scheduling class for audio. `windows` (which cpal already
+# builds) for the output device notifications (see `output::device_watch`;
+# `windows-core` is what its `implement` macro refers to) and background
+# thread priority (see `background`).
+[target.'cfg(windows)'.dependencies]
+cpal = { workspace = true, features = ["realtime"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Media_Audio", "Win32_System_Com", "Win32_System_Threading", "Win32_UI_Shell_PropertiesSystem"] }
+windows-core = "0.62"
+
 [dev-dependencies]
 tracing-subscriber.workspace = true

@@ -1,11 +1,25 @@
+// A window, not a console program, on Windows: otherwise starting it from
+// the Start menu or a shortcut opens a terminal next to it for the log. Its
+// log still shows when it's started from one (see `attach_parent_console`).
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod artist_info;
+mod audio_output;
 mod discord_presence;
+mod display_power;
+mod equalizer;
+mod holiday;
 mod layout;
 mod lyrics;
+mod media_library;
 mod media_keys;
+mod now_playing_file;
 mod platform;
 mod playlist_rows;
+mod playlists;
+mod properties;
 mod settings;
+mod spectrum_bars;
 mod store;
 mod theme;
 mod wiring;
@@ -18,6 +32,8 @@ use store::Store;
 use ui::MainWindow;
 
 fn main() {
+    #[cfg(windows)]
+    attach_parent_console();
     init_logging();
 
     let plugins = PluginRegistry::scan();
@@ -32,6 +48,21 @@ fn main() {
     let _ui_handles = wiring::wire(&window, engine, store);
 
     window.run().expect("UI event loop failed");
+}
+
+/// A Windows GUI program starts without a console, so the log would go
+/// nowhere: started from a terminal (as by `cargo run`), it writes to that
+/// one instead. Output redirected to a file or a pipe already has somewhere
+/// to go, and is left there.
+#[cfg(windows)]
+fn attach_parent_console() {
+    use windows::Win32::System::Console::{AttachConsole, GetStdHandle, ATTACH_PARENT_PROCESS, STD_OUTPUT_HANDLE};
+    // SAFETY: plain calls; without a parent console, attaching just fails.
+    unsafe {
+        if GetStdHandle(STD_OUTPUT_HANDLE).is_err() {
+            let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+        }
+    }
 }
 
 /// Logs at INFO, except libraries whose warnings aren't actionable for a
@@ -58,6 +89,10 @@ fn init_logging() {
                 .with_target("symphonia_bundle_mp3", tracing::Level::ERROR)
                 .with_target("symphonia_core", tracing::Level::WARN)
                 .with_target("zbus", tracing::Level::ERROR)
+                // Warns "could not find pipe" on every connection attempt
+                // while Discord isn't running -- expected, and shown as the
+                // status in Preferences instead (issue #29).
+                .with_target("discord_rich_presence", tracing::Level::ERROR)
         });
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer())

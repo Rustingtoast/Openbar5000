@@ -45,9 +45,13 @@ fi
 
 ARCH="$(dpkg --print-architecture 2>/dev/null || echo amd64)"
 PKG_DIR="$DIST_DIR/pkgroot"
-DEB_PATH="$DIST_DIR/${APP_NAME}_${VERSION}_${ARCH}.deb"
+# Debian reads what follows a "-" as the package's own revision; a
+# pre-release ("0.7.1-alpha") goes after a "~" instead, which sorts before
+# the release itself.
+DEB_VERSION="$(echo "$VERSION" | sed 's/-/~/')"
+DEB_PATH="$DIST_DIR/${APP_NAME}_${DEB_VERSION}_${ARCH}.deb"
 
-echo "==> Packaging .deb (version $VERSION, arch $ARCH)..."
+echo "==> Packaging .deb (version $DEB_VERSION, arch $ARCH)..."
 rm -rf "$PKG_DIR"
 mkdir -p "$PKG_DIR/DEBIAN" \
          "$PKG_DIR/usr/bin" \
@@ -78,14 +82,19 @@ EOF
 # Exact package names can drift between distro releases (e.g. Ubuntu's
 # libasound2 -> libasound2t64 transition) -- if `dpkg -i` complains about
 # missing dependencies, `sudo apt-get install -f` will resolve them for the
-# system's actual package names.
+# system's actual package names. Vulkan is only recommended: Skia draws
+# through it when it's there, and through OpenGL (libgl1) otherwise.
+# The window system libraries are loaded at runtime rather than linked, so
+# they're listed by hand: X11 (with xkbcommon-x11 for the keyboard) and
+# Wayland, both first-class; EGL is only for OpenGL drawing.
 cat > "$PKG_DIR/DEBIAN/control" <<EOF
 Package: $APP_NAME
-Version: $VERSION
+Version: $DEB_VERSION
 Section: sound
 Priority: optional
 Architecture: $ARCH
-Depends: libasound2, libfontconfig1, libx11-6, libxkbcommon0, libxcursor1, libxrandr2, libxi6, libgl1
+Depends: libasound2, libfontconfig1, libx11-6, libx11-xcb1, libxkbcommon0, libxkbcommon-x11-0, libxcursor1, libxrandr2, libxi6, libwayland-client0, libgl1
+Recommends: libvulkan1, libegl1, libwayland-egl1
 Maintainer: Openbar5000 Project <noreply@github.com>
 Homepage: https://github.com/Rustingtoast/Openbar5000
 Description: Open-source, cross-platform alternative to foobar2000

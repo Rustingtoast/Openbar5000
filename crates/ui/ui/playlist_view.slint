@@ -17,9 +17,21 @@ export struct PlaylistRow {
     is-collapsed: bool,
     track-number: string,
     title: string,
+    // Shown in list view only (album view has them in the header).
+    artist: string,
+    album: string,
     duration: string,
     track-index: int,
     is-current: bool,
+    /// Selected (click, Shift+click, Ctrl/Cmd+click) -- what Remove, Cut
+    /// and Copy act on.
+    is-selected: bool,
+}
+
+/// One entry of the summary bar's playlist menu.
+export struct PlaylistChoice {
+    title: string,
+    checked: bool,
 }
 
 export component PlaylistView inherits Rectangle {
@@ -29,7 +41,23 @@ export component PlaylistView inherits Rectangle {
     // Active Grouping submenu id (see `PlaylistGrouping::as_str`), for the
     // submenu's check mark.
     in property <string> grouping: "artist-album-disc";
+    /// List view (Preferences > Appearance): one plain row per song, with
+    /// artist and album columns and no album headers.
+    in property <bool> list-view: false;
+    /// The playlists, for the summary bar's menu (issue #33).
+    in property <[PlaylistChoice]> playlists: [];
+    in property <string> playlist-name;
+    /// Plays the track (a plain click, or the menu's Play).
     callback row-clicked(int);
+    /// Selects the track: plain, `range` (Shift) or `toggle` (Ctrl/Cmd).
+    callback row-selected(int, bool, bool);
+    callback playlist-chosen(int);
+    callback new-playlist-clicked();
+    callback playlist-manager-clicked();
+    /// Right-click > Send to Playlist: (track, playlist index), or to a new
+    /// playlist.
+    callback send-to-playlist(int, int);
+    callback send-to-new-playlist(int);
     callback row-properties-clicked(int);
     callback row-open-folder-clicked(int);
     callback row-remove-clicked(int);
@@ -62,28 +90,63 @@ export component PlaylistView inherits Rectangle {
     VerticalLayout {
         // Summary line on top, search box at the bottom, as in the
         // reference UI.
+        // Clicking it opens the playlist menu: switch, new, manager.
         Rectangle {
             height: 18px;
-            background: Theme.bg-raised;
+            background: summary-touch.has-hover ? Theme.bg-raised.brighter(0.15) : Theme.bg-raised;
             Text {
-                text: root.summary;
+                text: (root.playlist-name == "" ? "" : root.playlist-name + "  \u{00b7}  ") + root.summary + "  \u{25be}";
                 font-size: 11px;
-                color: Theme.text-muted;
+                color: summary-touch.has-hover ? Theme.text-primary : Theme.text-muted;
                 horizontal-alignment: center;
                 vertical-alignment: center;
                 overflow: elide;
             }
+            playlist-menu := ContextMenuArea {
+                Menu {
+                    for choice[i] in root.playlists: MenuItem {
+                        title: choice.title;
+                        checkable: true;
+                        checked: choice.checked;
+                        activated => { root.playlist-chosen(i); }
+                    }
+                    MenuSeparator {}
+                    MenuItem { title: "New Playlist"; activated => { root.new-playlist-clicked(); } }
+                    MenuItem { title: "Playlist Manager..."; activated => { root.playlist-manager-clicked(); } }
+                }
+                summary-touch := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { playlist-menu.show({ x: self.mouse-x, y: self.mouse-y }); }
+                }
+            }
         }
+        if root.list-view: Rectangle {
+            height: 20px;
+            background: Theme.bg-raised;
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 4px;
+                spacing: 8px;
+                Text { text: "#"; width: 34px; font-size: 11px; vertical-alignment: center; color: Theme.text-muted; }
+                Text { text: "Title"; horizontal-stretch: 3; min-width: 0; preferred-width: 0; font-size: 11px; vertical-alignment: center; color: Theme.text-muted; }
+                Text { text: "Artist"; horizontal-stretch: 2; min-width: 0; preferred-width: 0; font-size: 11px; vertical-alignment: center; color: Theme.text-muted; }
+                Text { text: "Album"; horizontal-stretch: 2; min-width: 0; preferred-width: 0; font-size: 11px; vertical-alignment: center; color: Theme.text-muted; }
+                Text { text: "Length"; width: 52px; font-size: 11px; vertical-alignment: center; color: Theme.text-muted; }
+            }
+        }
+
         list := ListView {
             vertical-stretch: 1;
             for row[i] in root.rows: Rectangle {
                 height: row.is-header ? 64px : 22px;
-                background: row.is-current ? Theme.accent : transparent;
+                background: row.is-current ? Theme.accent : row.is-selected ? Theme.accent.transparentize(0.65) : transparent;
 
                 // One menu for both row kinds, mirroring the reference UI's
                 // playlist context menu; track-only entries are hidden on
-                // group headers, where they'd be ambiguous.
-                ContextMenuArea {
+                // group headers, where they'd be ambiguous. The rows'
+                // TouchAreas open it themselves: a TouchArea takes every
+                // mouse button, so the right-click never reaches this area.
+                row-menu := ContextMenuArea {
                     Menu {
                         MenuItem { title: "Show now playing"; activated => { root.show-now-playing-clicked(); } }
                         MenuItem { title: "Refresh playlist"; activated => { root.refresh-playlist-clicked(); } }
@@ -93,7 +156,7 @@ export component PlaylistView inherits Rectangle {
                         if !row.is-header: MenuSeparator {}
                         if !row.is-header: MenuItem { title: "Remove"; activated => { root.row-remove-clicked(row.track-index); } }
                         if !row.is-header: MenuSeparator {}
-                        Menu {
+                        if !root.list-view: Menu {
                             title: "Collapse/Expand";
                             MenuItem {
                                 title: row.is-collapsed ? "Expand this group" : "Collapse this group";
@@ -103,7 +166,7 @@ export component PlaylistView inherits Rectangle {
                             MenuItem { title: "Collapse all"; activated => { root.collapse-all-clicked(); } }
                             MenuItem { title: "Expand all"; activated => { root.expand-all-clicked(); } }
                         }
-                        Menu {
+                        if !root.list-view: Menu {
                             title: "Grouping";
                             MenuItem { title: "Reset to default"; activated => { root.grouping-clicked("artist-album-disc"); } }
                             MenuSeparator {}
@@ -129,12 +192,26 @@ export component PlaylistView inherits Rectangle {
                         if !row.is-header: MenuItem { title: "Add to playback queue"; activated => { root.row-enqueue-clicked(row.track-index); } }
                         MenuItem { title: "Play"; activated => { root.row-clicked(row.track-index); } }
                         MenuItem { title: "Open containing folder"; activated => { root.row-open-folder-clicked(row.track-index); } }
+                        Menu {
+                            title: "Send to Playlist";
+                            for choice[p] in root.playlists: MenuItem {
+                                title: choice.title;
+                                activated => { root.send-to-playlist(row.track-index, p); }
+                            }
+                            MenuSeparator {}
+                            MenuItem { title: "New Playlist"; activated => { root.send-to-new-playlist(row.track-index); } }
+                        }
                         if !row.is-header: MenuSeparator {}
                         if !row.is-header: MenuItem { title: "Properties"; activated => { root.row-properties-clicked(row.track-index); } }
                     }
 
                     if row.is-header: TouchArea {
                         clicked => { root.group-toggle-clicked(row.group-key); }
+                        pointer-event(event) => {
+                            if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
+                                row-menu.show({ x: self.mouse-x, y: self.mouse-y });
+                            }
+                        }
                         HorizontalLayout {
                             padding: 8px;
                             spacing: 10px;
@@ -190,8 +267,32 @@ export component PlaylistView inherits Rectangle {
                     }
 
                     if !row.is-header: TouchArea {
-                        clicked => { root.row-clicked(row.track-index); }
-                        HorizontalLayout {
+                        // A plain click plays the song (and selects just it);
+                        // Shift/Ctrl/Cmd+click only change the selection.
+                        pointer-event(event) => {
+                            if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
+                                row-menu.show({ x: self.mouse-x, y: self.mouse-y });
+                            }
+                            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                                if event.modifiers.shift || event.modifiers.control || event.modifiers.meta {
+                                    root.row-selected(row.track-index, event.modifiers.shift, event.modifiers.control || event.modifiers.meta);
+                                } else {
+                                    root.row-selected(row.track-index, false, false);
+                                    root.row-clicked(row.track-index);
+                                }
+                            }
+                        }
+                        if root.list-view: HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 4px;
+                            spacing: 8px;
+                            Text { text: row.track-number; width: 34px; vertical-alignment: center; color: row.is-current ? Theme.accent-text : Theme.text-muted; }
+                            Text { text: row.title; horizontal-stretch: 3; min-width: 0; preferred-width: 0; vertical-alignment: center; color: row.is-current ? Theme.accent-text : Theme.text-primary; overflow: elide; }
+                            Text { text: row.artist; horizontal-stretch: 2; min-width: 0; preferred-width: 0; vertical-alignment: center; color: row.is-current ? Theme.accent-text : Theme.text-primary; overflow: elide; }
+                            Text { text: row.album; horizontal-stretch: 2; min-width: 0; preferred-width: 0; vertical-alignment: center; color: row.is-current ? Theme.accent-text : Theme.text-muted; overflow: elide; }
+                            Text { text: row.duration; width: 52px; vertical-alignment: center; color: row.is-current ? Theme.accent-text : Theme.text-primary; }
+                        }
+                        if !root.list-view: HorizontalLayout {
                             padding-left: 76px;
                             padding-right: 4px;
                             spacing: 4px;

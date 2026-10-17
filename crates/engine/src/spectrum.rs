@@ -1,7 +1,7 @@
 use rustfft::num_complex::Complex32;
 use rustfft::{Fft, FftPlanner};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Which channel(s) feed the analyzer -- mirrors the reference UI's
 /// "Channels" dropdown (we only implement the common cases, not full
@@ -89,6 +89,21 @@ pub struct SpectrumAnalyzer {
     peak_velocity: Vec<f32>,
     peak_hold_remaining_ms: Vec<f32>,
     last_analyze: Option<Instant>,
+    /// When the next analysis is due: one interval after the previous one
+    /// was *due*, not after it ran, so the playback thread waking a little
+    /// late doesn't stretch every interval.
+    next_due: Option<Instant>,
+}
+
+/// When the analysis after one at `now` is due: on the steady grid of
+/// `interval`s from the one that was `scheduled`, or -- when there was none,
+/// or it's over an interval behind (after a pause, or a stall) -- one
+/// interval from now, rather than a burst of catch-up frames.
+fn next_due(scheduled: Option<Instant>, now: Instant, interval: Duration) -> Instant {
+    match scheduled {
+        Some(due) if now < due + interval => due + interval,
+        _ => now + interval,
+    }
 }
 
 impl SpectrumAnalyzer {
@@ -103,6 +118,7 @@ impl SpectrumAnalyzer {
             peak_velocity: vec![0.0; config.bar_count()],
             peak_hold_remaining_ms: vec![0.0; config.bar_count()],
             last_analyze: None,
+            next_due: None,
         };
         analyzer.rebuild_fft(config.fft_size);
         analyzer
@@ -138,21 +154,21 @@ impl SpectrumAnalyzer {
         self.config.fft_size
     }
 
-    /// How long until `due` turns true.
-    pub fn time_until_due(&self) -> std::time::Duration {
-        let interval = std::time::Duration::from_millis(self.config.interval_ms as u64);
-        self.last_analyze
-            .map_or(std::time::Duration::ZERO, |last| interval.saturating_sub(last.elapsed()))
+    fn interval(&self) -> Duration {
+        Duration::from_millis(self.config.interval_ms as u64)
     }
 
-    /// Whether enough time has passed since the last update to honor
-    /// `interval_ms` -- callers should skip `analyze` entirely when this is
-    /// false, to avoid paying for FFTs nobody will see.
+    /// How long until `due` turns true.
+    pub fn time_until_due(&self) -> Duration {
+        self.next_due
+            .map_or(Duration::ZERO, |due| due.saturating_duration_since(Instant::now()))
+    }
+
+    /// Whether the next update is due under `interval_ms` -- callers should
+    /// skip `analyze` entirely when this is false, to avoid paying for FFTs
+    /// nobody will see.
     pub fn due(&self) -> bool {
-        match self.last_analyze {
-            None => true,
-            Some(last) => last.elapsed().as_secs_f32() * 1000.0 >= self.config.interval_ms as f32,
-        }
+        self.next_due.is_none_or(|due| Instant::now() >= due)
     }
 
     /// Analyzes one chunk of interleaved PCM recorded at `sample_rate` and
@@ -174,6 +190,7 @@ impl SpectrumAnalyzer {
             .map(|last| now.duration_since(last).as_secs_f32())
             .unwrap_or(0.0);
         self.last_analyze = Some(now);
+        self.next_due = Some(next_due(self.next_due, now, self.interval()));
 
         self.mono_scratch.fill(0.0);
         let frames = (interleaved.len() / channels).min(fft_size);
@@ -276,6 +293,20 @@ fn note_bins(note: usize, a4_hz: f32, bin_hz: f32, half: usize) -> (usize, usize
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn analyses_stay_on_their_grid_when_run_late_but_resync_after_a_gap() {
+        let interval = Duration::from_millis(10);
+        let start = Instant::now();
+        let ms = |n| start + Duration::from_millis(n);
+        // The first one sets the grid.
+        let due = next_due(None, start, interval);
+        assert_eq!(due, ms(10));
+        // Run 2ms late: the next one is still due at 20, not 22.
+        assert_eq!(next_due(Some(due), ms(12), interval), ms(20));
+        // More than an interval behind (a pause): start over from now.
+        assert_eq!(next_due(Some(due), ms(45), interval), ms(55));
+    }
 
     #[test]
     fn peak_holds_then_falls_with_accelerating_gravity() {

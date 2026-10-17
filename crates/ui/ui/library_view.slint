@@ -1,0 +1,170 @@
+import { Button, ComboBox, LineEdit, ListView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+/// One visible line of the library tree (see `app::media_library`).
+export struct LibraryRow {
+    /// A group (artist, album, genre, ...) rather than a track.
+    is-group: bool,
+    /// Nesting level, 0 at the top.
+    depth: int,
+    text: string,
+    /// Track count for groups, length for tracks.
+    detail: string,
+    expanded: bool,
+    /// The track's position in its album, "" for groups or when untagged.
+    number: string,
+}
+
+/// The media library (LIB panel): every track in the music folders set in
+/// Preferences > Media Library, as a tree grouped by artist and album (or
+/// genre, year, folder), with search. Double-click plays; right-click adds
+/// to the playlist.
+export component LibraryView inherits Rectangle {
+    in property <[LibraryRow]> rows;
+    in property <[string]> groupings;
+    in property <int> grouping-index;
+    in property <string> status;
+    in property <bool> has-folders;
+    in property <int> selected: -1;
+
+    callback grouping-changed(int);
+    callback search-edited(string);
+    callback row-clicked(int);
+    callback row-toggled(int);
+    callback row-activated(int);
+    callback row-add-clicked(int);
+    callback collapse-all-clicked();
+    callback rescan-clicked();
+    callback add-folder-clicked();
+    callback folders-clicked();
+
+    background: Theme.bg-raised;
+
+    if !root.has-folders: VerticalLayout {
+        alignment: center;
+        padding: 24px;
+        spacing: 12px;
+        Text {
+            text: "Media library";
+            font-size: 15px;
+            font-weight: 700;
+            color: Theme.text-primary;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: "Add the folders your music lives in. They're scanned and kept up to date as files are added, changed or removed.";
+            wrap: word-wrap;
+            font-size: 12px;
+            color: Theme.text-muted;
+            horizontal-alignment: center;
+        }
+        HorizontalLayout {
+            alignment: center;
+            Button { text: "Add music folder\u{2026}"; clicked => { root.add-folder-clicked(); } }
+        }
+    }
+
+    if root.has-folders: VerticalLayout {
+        padding: 6px;
+        spacing: 6px;
+
+        HorizontalLayout {
+            spacing: 6px;
+            height: 28px;
+            ComboBox {
+                width: 130px;
+                model: root.groupings;
+                current-index: root.grouping-index;
+                selected => { root.grouping-changed(self.current-index); }
+            }
+            LineEdit {
+                horizontal-stretch: 1;
+                font-size: 12px;
+                placeholder-text: "Search the library";
+                edited(text) => { root.search-edited(text); }
+                accepted(text) => { root.search-edited(text); }
+            }
+        }
+
+        ListView {
+            vertical-stretch: 1;
+            for row[i] in root.rows: Rectangle {
+                height: row.is-group && row.depth == 0 ? 24px : 21px;
+                background: i == root.selected ? Theme.accent : touch.has-hover ? Theme.text-muted.transparentize(0.9) : transparent;
+
+                row-menu := ContextMenuArea {
+                    Menu {
+                        MenuItem { title: "Play"; activated => { root.row-activated(i); } }
+                        MenuItem { title: "Add to playlist"; activated => { root.row-add-clicked(i); } }
+                        MenuSeparator {}
+                        if row.is-group: MenuItem {
+                            title: row.expanded ? "Collapse" : "Expand";
+                            activated => { root.row-toggled(i); }
+                        }
+                        MenuItem { title: "Collapse all"; activated => { root.collapse-all-clicked(); } }
+                        MenuSeparator {}
+                        MenuItem { title: "Rescan library"; activated => { root.rescan-clicked(); } }
+                        MenuItem { title: "Music folders\u{2026}"; activated => { root.folders-clicked(); } }
+                    }
+
+                    touch := TouchArea {
+                        clicked => {
+                            root.row-clicked(i);
+                            if row.is-group {
+                                root.row-toggled(i);
+                            }
+                        }
+                        double-clicked => { root.row-activated(i); }
+                        // A TouchArea takes every button: open the menu here.
+                        pointer-event(event) => {
+                            if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
+                                root.row-clicked(i);
+                                row-menu.show({ x: self.mouse-x, y: self.mouse-y });
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        padding-left: 6px + row.depth * 14px;
+                        padding-right: 8px;
+                        spacing: 6px;
+                        Text {
+                            width: 10px;
+                            text: !row.is-group ? "" : row.expanded ? "\u{25be}" : "\u{25b8}";
+                            vertical-alignment: center;
+                            color: i == root.selected ? Theme.accent-text : Theme.text-muted;
+                        }
+                        if !row.is-group && row.number != "": Text {
+                            width: 22px;
+                            text: row.number;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                            color: i == root.selected ? Theme.accent-text : Theme.text-muted;
+                        }
+                        Text {
+                            horizontal-stretch: 1;
+                            text: row.text;
+                            font-size: row.is-group && row.depth == 0 ? 13px : 12px;
+                            font-weight: row.is-group && row.depth == 0 ? 600 : 400;
+                            overflow: elide;
+                            vertical-alignment: center;
+                            color: i == root.selected ? Theme.accent-text : Theme.text-primary;
+                        }
+                        Text {
+                            text: row.detail;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                            color: i == root.selected ? Theme.accent-text : Theme.text-muted;
+                        }
+                    }
+                }
+            }
+        }
+
+        Text {
+            text: root.status;
+            font-size: 11px;
+            color: Theme.text-muted;
+            overflow: elide;
+        }
+    }
+}

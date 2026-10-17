@@ -1,0 +1,80 @@
+# Flatpak manifest for Openbar5000 -- built by ../build-flatpak.sh, which
+# first vendors the Rust crates into dist/flatpak/vendor and fetches Skia's
+# prebuilt library into dist/flatpak/skia, so the build runs offline inside
+# the sandbox (as Flatpak builds must).
+app-id: io.github.rustingtoast.Openbar5000
+runtime: org.freedesktop.Platform
+runtime-version: '26.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: openbar5000
+
+finish-args:
+  # Window: Wayland, or X11 where Wayland isn't available; GPU drawing.
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # Audio out (ALSA in the runtime routes through PulseAudio/PipeWire).
+  - --socket=pulseaudio
+  # Artist info lookups (MusicBrainz, Wikipedia).
+  - --share=network
+  # Music: read and write the Music folder (lyrics are saved into files),
+  # read the rest of home and external drives (for playlists and library
+  # folders elsewhere). Files picked in the Open dialogs work regardless,
+  # through the desktop portal.
+  - --filesystem=xdg-music
+  - --filesystem=home:ro
+  - --filesystem=/media:ro
+  - --filesystem=/run/media:ro
+  # Media keys and the desktop's now-playing widget (MPRIS).
+  - --own-name=org.mpris.MediaPlayer2.openbar5000
+  # Discord Rich Presence: Discord's IPC socket (regular and Flatpak Discord).
+  - --filesystem=xdg-run/discord-ipc-0
+  - --filesystem=xdg-run/app/com.discordapp.Discord:create
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/openbar5000/cargo
+    CARGO_NET_OFFLINE: 'true'
+    # Skia's prebuilt library, fetched by build-flatpak.sh: its build script
+    # fills in {key} and reads the archive from here instead of GitHub.
+    SKIA_BINARIES_URL: file:///run/build/openbar5000/skia/skia-binaries-{key}.tar.gz
+
+modules:
+  - name: openbar5000
+    buildsystem: simple
+    build-commands:
+      - cargo build --release --locked --offline -p app
+      - install -Dm755 target/release/openbar5000 /app/bin/openbar5000
+      - install -Dm644 compile/flatpak/io.github.rustingtoast.Openbar5000.desktop
+        /app/share/applications/io.github.rustingtoast.Openbar5000.desktop
+      - install -Dm644 compile/flatpak/io.github.rustingtoast.Openbar5000.metainfo.xml
+        /app/share/metainfo/io.github.rustingtoast.Openbar5000.metainfo.xml
+      - install -Dm644 crates/ui/ui/assets/icons/app-icon.svg
+        /app/share/icons/hicolor/scalable/apps/io.github.rustingtoast.Openbar5000.svg
+      - install -Dm644 compile/assets/linux/openbar5000-256.png
+        /app/share/icons/hicolor/256x256/apps/io.github.rustingtoast.Openbar5000.png
+    sources:
+      # The repository itself, minus build output.
+      - type: dir
+        path: ../..
+        skip:
+          - target
+          - dist
+          - .git
+      # Crates vendored by build-flatpak.sh, and the cargo config that
+      # points cargo at them.
+      - type: dir
+        path: ../../dist/flatpak/vendor
+        dest: vendor
+      - type: file
+        path: ../../dist/flatpak/cargo-config.toml
+        dest: .cargo
+        dest-filename: config.toml
+      # Skia's prebuilt library, fetched by build-flatpak.sh.
+      - type: dir
+        path: ../../dist/flatpak/skia
+        dest: skia

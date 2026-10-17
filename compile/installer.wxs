@@ -3,8 +3,10 @@
   Openbar5000 Windows MSI installer (WiX Toolset v4+).
 
   Not meant to be compiled directly: compile\build-windows.ps1 locates the
-  `wix` CLI and drives this script, passing Version and RepoRoot via -d
-  defines so the installer version always matches Cargo.toml.
+  `wix` CLI and drives this script, passing Version, RepoRoot and
+  LicenseRtf via -d defines so the installer version always matches
+  Cargo.toml, and the license agreement shown is the one it just built
+  (compile\installer-terms.txt followed by LICENSE).
 
   Requires WiX v4+ (as a global dotnet tool) and its UI extension; see
   compile/README.md for the exact install commands.
@@ -18,6 +20,9 @@
   <?ifndef RepoRoot?>
     <?define RepoRoot = ".."?>
   <?endif?>
+  <?ifndef LicenseRtf?>
+    <?error LicenseRtf isn't set: build the installer with compile\build-windows.ps1, which writes it ?>
+  <?endif?>
 
   <!-- Fixed, self-chosen GUID identifying this product across upgrades:
        do not change it once released, or Windows will treat an "upgrade"
@@ -28,14 +33,20 @@
            UpgradeCode="86CA0A12-BE7A-453D-B313-FD3C1F1C06B3"
            Language="1033">
 
-    <MajorUpgrade DowngradeErrorMessage="A newer version of Openbar5000 is already installed." />
+    <!-- Same version too: a rebuild of a version replaces the installed one
+         instead of being added next to it. -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of Openbar5000 is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
     <Icon Id="AppIcon.ico" SourceFile="$(RepoRoot)\compile\assets\windows\app-icon.ico" />
     <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/Rustingtoast/Openbar5000" />
 
-    <ui:WixUI Id="WixUI_Minimal" />
+    <!-- Welcome, the license agreement (accepted before going on), where to
+         install, then install. -->
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(LicenseRtf)" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Openbar5000" />
@@ -55,12 +66,14 @@
 
     <Component Id="MainExecutable" Directory="INSTALLFOLDER" Guid="27B3D79D-ECDA-4A37-B897-33F14C288A13">
       <File Id="OpenbarExe" Source="$(RepoRoot)\dist\windows\openbar5000.exe" KeyPath="yes" />
+      <!-- The license goes with every copy (Apache-2.0, section 4). -->
+      <File Id="LicenseTxt" Source="$(RepoRoot)\LICENSE" Name="LICENSE.txt" />
     </Component>
 
     <Component Id="StartMenuShortcut" Directory="ApplicationProgramsFolder" Guid="2BD9AB1B-F0E1-4710-9E30-0CDFF9B8A55A">
       <Shortcut Id="StartMenuShortcutEntry"
                 Name="Openbar5000"
-                Description="An open-source, cross-platform alternative to foobar2000"
+                Description="An open-source, cross-platform music player"
                 Target="[INSTALLFOLDER]openbar5000.exe"
                 WorkingDirectory="INSTALLFOLDER"
                 Icon="AppIcon.ico" />
@@ -71,7 +84,7 @@
     <Component Id="DesktopShortcut" Directory="DesktopFolder" Guid="7C1E6D9A-4F2B-4A8E-9C3D-5B8A1E2F6C4D">
       <Shortcut Id="DesktopShortcutEntry"
                 Name="Openbar5000"
-                Description="An open-source, cross-platform alternative to foobar2000"
+                Description="An open-source, cross-platform music player"
                 Target="[INSTALLFOLDER]openbar5000.exe"
                 WorkingDirectory="INSTALLFOLDER"
                 Icon="AppIcon.ico" />
