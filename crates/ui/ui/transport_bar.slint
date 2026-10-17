@@ -366,10 +366,9 @@ export component SeekSlider inherits Rectangle {
 }
 
 /// "0:33 / -1:59", Repeat, Shuffle and volume -- the seek row's controls,
-/// above the album art as issue #10 asks.
+/// above the album art as issue #10 asks. Nothing here moves with every
+/// frame: the times change once a second.
 export component PlaybackOptions inherits Rectangle {
-    in property <float> position-seconds: 0;
-    in property <float> duration-seconds: 0;
     in property <float> volume: 1.0;
     in property <string> position-text: "0:00";
     in property <bool> shuffle-active: false;

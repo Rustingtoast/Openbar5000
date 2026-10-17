@@ -512,6 +512,30 @@ pub fn build_grouped_rows(
     rows
 }
 
+/// For each of `track_count` tracks, the row of `rows` that shows whether
+/// it's the one playing (`is_current`): its own, or its group's header
+/// while the group is collapsed; `None` when a search hides it. Lets a
+/// change of track update just those rows instead of building them all
+/// again. A collapsed header stands for every track up to the next header:
+/// groups are only collapsed while no search leaves any out.
+pub fn current_rows(rows: &[PlaylistRow], track_count: usize) -> Vec<Option<usize>> {
+    let mut current_rows = vec![None; track_count];
+    for (r, row) in rows.iter().enumerate() {
+        let start = row.track_index.max(0) as usize;
+        let end = if !row.is_header {
+            start + 1
+        } else if row.is_collapsed {
+            rows.get(r + 1).map_or(track_count, |next| next.track_index.max(0) as usize)
+        } else {
+            continue;
+        };
+        for slot in current_rows.iter_mut().take(end).skip(start) {
+            *slot = Some(r);
+        }
+    }
+    current_rows
+}
+
 /// List view: every matching track as a plain row, numbered by playlist
 /// position, with no album headers.
 pub fn build_list_rows(
@@ -802,6 +826,35 @@ mod tests {
             &mut CoverCache::default(),
         );
         assert_eq!(rows.len(), 2);
+    }
+
+    #[test]
+    fn a_track_is_shown_playing_by_its_row_or_its_collapsed_header() {
+        let t = tracks();
+        let grouping = PlaylistGrouping::Artist;
+        let build = |current, query: &str, collapsed: &HashSet<String>| {
+            build_grouped_rows(&t, current, query, grouping, false, collapsed, &mut CoverCache::default())
+        };
+        let marked = |rows: &[PlaylistRow]| (0..rows.len()).filter(|&r| rows[r].is_current).collect::<Vec<_>>();
+
+        // Beta | zulu | Alpha | Yankee | Beta | xray
+        let expanded = build(None, "", &HashSet::new());
+        assert_eq!(current_rows(&expanded, 3), [Some(1), Some(3), Some(5)]);
+        // Beta (collapsed) | Alpha | Yankee | Beta (collapsed)
+        let collapsed = HashSet::from(["Beta".to_string()]);
+        let rows = build(None, "", &collapsed);
+        let lookup = current_rows(&rows, 3);
+        assert_eq!(lookup, [Some(0), Some(2), Some(3)]);
+        // The very rows a build marks while that track plays.
+        for (track, row) in lookup.iter().enumerate() {
+            assert_eq!(marked(&build(Some(track), "", &collapsed)), [row.unwrap()]);
+        }
+        // A track a search hides has no row.
+        let rows = build(None, "zulu", &collapsed);
+        assert_eq!(current_rows(&rows, 3), [Some(1), None, None]);
+
+        let list = build_list_rows(&t, None, "", &mut CoverCache::default());
+        assert_eq!(current_rows(&list, 3), [Some(0), Some(1), Some(2)]);
     }
 
     fn tagged(path: &str, artist: &str, album_artist: &str, album: &str, disc: Option<u32>, number: u32) -> Track {

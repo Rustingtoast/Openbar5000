@@ -1,6 +1,7 @@
 use crate::discord_presence::{
     NowPlaying, PresenceClient, PresenceCommand, PresenceEvent, DEFAULT_CLIENT_ID,
 };
+use crate::display_power::DisplayPower;
 use crate::layout::{drop_at, drop_preview, Axis, DragStart, Drop, Layout, PanelKind, Placement, Side};
 use crate::artist_info::{self, ArtistInfo, Candidate, Outcome, WIKIPEDIA_LANGUAGES};
 use crate::audio_output::AudioOutput;
@@ -12,20 +13,20 @@ use crate::lyrics::Lyrics;
 use crate::media_keys::{MediaAction, MediaKeys};
 use crate::platform;
 use crate::playlist_rows::{
-    all_group_keys, build_grouped_rows, build_list_rows, group_key_of, smart_order, sort_order, sorted_order, CoverCache,
-    PlaylistGrouping, PlaylistSort, SortMode,
+    all_group_keys, build_grouped_rows, build_list_rows, current_rows, group_key_of, smart_order, sort_order,
+    sorted_order, CoverCache, PlaylistGrouping, PlaylistSort, SortMode,
 };
 use crate::settings::{
     note_from_name, note_name, normalize_fps, FPS_CHOICES, valid_note_range, Settings, A4_MAX_HZ, A4_MIN_HZ,
     HIGHEST_NOTE, LOWEST_NOTE,
 };
-use crate::spectrum_bars::spectrum_rects;
+use crate::spectrum_bars;
 use crate::store::Store;
 use crate::theme::{self, ThemeColors, ThemeRegistry};
 use engine::{
-    EngineCommand, EngineEvent, PlaybackEngine, PlaybackMode, PlaybackState, Track,
+    EngineCommand, EngineEvent, PlaybackClock, PlaybackEngine, PlaybackMode, PlaybackState, Track,
 };
-use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, Timer, TimerMode, VecModel};
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -41,6 +42,19 @@ use ui::{
 /// The workspace version from `Cargo.toml` -- the one number the build
 /// scripts also stamp into the macOS/Windows/Linux packages.
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// `version` as the title bar and About show it: a pre-release named the
+/// way it's said, so "0.7.1-alpha" reads "0.7.1 Alpha".
+fn display_version(version: &str) -> String {
+    match version.split_once('-') {
+        Some((release, stage)) => {
+            let mut stage = stage.chars();
+            let first = stage.next().map(|c| c.to_uppercase().collect::<String>()).unwrap_or_default();
+            format!("{release} {first}{}", stage.as_str())
+        }
+        None => version.to_string(),
+    }
+}
 
 /// How often engine events are drained -- which, since the spectrum and
 /// seekbar only change when they are, is also their redraw rate.
@@ -98,6 +112,9 @@ struct PlaylistViewState {
     /// starts.
     selected: HashSet<usize>,
     anchor: Option<usize>,
+    /// For each track, the row that shows it playing (see
+    /// `playlist_rows::current_rows`), as of the last time they were built.
+    current_rows: Vec<Option<usize>>,
 }
 
 impl PlaylistViewState {
@@ -132,6 +149,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         covers: CoverCache::default(),
         selected: HashSet::new(),
         anchor: None,
+        current_rows: Vec::new(),
     }));
     // The currently loaded track, if any -- used by the top-menu
     // "Properties" item, which (unlike the playlist's right-click one) isn't
@@ -142,9 +160,9 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     let properties_window = PropertiesWindow::new().expect("failed to create properties window");
     let properties_editor = PropertiesEditor::wire(&properties_window, engine.clone(), store.clone());
 
-    window.set_app_version(APP_VERSION.into());
+    window.set_app_version(display_version(APP_VERSION).into());
     let about_window = AboutWindow::new().expect("failed to create about window");
-    about_window.set_app_version(APP_VERSION.into());
+    about_window.set_app_version(display_version(APP_VERSION).into());
     {
         let about_window_weak = about_window.as_weak();
         about_window.on_close_clicked(move || {
@@ -443,12 +461,12 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     }
     {
         let editor = lyrics_editor_window.as_weak();
-        let window_weak = window.as_weak();
+        let clock = engine.clock().clone();
         lyrics_editor_window.on_sync_clicked(move || {
-            let (Some(editor), Some(window)) = (editor.upgrade(), window_weak.upgrade()) else {
+            let Some(editor) = editor.upgrade() else {
                 return;
             };
-            let position = Duration::from_secs_f32(window.get_position_seconds().max(0.0));
+            let position = clock.position();
             let (text, cursor) =
                 crate::lyrics::sync_line(&editor.get_text(), editor.get_cursor().max(0) as usize, position);
             editor.set_text(text.into());
@@ -469,9 +487,10 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     }
     for (forward, step) in [(false, -5.0f32), (true, 5.0)] {
         let window_weak = window.as_weak();
+        let clock = engine.clock().clone();
         let seek = move || {
             if let Some(window) = window_weak.upgrade() {
-                let target = (window.get_position_seconds() + step).clamp(0.0, window.get_duration_seconds().max(0.0));
+                let target = (clock.position().as_secs_f32() + step).clamp(0.0, clock.duration().as_secs_f32());
                 window.invoke_seek_requested(target);
             }
         };
@@ -1421,7 +1440,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     let spectrum = Rc::new(SpectrumDisplay::new(window));
     {
         let spectrum = spectrum.clone();
-        window.on_spectrum_plot_resized(move |width, height| spectrum.resized(width, height));
+        window.on_spectrum_plot_changed(move |plot| spectrum.plot_changed(plot));
     }
 
     // OS media keys (issue #17). Registered once the event loop runs: on
@@ -1466,12 +1485,13 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     let playlist_fingerprint = Cell::new(0u64);
     let audio_output_events = audio_output.clone();
 
-    // Minimized or entirely covered, nothing is seen: stop the spectrum's
-    // FFT, don't push visualization frames (some Linux window managers
-    // still redraw a minimized window's contents, issue #21) and tick only
-    // a few times a second -- enough for play counts and media keys. X11
-    // and macOS say so; on Wayland, which doesn't, it shows as frames no
-    // longer being drawn (see `FrameWatch`).
+    // Minimized, entirely covered or on displays that are off, nothing is
+    // seen: stop the spectrum's FFT, don't push visualization frames (some
+    // Linux window managers still redraw a minimized window's contents,
+    // issue #21) or move the position (Windows draws every change even
+    // then), and tick only a few times a second -- enough for play counts
+    // and media keys. X11, macOS and Windows say so; on Wayland, which
+    // doesn't, it shows as frames no longer being drawn (see `FrameWatch`).
     let occluded = Rc::new(Cell::new(false));
     {
         use slint::winit_030::{winit::event::WindowEvent, EventResult, WinitWindowAccessor};
@@ -1483,7 +1503,8 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             EventResult::Propagate
         });
     }
-    let minimized = MinimizedCheck::default();
+    let out_of_sight = OutOfSightCheck::default();
+    let display_power = DisplayPower::watch();
     // What the engine was last told, so it's only told about changes.
     let spectrum_requested = Cell::new(None);
     let poll_timer = event_poll_timer.clone();
@@ -1519,10 +1540,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                     if let Some(media) = media_keys.borrow_mut().as_mut() {
                         match &event {
                             EngineEvent::TrackChanged { track, .. } => media.set_track(track),
-                            EngineEvent::PlaybackStateChanged(state) => media.set_state(
-                                *state,
-                                Duration::from_secs_f32(window.get_position_seconds()),
-                            ),
+                            EngineEvent::PlaybackStateChanged(state) => media.set_state(*state, clock.position()),
                             _ => {}
                         }
                     }
@@ -1534,6 +1552,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                         &store,
                         &presence,
                         &track_panels,
+                        &clock,
                         event,
                     );
                 }
@@ -1569,23 +1588,28 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         }
         // Read when it's drawn: the playback thread doesn't wake for it.
         let position = clock.position();
-        if position != shown_position.replace(position) {
+        if let Some((path, threshold, counted)) = play_count.borrow_mut().as_mut() {
+            if !*counted && position >= *threshold {
+                *counted = true;
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs() as i64);
+                play_count_store.record_play(path, now);
+            }
+        }
+        // Not shown while the system says it can't be seen, and shown as
+        // soon as it can. (A window starved of frames still is: that keeps a
+        // frame asked for, which a Wayland compositor answers once the
+        // window is in sight again.)
+        let unseen = occluded.get() || out_of_sight.get(&window) || display_power.is_off();
+        if !unseen && position != shown_position.replace(position) {
             apply_position(&window, &track_panels, position, clock.duration());
             frames.changed();
-            if let Some((path, threshold, counted)) = play_count.borrow_mut().as_mut() {
-                if !*counted && position >= *threshold {
-                    *counted = true;
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_or(0, |d| d.as_secs() as i64);
-                    play_count_store.record_play(path, now);
-                }
-            }
         }
         if frames.take_probe() {
             window.window().request_redraw();
         }
-        let hidden = occluded.get() || minimized.get(&window) || frames.starved();
+        let hidden = unseen || frames.starved();
         let spectrum_shown = window.get_panel_slots().iter().any(|slot| slot.kind == "spectrum");
         let want_spectrum = spectrum_shown && !hidden;
         if spectrum_requested.replace(Some(want_spectrum)) != Some(want_spectrum) {
@@ -1603,14 +1627,14 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             spectrum.show(bars, peaks);
         }
         track_panels.poll(&window);
-        lyrics_editor.poll(&window, &track_panels);
+        lyrics_editor.poll(&window, &track_panels, position);
         let actions: Vec<MediaAction> = media_keys
             .borrow()
             .as_ref()
             .map(|media| std::iter::from_fn(|| media.try_recv()).collect())
             .unwrap_or_default();
         for action in actions {
-            apply_media_action(&window, action);
+            apply_media_action(&window, &clock, action);
         }
         while let Some(event) = presence.try_recv_event() {
             if let Some(settings_window) = settings_window_weak.upgrade() {
@@ -2108,8 +2132,10 @@ fn track_info_rows(track: &Track) -> Vec<InfoRow> {
 }
 
 /// Runs an OS media-key action through the same callbacks as the
-/// on-screen controls, so both behave identically.
-fn apply_media_action(window: &MainWindow, action: MediaAction) {
+/// on-screen controls, so both behave identically. Seeks go from the
+/// `clock`, not the window: media keys work while it's minimized, when
+/// the position isn't shown.
+fn apply_media_action(window: &MainWindow, clock: &PlaybackClock, action: MediaAction) {
     match action {
         MediaAction::Play => window.invoke_menu_play_clicked(),
         MediaAction::Pause => window.invoke_menu_pause_clicked(),
@@ -2118,8 +2144,7 @@ fn apply_media_action(window: &MainWindow, action: MediaAction) {
         MediaAction::Next => window.invoke_next_clicked(),
         MediaAction::Previous => window.invoke_previous_clicked(),
         MediaAction::SeekBy(seconds) => {
-            let duration = window.get_duration_seconds().max(0.0);
-            let target = (window.get_position_seconds() as f64 + seconds).clamp(0.0, duration as f64);
+            let target = (clock.position().as_secs_f64() + seconds).clamp(0.0, clock.duration().as_secs_f64());
             window.invoke_seek_requested(target as f32);
         }
         MediaAction::SeekTo(position) => window.invoke_seek_requested(position.as_secs_f32()),
@@ -2135,7 +2160,7 @@ fn apply_media_action(window: &MainWindow, action: MediaAction) {
 }
 
 /// The main window's native handle where the OS media controls need one
-/// (Windows' SMTC); `None` elsewhere.
+/// (Windows' SMTC) or it's asked about (`is_cloaked`); `None` elsewhere.
 #[cfg(windows)]
 fn native_window_handle(window: &MainWindow) -> Option<*mut std::ffi::c_void> {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -2199,10 +2224,12 @@ impl LyricsEditor {
             .expect("failed to spawn lyrics save thread");
     }
 
-    /// Finished saves, plus the live playback time while it's open.
-    fn poll(&self, main: &MainWindow, track_panels: &TrackPanels) {
+    /// Finished saves, plus the live playback time (`position`) while it's
+    /// open -- also while the main window, where it's otherwise shown, is
+    /// out of sight.
+    fn poll(&self, main: &MainWindow, track_panels: &TrackPanels, position: Duration) {
         if self.window.window().is_visible() {
-            self.window.set_playback_time(main.get_position_text());
+            self.window.set_playback_time(format_duration(position).into());
             self.window.set_is_playing(main.get_is_playing());
         }
         while let Ok((path, text, result)) = self.saves.1.try_recv() {
@@ -3017,36 +3044,66 @@ fn wire_layout(
     }
 }
 
-/// How often to ask the windowing system whether the window is minimized.
-const MINIMIZED_CHECK_INTERVAL: Duration = Duration::from_millis(250);
+/// How often to ask the windowing system whether the window is out of
+/// sight.
+const OUT_OF_SIGHT_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 
-/// Whether the main window is minimized, asked of the windowing system
-/// itself: Slint's own flag only follows resizes and occlusion events, and
-/// minimizing on X11 brings neither. Asking is a round trip to the X
-/// server, so the answer is kept for a moment. (Wayland doesn't say; there
-/// `FrameWatch` notices instead.)
+/// Whether the windowing system has the main window out of sight, asked of
+/// it directly: minimized -- Slint's own flag only follows resizes and
+/// occlusion events, and minimizing on X11 brings neither -- or, on
+/// Windows, cloaked, as on another virtual desktop, which no event says.
+/// Asking X11 is a round trip to the server, so the answer is kept for a
+/// moment. (Wayland doesn't say; there `FrameWatch` notices instead.)
 #[derive(Default)]
-struct MinimizedCheck {
+struct OutOfSightCheck {
     last: Cell<Option<(std::time::Instant, bool)>>,
 }
 
-impl MinimizedCheck {
+impl OutOfSightCheck {
     fn get(&self, window: &MainWindow) -> bool {
         use slint::winit_030::WinitWindowAccessor;
-        if let Some((at, minimized)) = self.last.get() {
-            if at.elapsed() < MINIMIZED_CHECK_INTERVAL {
-                return minimized;
+        if let Some((at, out_of_sight)) = self.last.get() {
+            if at.elapsed() < OUT_OF_SIGHT_CHECK_INTERVAL {
+                return out_of_sight;
             }
         }
-        let minimized = window.window().is_minimized()
+        let out_of_sight = window.window().is_minimized()
             || window
                 .window()
                 .with_winit_window(|winit| winit.is_minimized())
                 .flatten()
-                .unwrap_or(false);
-        self.last.set(Some((std::time::Instant::now(), minimized)));
-        minimized
+                .unwrap_or(false)
+            || is_cloaked(window);
+        self.last.set(Some((std::time::Instant::now(), out_of_sight)));
+        out_of_sight
     }
+}
+
+/// Whether Windows keeps the window from being shown though it's open --
+/// on another virtual desktop, say.
+#[cfg(windows)]
+fn is_cloaked(window: &MainWindow) -> bool {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
+    let Some(hwnd) = native_window_handle(window) else {
+        return false;
+    };
+    let mut cloaked = 0u32;
+    // SAFETY: a live window's handle, and a buffer of the size given.
+    let result = unsafe {
+        DwmGetWindowAttribute(
+            HWND(hwnd),
+            DWMWA_CLOAKED,
+            (&mut cloaked as *mut u32).cast(),
+            size_of::<u32>() as u32,
+        )
+    };
+    result.is_ok() && cloaked != 0
+}
+
+#[cfg(not(windows))]
+fn is_cloaked(_window: &MainWindow) -> bool {
+    false
 }
 
 /// How long a change may go without a frame before one is asked for
@@ -3120,25 +3177,28 @@ impl FrameWatch {
     }
 }
 
-/// What the spectrum panel draws: its last frame, laid out as rectangles
-/// in the plot's size (see `spectrum_bars`).
+/// What the spectrum panel draws: its last frame, drawn into an image for
+/// the plot it's shown in (see `spectrum_bars`).
 struct SpectrumDisplay {
-    /// Kept for the window's lifetime and updated row by row, so the
-    /// rectangle elements stay put.
-    rects: Rc<VecModel<ui::SpectrumRect>>,
-    plot: Cell<(f32, f32)>,
-    /// The last (bars, peaks), laid out again when the plot is resized.
+    window: slint::Weak<MainWindow>,
+    plot: Cell<Option<spectrum_bars::Plot>>,
+    /// The last (bars, peaks), drawn again when the plot changes.
     frame: RefCell<(Vec<f32>, Vec<f32>)>,
+    /// Drawn into in turn: while one is on screen (shared with Slint, so
+    /// drawing into it would copy it), the other one -- let go of by Slint
+    /// once it was replaced -- takes the next frame without allocating.
+    buffers: RefCell<[SharedPixelBuffer<Rgba8Pixel>; 2]>,
+    next: Cell<usize>,
 }
 
 impl SpectrumDisplay {
     fn new(window: &MainWindow) -> Self {
-        let rects = Rc::new(VecModel::default());
-        window.set_spectrum_rects(ModelRc::from(rects.clone()));
         Self {
-            rects,
-            plot: Cell::new((0.0, 0.0)),
+            window: window.as_weak(),
+            plot: Cell::new(None),
             frame: RefCell::new((Vec::new(), Vec::new())),
+            buffers: RefCell::new([SharedPixelBuffer::new(0, 0), SharedPixelBuffer::new(0, 0)]),
+            next: Cell::new(0),
         }
     }
 
@@ -3147,26 +3207,36 @@ impl SpectrumDisplay {
         self.draw();
     }
 
-    fn resized(&self, width: f32, height: f32) {
-        if self.plot.replace((width, height)) != (width, height) {
+    fn plot_changed(&self, plot: ui::SpectrumPlot) {
+        let plot = spectrum_bars::Plot {
+            height: plot.height.max(0) as usize,
+            scale: plot.scale,
+            bar: plot.bar,
+            accent: plot.accent,
+        };
+        if self.plot.replace(Some(plot)) != Some(plot) {
             self.draw();
         }
     }
 
     fn draw(&self) {
-        let (width, height) = self.plot.get();
+        let (Some(window), Some(plot)) = (self.window.upgrade(), self.plot.get()) else {
+            return;
+        };
         let frame = self.frame.borrow();
-        let rects = spectrum_rects(&frame.0, &frame.1, width, height)
-            .into_iter()
-            .map(|r| ui::SpectrumRect {
-                x: r.x,
-                y: r.y,
-                width: r.width,
-                height: r.height,
-                shade: r.shade,
-            })
-            .collect();
-        sync_model(&self.rects, rects);
+        let (width, height) = (frame.0.len(), plot.height);
+        if width == 0 || height == 0 {
+            window.set_spectrum_bars(slint::Image::default());
+            return;
+        }
+        let mut buffers = self.buffers.borrow_mut();
+        let buffer = &mut buffers[self.next.get()];
+        if (buffer.width() as usize, buffer.height() as usize) != (width, height) {
+            *buffer = SharedPixelBuffer::new(width as u32, height as u32);
+        }
+        spectrum_bars::draw(buffer.make_mut_slice(), &plot, &frame.0, &frame.1);
+        window.set_spectrum_bars(slint::Image::from_rgba8_premultiplied(buffer.clone()));
+        self.next.set(1 - self.next.get());
     }
 }
 
@@ -3213,10 +3283,38 @@ fn refresh_playlist_rows(
         })
         .collect();
     let count = rows.len();
-    // Row by row: a track change then touches two rows (the old and new
-    // "playing" one) instead of replacing every row the list shows.
+    state.current_rows = current_rows(&rows, state.tracks.len());
+    // Row by row: what didn't change keeps its elements instead of every
+    // row the list shows being replaced.
     sync_model(playlist_model, rows);
     tracing::debug!("playlist rows refreshed: {count} in {:.2?}", started.elapsed());
+}
+
+/// Moves the "playing" mark to track `index`, on just the rows that show
+/// it (see `PlaylistViewState::current_rows`): building every row again
+/// for it took ~7ms per 500 tracks, on every skip.
+fn show_current_track(
+    playlist_model: &VecModel<PlaylistRow>,
+    playlist_view_state: &RefCell<PlaylistViewState>,
+    index: usize,
+) {
+    let mut state = playlist_view_state.borrow_mut();
+    let previous = state.current_index.replace(index);
+    let row_of = |track: Option<usize>| track.and_then(|track| state.current_rows.get(track).copied().flatten());
+    let (old_row, new_row) = (row_of(previous), row_of(Some(index)));
+    let mark = |row: Option<usize>, current: bool| {
+        let Some(row) = row else {
+            return;
+        };
+        if let Some(mut data) = playlist_model.row_data(row).filter(|data| data.is_current != current) {
+            data.is_current = current;
+            playlist_model.set_row_data(row, data);
+        }
+    };
+    if old_row != new_row {
+        mark(old_row, false);
+    }
+    mark(new_row, true);
 }
 
 /// Pixel offset of the now-playing track row from the top of the playlist.
@@ -3342,6 +3440,7 @@ fn apply_event(
     store: &Store,
     presence: &PresenceClient,
     track_panels: &TrackPanels,
+    clock: &PlaybackClock,
     event: EngineEvent,
 ) {
     match event {
@@ -3372,8 +3471,7 @@ fn apply_event(
             // presence for a plain track-to-track advance.
             send_presence_for_track(presence, &track, Duration::ZERO, window.get_is_playing());
             *current_track.borrow_mut() = Some(*track);
-            playlist_view_state.borrow_mut().current_index = Some(index);
-            refresh_playlist_rows(playlist_model, playlist_view_state);
+            show_current_track(playlist_model, playlist_view_state, index);
         }
         EngineEvent::PlaybackStateChanged(state) => {
             window.set_is_playing(state == PlaybackState::Playing);
@@ -3384,11 +3482,10 @@ fn apply_event(
                 }
                 PlaybackState::Playing | PlaybackState::Paused => {
                     if let Some(track) = current_track.borrow().clone() {
-                        let elapsed = Duration::from_secs_f32(window.get_position_seconds());
                         send_presence_for_track(
                             presence,
                             &track,
-                            elapsed,
+                            clock.position(),
                             state == PlaybackState::Playing,
                         );
                     }
@@ -3541,6 +3638,13 @@ mod tests {
         assert!(frames.take_probe_at(since + PROBE_AFTER));
     }
     use engine::TrackMetadata;
+
+    #[test]
+    fn versions_show_their_pre_release_by_name() {
+        assert_eq!(display_version("0.7.1-alpha"), "0.7.1 Alpha");
+        assert_eq!(display_version("1.0.0-beta.2"), "1.0.0 Beta.2");
+        assert_eq!(display_version("0.7.1"), "0.7.1");
+    }
 
     #[test]
     fn now_playing_text_matches_issue_10_and_skips_missing_tags() {

@@ -1,87 +1,144 @@
-//! The spectrum's bars and peak markers as one flat list of rectangles,
-//! laid out here in the plot's pixels. Drawn per note -- a column element
-//! holding a conditional bar and peak, each working out its own geometry
-//! and shade -- they cost most of a frame's work while playing; plain
-//! rectangles are the cheapest thing to draw. (Not paths: Skia rasterizes
-//! a path of many rectangles on the CPU and uploads it every frame.)
+//! The spectrum's bars and peak markers, drawn here as one small image:
+//! a pixel column per bar, as tall as the plot is in physical pixels,
+//! which the spectrum view stretches over the plot (each bar's column
+//! filling its note's column) with the gaps between bars drawn over it.
+//!
+//! As Slint elements -- a rectangle per bar and per peak -- they cost most
+//! of a frame's work while playing: each is visited, set up and drawn as a
+//! shape of its own on every frame, by Slint and then by Skia (on Windows,
+//! close to half of the UI thread's time). An image is one draw, and this
+//! one is small: copied and uploaded every frame, a full-size image of the
+//! plot would cost as much as the rectangles did. (Not paths: Skia
+//! rasterizes a path of many rectangles on the CPU and uploads it every
+//! frame.)
 
-/// One rectangle in the plot: `x`/`y` from its top-left, in pixels.
-/// `shade` runs from 0 (the plain bar color) to 1 (the accent).
+use slint::{Color, Rgba8Pixel};
+use std::ops::Range;
+
+/// What the image is drawn for: the plot's height in physical pixels, how
+/// many of those make a logical pixel, and the theme's colors.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SpectrumRect {
-    pub x: f32,
-    pub y: f32,
-    pub width: f32,
-    pub height: f32,
-    pub shade: f32,
+pub struct Plot {
+    pub height: usize,
+    pub scale: f32,
+    /// A quiet bar.
+    pub bar: Color,
+    /// A bar at the top, and the peak markers.
+    pub accent: Color,
 }
 
-/// Lays out `bars`, then `peaks` (if any), across a `width` x `height`
-/// plot: one column per bar, each bar inset 1px on both sides and at least
-/// 1px tall, each peak a 1px accent line. Values are the analyzer's
-/// `[0, 1]` heights; a bar's shade is the cube of its height, so only bars
-/// near the top turn fully accent-colored, as in the reference.
-pub fn spectrum_rects(bars: &[f32], peaks: &[f32], width: f32, height: f32) -> Vec<SpectrumRect> {
-    if bars.is_empty() || width <= 0.0 || height <= 0.0 {
-        return Vec::new();
+const TRANSPARENT: Rgba8Pixel = Rgba8Pixel { r: 0, g: 0, b: 0, a: 0 };
+
+/// Draws `bars`, then `peaks` (if any), into `pixels`: premultiplied RGBA,
+/// row by row, `bars.len()` wide and `plot.height` tall, over a transparent
+/// background. Each bar is at least a logical pixel tall, each peak a
+/// logical pixel line in the accent. Values are the analyzer's `[0, 1]`
+/// heights; a bar goes from `bar` to `accent` with the cube of its height,
+/// so only bars near the top turn fully accent-colored, as in the
+/// reference.
+pub fn draw(pixels: &mut [Rgba8Pixel], plot: &Plot, bars: &[f32], peaks: &[f32]) {
+    let width = bars.len();
+    debug_assert_eq!(pixels.len(), width * plot.height);
+    pixels.fill(TRANSPARENT);
+    if plot.scale <= 0.0 {
+        return;
     }
-    let column = width / bars.len() as f32;
-    let bar_width = column - 2.0;
-    if bar_width <= 0.0 {
-        return Vec::new();
-    }
-    let bars = bars.iter().enumerate().map(|(i, &value)| {
-        let bar_height = (value.min(1.0) * height).max(1.0);
-        SpectrumRect {
-            x: i as f32 * column + 1.0,
-            y: height - bar_height,
-            width: bar_width,
-            height: bar_height,
-            shade: value.clamp(0.0, 1.0).powi(3),
+    // Heights in logical pixels, like the rest of the UI.
+    let height = plot.height as f32 / plot.scale;
+    let mut fill = |column: usize, top: f32, bottom: f32, color: Color| {
+        let color = premultiplied(color);
+        for row in rows(top, bottom, plot) {
+            pixels[row * width + column] = color;
         }
-    });
-    let peaks = peaks.iter().take(bars.len()).enumerate().map(|(i, &peak)| SpectrumRect {
-        x: i as f32 * column + 1.0,
-        y: height - peak.min(1.0) * height,
-        width: bar_width,
-        height: 1.0,
-        shade: 1.0,
-    });
-    bars.chain(peaks).collect()
+    };
+    for (i, &value) in bars.iter().enumerate() {
+        let bar_height = (value.min(1.0) * height).max(1.0);
+        let shade = value.clamp(0.0, 1.0).powi(3);
+        fill(i, height - bar_height, height, plot.accent.mix(&plot.bar, shade));
+    }
+    for (i, &peak) in peaks.iter().take(width).enumerate() {
+        let top = height - peak.min(1.0) * height;
+        fill(i, top, top + 1.0, plot.accent);
+    }
+}
+
+/// The rows from `top` to `bottom` (logical) cover: those whose centers lie
+/// between them, as a GPU fills a rectangle.
+fn rows(top: f32, bottom: f32, plot: &Plot) -> Range<usize> {
+    let row = |at: f32| ((at * plot.scale - 0.5).ceil().max(0.0) as usize).min(plot.height);
+    row(top)..row(bottom)
+}
+
+fn premultiplied(color: Color) -> Rgba8Pixel {
+    let alpha = color.alpha() as u16;
+    let scale = |channel: u8| ((channel as u16 * alpha + 127) / 255) as u8;
+    Rgba8Pixel { r: scale(color.red()), g: scale(color.green()), b: scale(color.blue()), a: color.alpha() }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn rect(x: f32, y: f32, width: f32, height: f32, shade: f32) -> SpectrumRect {
-        SpectrumRect { x, y, width, height, shade }
+    const BAR: Color = Color::from_rgb_u8(0x30, 0x30, 0x30);
+    const ACCENT: Color = Color::from_rgb_u8(0xff, 0x80, 0x00);
+
+    fn plot(height: usize, scale: f32) -> Plot {
+        Plot { height, scale, bar: BAR, accent: ACCENT }
+    }
+
+    fn render(plot: &Plot, bars: &[f32], peaks: &[f32]) -> Vec<Rgba8Pixel> {
+        let mut pixels = vec![Rgba8Pixel { r: 1, g: 2, b: 3, a: 4 }; bars.len() * plot.height];
+        draw(&mut pixels, plot, bars, peaks);
+        pixels
+    }
+
+    /// One bar's column, top to bottom: `.` transparent, `#` drawn.
+    fn column(pixels: &[Rgba8Pixel], width: usize, x: usize) -> String {
+        pixels.iter().skip(x).step_by(width).map(|p| if p.a == 0 { '.' } else { '#' }).collect()
     }
 
     #[test]
-    fn bars_fill_their_column_less_a_pixel_each_side_from_the_bottom() {
-        let rects = spectrum_rects(&[0.5, 0.0], &[], 20.0, 100.0);
-        // The silent bar is still 1px tall, in the plain bar color.
-        assert_eq!(rects, [rect(1.0, 50.0, 8.0, 50.0, 0.125), rect(11.0, 99.0, 8.0, 1.0, 0.0)]);
+    fn bars_rise_from_the_bottom_shaded_by_their_height() {
+        let plot = plot(10, 1.0);
+        let pixels = render(&plot, &[0.5, 0.0, 1.5], &[]);
+        assert_eq!(column(&pixels, 3, 0), ".....#####");
+        // A silent bar is still a pixel tall, in the plain bar color.
+        assert_eq!(column(&pixels, 3, 1), ".........#");
+        assert_eq!(pixels[9 * 3 + 1], premultiplied(BAR));
+        assert_eq!(pixels[9 * 3], premultiplied(ACCENT.mix(&BAR, 0.125)));
+        // A loud one is capped at the top, all in the accent.
+        assert_eq!(column(&pixels, 3, 2), "##########");
+        assert_eq!(pixels[2], premultiplied(ACCENT.mix(&BAR, 1.0)));
     }
 
     #[test]
-    fn loud_bars_are_capped_at_the_top_in_the_accent() {
-        let rects = spectrum_rects(&[1.5], &[], 10.0, 10.0);
-        assert_eq!(rects, [rect(1.0, 0.0, 8.0, 10.0, 1.0)]);
+    fn peaks_are_accent_lines_drawn_over_the_bars() {
+        let plot = plot(100, 1.0);
+        let pixels = render(&plot, &[0.5, 0.0], &[0.25, 2.0]);
+        let bar = premultiplied(ACCENT.mix(&BAR, 0.125));
+        assert_eq!((pixels[74 * 2], pixels[75 * 2], pixels[76 * 2]), (bar, premultiplied(ACCENT), bar));
+        // Beyond the top: drawn at the top.
+        assert_eq!(column(&pixels, 2, 1), format!("#{}#", ".".repeat(98)));
     }
 
     #[test]
-    fn peaks_follow_the_bars_as_one_pixel_accent_lines() {
-        let rects = spectrum_rects(&[0.0, 0.0], &[0.75, 2.0], 20.0, 100.0);
-        assert_eq!(&rects[2..], [rect(1.0, 25.0, 8.0, 1.0, 1.0), rect(11.0, 0.0, 8.0, 1.0, 1.0)]);
+    fn heights_and_lines_are_logical_pixels() {
+        // Two physical pixels to a logical one: 10 logical pixels tall.
+        let plot = plot(20, 2.0);
+        let pixels = render(&plot, &[0.0, 0.5], &[0.5, 0.0]);
+        assert_eq!(column(&pixels, 2, 0), "..........##......##");
+        assert_eq!(column(&pixels, 2, 1), "..........##########");
     }
 
     #[test]
-    fn nothing_to_draw_without_room_or_bars() {
-        assert!(spectrum_rects(&[], &[], 100.0, 100.0).is_empty());
-        assert!(spectrum_rects(&[0.5], &[0.5], 0.0, 100.0).is_empty());
-        // Columns 2px wide leave no bar between the insets.
-        assert!(spectrum_rects(&[0.5, 0.5], &[0.5, 0.5], 4.0, 100.0).is_empty());
+    fn colors_are_premultiplied() {
+        let half = Color::from_argb_u8(128, 255, 100, 0);
+        assert_eq!(premultiplied(half), Rgba8Pixel { r: 128, g: 50, b: 0, a: 128 });
+    }
+
+    #[test]
+    fn nothing_to_draw_without_bars_or_room() {
+        assert!(render(&plot(10, 1.0), &[], &[]).is_empty());
+        assert!(render(&plot(0, 1.0), &[0.5], &[0.5]).is_empty());
     }
 }

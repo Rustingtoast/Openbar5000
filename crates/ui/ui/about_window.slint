@@ -1,11 +1,11 @@
-import { Button, Palette } from "std-widgets.slint";
+import { AboutSlint, Button, Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 
 export component AboutWindow inherits Window {
     title: "About Openbar5000";
     icon: Theme.logo;
     preferred-width: 380px;
-    preferred-height: 220px;
+    preferred-height: 350px;
     background: Theme.bg-raised;
 
     in property <bool> theme-is-dark: true;
@@ -36,13 +36,15 @@ export component AboutWindow inherits Window {
                 Text { text: "Openbar5000"; font-size: 20px; font-weight: 700; color: Theme.text-primary; }
                 Text { text: "Version " + root.app-version; color: Theme.text-muted; }
                 Text {
-                    text: "An open-source, cross-platform alternative to foobar2000.";
+                    text: "An open-source, cross-platform music player.";
                     color: Theme.text-muted;
                     wrap: word-wrap;
                 }
             }
         }
         Text { text: "Built with Rust and Slint."; color: Theme.text-muted; }
+        // Slint's Royalty-free license asks for this in the About dialog.
+        AboutSlint { }
         Text {
             text: "UI powered by Slint (https://slint.dev), used under its Royalty-free license.";
             color: Theme.text-muted;

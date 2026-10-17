@@ -5,7 +5,7 @@ import { TransportBar, PlaybackButtons, SeekBar, SeekSlider, PlaybackOptions } f
 import { InfoView, InfoRow, LyricsView, LyricLine, PlaceholderView, TabStripView, ArtistView, ArtistCandidate } from "side_panels.slint";
 import { StatusBar } from "status_bar.slint";
 import { WaveformSeekbar } from "waveform_seekbar.slint";
-import { SpectrumView, SpectrumNote, SpectrumRect } from "spectrum_view.slint";
+import { SpectrumView, SpectrumNote, SpectrumPlot } from "spectrum_view.slint";
 import { NowPlayingBar, AlbumArtView } from "now_playing.slint";
 import { PropertiesWindow, PropertyField, DetailRow, ArtworkRow } from "properties_window.slint";
 import { AboutWindow } from "about_window.slint";
@@ -125,7 +125,7 @@ export component MainWindow inherits Window {
     in property <bool> shuffle-active: false;
     in property <bool> loop-active: false;
     in property <bool> repeat-one-active: false;
-    in property <string> status-text: "Openbar5000 — an open-source foobar2000-alike";
+    in property <string> status-text: "Openbar5000 — an open-source music player";
 
     in property <[PanelSlot]> panel-slots: [];
     in property <[LayoutDivider]> layout-dividers: [];
@@ -174,9 +174,9 @@ export component MainWindow inherits Window {
     in property <[string]> waveform-paths: [];
     in property <int> waveform-bucket-count: 1;
     /// The spectrum's bars and peak markers (see `app::spectrum_bars`),
-    /// laid out in the plot size last reported by `spectrum-plot-resized`.
-    in property <[SpectrumRect]> spectrum-rects: [];
-    callback spectrum-plot-resized(length, length);
+    /// drawn for the plot last reported by `spectrum-plot-changed`.
+    in property <image> spectrum-bars;
+    callback spectrum-plot-changed(SpectrumPlot);
     in property <[SpectrumNote]> spectrum-notes: [];
     in property <int> spectrum-min-db: -80;
     in property <int> spectrum-max-db: 0;
@@ -393,8 +393,7 @@ export component MainWindow inherits Window {
             // change every frame -- for those a layer is only extra work.
             cache-rendering-hint: slot.kind != "waveform" && slot.kind != "spectrum"
                 && slot.kind != "transport" && slot.kind != "seek-bar"
-                && slot.kind != "seek-slider" && slot.kind != "playback-options"
-                && slot.kind != "equalizer";
+                && slot.kind != "seek-slider" && slot.kind != "equalizer";
 
             if slot.kind == "playlist": PlaylistView {
                 width: parent.width;
@@ -441,8 +440,8 @@ export component MainWindow inherits Window {
             if slot.kind == "spectrum": SpectrumView {
                 width: parent.width;
                 height: parent.height;
-                rects: root.spectrum-rects;
-                plot-resized(width, height) => { root.spectrum-plot-resized(width, height); }
+                bars: root.spectrum-bars;
+                plot-changed(plot) => { root.spectrum-plot-changed(plot); }
                 notes: root.spectrum-notes;
                 min-db: root.spectrum-min-db;
                 max-db: root.spectrum-max-db;
@@ -518,8 +517,6 @@ export component MainWindow inherits Window {
             if slot.kind == "playback-options": PlaybackOptions {
                 width: parent.width;
                 height: parent.height;
-                position-seconds: root.position-seconds;
-                duration-seconds: root.duration-seconds;
                 position-text: root.position-text;
                 remaining-text: root.remaining-text;
                 volume: root.volume;

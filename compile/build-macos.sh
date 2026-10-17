@@ -56,6 +56,9 @@ fi
 echo "==> Binary: $DIST_DIR/$APP_NAME"
 
 echo "==> Packaging Openbar5000.app (version $VERSION)..."
+# A bundle version is numbers only: a pre-release ("0.7.1-alpha") is
+# bundled as its release number.
+BUNDLE_VERSION="${VERSION%%-*}"
 BUNDLE_DIR="$DIST_DIR/Openbar5000.app"
 rm -rf "$BUNDLE_DIR"
 mkdir -p "$BUNDLE_DIR/Contents/MacOS" "$BUNDLE_DIR/Contents/Resources"
@@ -75,9 +78,9 @@ cat > "$BUNDLE_DIR/Contents/Info.plist" <<EOF
     <key>CFBundleIdentifier</key>
     <string>org.openbar5000.app</string>
     <key>CFBundleVersion</key>
-    <string>$VERSION</string>
+    <string>$BUNDLE_VERSION</string>
     <key>CFBundleShortVersionString</key>
-    <string>$VERSION</string>
+    <string>$BUNDLE_VERSION</string>
     <key>CFBundleExecutable</key>
     <string>$APP_NAME</string>
     <key>CFBundleIconFile</key>

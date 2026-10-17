@@ -8,7 +8,7 @@ use crate::pipeline::Pipeline;
 use crate::playlist::{Playlist, Track};
 use crate::shuffle::ShuffleOrder;
 use crate::{EngineCommand, EngineEvent, PlaybackMode};
-use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
+use crossbeam_channel::{Receiver, Sender};
 use plugin_api::OutputSink;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,9 +20,11 @@ use std::time::{Duration, Instant};
 const MAX_CHUNKS_PER_REFILL: usize = 32;
 
 const LOAD_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
-const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// The longest the playback thread sleeps while playing.
+const PLAYING_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// How often to check whether the output should move to another device
-/// (the system default changed, or a chosen device came back).
+/// (the system default changed, or a chosen device came back) where the
+/// system doesn't say (see `output_checks`).
 const OUTPUT_CHECK_INTERVAL: Duration = Duration::from_secs(2);
 /// Points per channel in the waveform outline -- about one per pixel of a
 /// full-width seekbar, so the outline stays smooth.
@@ -107,7 +109,6 @@ struct EngineState {
     playlist_id: i64,
     /// The device actually playing.
     output_device: Option<String>,
-    last_output_check: Instant,
 }
 
 fn run(command_rx: Receiver<EngineCommand>, event_tx: Sender<EngineEvent>, clock: PlaybackClock) {
@@ -138,42 +139,41 @@ fn run(command_rx: Receiver<EngineCommand>, event_tx: Sender<EngineEvent>, clock
         output_request: None,
         playlist_id: 1,
         output_device,
-        last_output_check: Instant::now(),
     };
+    let output_checks = OutputChecks::new();
 
     loop {
         // While playing, sleep (still answering commands) until the output
         // has drained to half full or a spectrum frame is due, then top the
         // output up in one go -- a few wakeups a second rather than one
-        // per chunk.
-        let poll_timeout = match state.playback_state {
+        // per chunk. Otherwise there's nothing to do until a command comes
+        // or the output devices are to be checked.
+        let timeout = match state.playback_state {
             PlaybackState::Playing => {
                 let mut next = state.pipeline.time_until_refill();
                 if let Some(spectrum_due) = state.pipeline.time_until_spectrum() {
                     next = next.min(spectrum_due);
                 }
-                next.min(IDLE_POLL_INTERVAL)
+                Some(next.min(PLAYING_POLL_INTERVAL))
             }
-            PlaybackState::Paused | PlaybackState::Stopped => IDLE_POLL_INTERVAL,
+            PlaybackState::Paused | PlaybackState::Stopped => None,
         };
 
-        match command_rx.recv_timeout(poll_timeout) {
-            Ok(command) => {
+        match wait(&command_rx, output_checks.due(), timeout) {
+            Wake::Command(command) => {
                 if !handle_command(&mut state, command, &event_tx) {
                     break;
                 }
             }
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => break,
-        }
-
-        if state.last_output_check.elapsed() >= OUTPUT_CHECK_INTERVAL {
-            state.last_output_check = Instant::now();
-            if let Some(target) = output_target(&state) {
-                if target != state.output_device {
-                    switch_output(&mut state, &event_tx);
+            Wake::OutputCheck => {
+                if let Some(target) = output_target(&state) {
+                    if target != state.output_device {
+                        switch_output(&mut state, &event_tx);
+                    }
                 }
             }
+            Wake::Timeout => {}
+            Wake::Closed => break,
         }
 
         if state.playback_state == PlaybackState::Playing {
@@ -185,6 +185,69 @@ fn run(command_rx: Receiver<EngineCommand>, event_tx: Sender<EngineEvent>, clock
             refill_output(&mut state, &command_rx, &event_tx);
         }
         publish_clock(&state, &clock);
+    }
+}
+
+/// What woke the playback thread.
+enum Wake {
+    Command(EngineCommand),
+    /// Time to check which output device to play on.
+    OutputCheck,
+    /// Only time passing: the output to top up, or a spectrum frame due.
+    Timeout,
+    /// The engine's handle is gone.
+    Closed,
+}
+
+/// Sleeps until a command comes, an output check is due, or `timeout`
+/// (if any) has passed.
+fn wait(command_rx: &Receiver<EngineCommand>, output_checks: &Receiver<Instant>, timeout: Option<Duration>) -> Wake {
+    use crossbeam_channel::select;
+    match timeout {
+        Some(timeout) => select! {
+            recv(command_rx) -> command => command.map_or(Wake::Closed, Wake::Command),
+            recv(output_checks) -> _ => Wake::OutputCheck,
+            default(timeout) => Wake::Timeout,
+        },
+        None => select! {
+            recv(command_rx) -> command => command.map_or(Wake::Closed, Wake::Command),
+            recv(output_checks) -> _ => Wake::OutputCheck,
+        },
+    }
+}
+
+/// When to check which output device to play on: whenever the system
+/// reports a change, where it does (Windows, see `DeviceWatch`), and every
+/// `OUTPUT_CHECK_INTERVAL` elsewhere -- or if registering for the reports
+/// fails.
+struct OutputChecks {
+    due: Receiver<Instant>,
+    #[cfg(windows)]
+    _watch: Option<crate::output::DeviceWatch>,
+}
+
+impl OutputChecks {
+    fn new() -> Self {
+        #[cfg(windows)]
+        match crate::output::DeviceWatch::new() {
+            Ok(watch) => {
+                return Self {
+                    due: watch.changes().clone(),
+                    _watch: Some(watch),
+                }
+            }
+            Err(e) => tracing::warn!("not told about output device changes, checking every {OUTPUT_CHECK_INTERVAL:?}: {e}"),
+        }
+        Self {
+            due: crossbeam_channel::tick(OUTPUT_CHECK_INTERVAL),
+            #[cfg(windows)]
+            _watch: None,
+        }
+    }
+
+    /// Gets a message whenever a check is due.
+    fn due(&self) -> &Receiver<Instant> {
+        &self.due
     }
 }
 

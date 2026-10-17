@@ -45,9 +45,13 @@ fi
 
 ARCH="$(dpkg --print-architecture 2>/dev/null || echo amd64)"
 PKG_DIR="$DIST_DIR/pkgroot"
-DEB_PATH="$DIST_DIR/${APP_NAME}_${VERSION}_${ARCH}.deb"
+# Debian reads what follows a "-" as the package's own revision; a
+# pre-release ("0.7.1-alpha") goes after a "~" instead, which sorts before
+# the release itself.
+DEB_VERSION="$(echo "$VERSION" | sed 's/-/~/')"
+DEB_PATH="$DIST_DIR/${APP_NAME}_${DEB_VERSION}_${ARCH}.deb"
 
-echo "==> Packaging .deb (version $VERSION, arch $ARCH)..."
+echo "==> Packaging .deb (version $DEB_VERSION, arch $ARCH)..."
 rm -rf "$PKG_DIR"
 mkdir -p "$PKG_DIR/DEBIAN" \
          "$PKG_DIR/usr/bin" \
@@ -85,7 +89,7 @@ EOF
 # Wayland, both first-class; EGL is only for OpenGL drawing.
 cat > "$PKG_DIR/DEBIAN/control" <<EOF
 Package: $APP_NAME
-Version: $VERSION
+Version: $DEB_VERSION
 Section: sound
 Priority: optional
 Architecture: $ARCH

@@ -175,6 +175,17 @@ fn apply_scale_factor_to_logical_sizes_in_attributes(
     fixup(&mut attributes.resize_increments);
 }
 
+/// Openbar5000 patch: whether two window icons are the same image. Upstream
+/// compares their cache keys, but an image loaded from data at run time
+/// (e.g. `Image::load_from_svg_data`) has none, so it compared equal to "no
+/// icon set yet" and was never set. Images compare by what they hold (the
+/// same pixel buffer, SVG or embedded data) instead, and two empty ones are
+/// the same.
+fn same_icon(a: &Image, b: &Image) -> bool {
+    let (a, b): (&ImageInner, &ImageInner) = (a.into(), b.into());
+    matches!((a, b), (ImageInner::None, ImageInner::None)) || a == b
+}
+
 fn icon_to_winit(
     icon: corelib::graphics::Image,
     size: euclid::Size2D<Coord, PhysicalPx>,
@@ -450,7 +461,9 @@ pub struct WinitWindowAdapter {
 
     /// Winit's window_icon API has no way of checking if the window icon is
     /// the same as a previously set one, so keep track of that here.
-    window_icon_cache_key: RefCell<Option<ImageCacheKey>>,
+    // Openbar5000 patch: the icon itself rather than its cache key (see
+    // `same_icon`).
+    window_icon: RefCell<Option<Image>>,
 
     custom_cursor_source: Cell<Option<CustomCursorSource>>,
 
@@ -510,7 +523,7 @@ impl WinitWindowAdapter {
             context_menu: Default::default(),
             #[cfg(all(muda, target_os = "macos"))]
             muda_enable_default_menu_bar,
-            window_icon_cache_key: Default::default(),
+            window_icon: Default::default(),
             custom_cursor_source: Cell::new(None),
             cursor_pos: Default::default(),
             pressed: Default::default(),
@@ -1869,9 +1882,8 @@ impl WindowAdapter for WinitWindowAdapter {
 
         // Update the icon only if it changes, to avoid flashing.
         let icon_image = window_item.icon();
-        let icon_image_cache_key = ImageCacheKey::new((&icon_image).into());
-        if *self.window_icon_cache_key.borrow() != icon_image_cache_key {
-            *self.window_icon_cache_key.borrow_mut() = icon_image_cache_key;
+        if !self.window_icon.borrow().as_ref().is_some_and(|shown| same_icon(shown, &icon_image)) {
+            *self.window_icon.borrow_mut() = Some(icon_image.clone());
             winit_window_or_none.set_window_icon(icon_to_winit(
                 icon_image,
                 i_slint_core::lengths::LogicalSize::new(64., 64.) * ScaleFactor::new(sf),

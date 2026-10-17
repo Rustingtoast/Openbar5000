@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.6.0"
+version = "0.7.1-alpha"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Rustingtoast/Openbar5000"
@@ -60,7 +60,8 @@ notify = "8"
 # Local date, for the holiday logos.
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
-# Slint's winit backend with one fix: on X11 it drew every frame twice
-# (see `patches/README.md`). Remove once Slint ships the fix.
+# Slint's winit backend with two fixes: on X11 it drew every frame twice,
+# and a window icon loaded at run time never showed (see
+# `patches/README.md`). Remove once Slint ships the fixes.
 [patch.crates-io]
 i-slint-backend-winit = { path = "patches/i-slint-backend-winit" }

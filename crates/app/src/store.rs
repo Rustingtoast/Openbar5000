@@ -615,10 +615,11 @@ mod tests {
         let conn = Connection::open(&path).unwrap();
         let store = Store::from_connection(conn).unwrap();
         store.set_settings(&[("theme_id", "dark".to_string())]);
-
-        std::fs::remove_dir_all(&dir).unwrap();
-
         assert_eq!(store.get_setting("theme_id"), Some("dark".to_string()));
+
+        // Closed first: Windows won't delete a file that's open.
+        drop(store);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

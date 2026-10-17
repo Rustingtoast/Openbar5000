@@ -66,9 +66,12 @@ if ! command -v curl >/dev/null 2>&1; then
     exit 1
 fi
 
-# The AppStream release list should name the version being built.
-if ! grep -q "<release version=\"$VERSION\"" "$METAINFO"; then
-    echo "warning: $METAINFO has no <release version=\"$VERSION\"> entry; software centers will show an older version." >&2
+# The AppStream release list should name the version being built -- a
+# pre-release ("0.7.1-alpha") after a "~" ("0.7.1~alpha"), which AppStream
+# sorts before the release itself.
+APPSTREAM_VERSION="$(echo "$VERSION" | sed 's/-/~/')"
+if ! grep -q "<release version=\"$APPSTREAM_VERSION\"" "$METAINFO"; then
+    echo "warning: $METAINFO has no <release version=\"$APPSTREAM_VERSION\"> entry; software centers will show an older version." >&2
 fi
 
 ARCH="$(flatpak --default-arch)"

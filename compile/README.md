@@ -107,9 +107,18 @@ normal PC, `aarch64` on ARM).
 `build-windows.ps1` additionally packages the binary into a real MSI
 installer, `dist\windows\Openbar5000-Setup-<version>.msi`, using the
 [WiX Toolset](https://wixtoolset.org) (`compile\installer.wxs`). The
-installer puts the app under `Program Files`, adds a Start Menu shortcut and
-a desktop shortcut, sets the app icon, and registers a proper uninstaller
-with Windows (Add/Remove Programs).
+installer shows a license agreement that has to be accepted before going
+on, lets you choose the install folder (`Program Files\Openbar5000` by
+default), adds a Start Menu shortcut and a desktop shortcut, sets the app
+icon, installs `LICENSE.txt` next to the app, and registers a proper
+uninstaller with Windows (Add/Remove Programs).
+
+The license agreement is built by the script on every run: the terms and
+privacy statement in `compile\installer-terms.txt`, then the repository's
+`LICENSE`, turned into the RTF WiX's license page takes (written to
+`target\wix\License.rtf`). Edit the text file, not the RTF: blank lines
+separate paragraphs, `# ` starts a heading and `- ` a bullet point. If what
+the app sends over the network changes, update its privacy section.
 
 Windows doesn't ship a packager the way Debian ships `dpkg-deb`, so this
 step requires installing the WiX CLI first, as a global .NET tool (the .NET
@@ -124,17 +133,10 @@ itself on first run if it's missing. If `wix` isn't found at all, MSI
 packaging is skipped with a warning pointing at the install command above --
 the raw `.exe` is still produced either way.
 
-**A note on where this was tested:** WiX explicitly only supports running on
-Windows (it prints its own warning and says behavior is undefined otherwise).
-Everything up to and including the actual `wix build` invocation was verified
-for real on this repo (dotnet tool install, the UI extension, version
-extraction from `Cargo.toml`, the full script's control flow and error
-handling) -- but the MSI compilation step itself needs to be sanity-checked
-once on a real Windows machine, since WiX's own path-validation logic
-behaves differently when hosted on a non-Windows .NET runtime (confirmed:
-even WiX's own canonical example .wxs fails identically off-Windows, so
-this is a WiX-on-this-host limitation, not anything specific to this repo's
-installer script).
+WiX only supports running on Windows (off it, its own path validation fails
+even on WiX's canonical examples). On Windows 11 with WiX 7, the MSI builds,
+passes `wix msi validate`, and its dialogs (welcome, license, install folder,
+ready to install) were walked through.
 
 ## Prerequisites
 

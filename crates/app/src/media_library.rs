@@ -937,7 +937,10 @@ mod tests {
         let after = scan(&folders, &known, &never, |_, _| {}).unwrap();
         let mut removed = after.removed.clone();
         removed.sort();
-        assert_eq!(removed, [PathBuf::from("/elsewhere/c.flac"), b]);
+        // Sorted the same way: on Windows, `C:\...` comes before `/...`.
+        let mut expected = vec![PathBuf::from("/elsewhere/c.flac"), b];
+        expected.sort();
+        assert_eq!(removed, expected);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

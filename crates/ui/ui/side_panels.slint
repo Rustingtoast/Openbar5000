@@ -155,6 +155,9 @@ export component TabStripView inherits Rectangle {
     callback tab-released();
 
     background: Theme.bg-raised;
+    // Drawn outside the panels, so not cached with them; it only changes
+    // on a hover or a switch, not with every frame drawn while playing.
+    cache-rendering-hint: true;
 
     for label[i] in root.labels: Rectangle {
         x: i * root.width / Math.max(1, root.labels.length);

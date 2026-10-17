@@ -7,7 +7,7 @@ ships upstream.
 
 ## `i-slint-backend-winit` 1.18.1
 
-**What:** `frame_throttle.rs`, `TimerBasedFrameThrottle::request_throttled_redraw`.
+**What (1):** `frame_throttle.rs`, `TimerBasedFrameThrottle::request_throttled_redraw`.
 Its timer asks winit for a frame only while one is still pending, and
 otherwise stops.
 
@@ -22,7 +22,22 @@ so neither is affected.
 really drew 30 frames per second. With the fix it draws 15, and the UI
 thread's CPU use roughly halves at that setting.
 
+**What (2):** `winitwindowadapter.rs`, `update_window_properties` and the new
+`same_icon`. Whether the window icon changed is decided by comparing the
+images themselves, not their cache keys.
+
+**Why:** an image loaded from data at run time, as the app's logo is
+(`Image::load_from_svg_data`, so the holiday logos can be swapped in), has
+no cache key. Upstream remembers "no key" both for "nothing set yet" and for
+such an icon, so with the logo set before the window first shows, the icon
+was never handed to the window.
+
+**Effect** (Windows): the title bar and taskbar showed the generic program
+icon instead of the logo. Linux window managers that show window icons were
+affected the same way.
+
 **Updating Slint:** if a newer `i-slint-backend-winit` still has the old
-`request_throttled_redraw`, copy the new release here and re-apply the
-change. If it's fixed, delete this folder and the `[patch.crates-io]` entry.
-Either way, keep the version in step with `slint`'s.
+`request_throttled_redraw`, or still compares the icon's cache keys, copy
+the new release here and re-apply what's still needed. If both are fixed,
+delete this folder and the `[patch.crates-io]` entry. Either way, keep the
+version in step with `slint`'s.
