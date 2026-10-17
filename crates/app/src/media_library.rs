@@ -6,10 +6,11 @@
 //! up on their own; a rescan only reads the tags of files whose size or
 //! modification time changed.
 
+use crate::playlists::Playlists;
 use crate::settings::Settings;
 use crate::store::Store;
 use crossbeam_channel::{Receiver, Sender};
-use engine::{EngineCommand, LibraryTags, PlaybackEngine};
+use engine::LibraryTags;
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -361,7 +362,8 @@ const MEDIA_LIBRARY_TAB: i32 = 4;
 pub struct MediaLibrary {
     main: slint::Weak<MainWindow>,
     preferences: slint::Weak<SettingsWindow>,
-    engine: Rc<PlaybackEngine>,
+    /// Where tracks are played and added (see `Playlists::play_library`).
+    playlists: Rc<Playlists>,
     store: Rc<Store>,
     settings: Rc<RefCell<Settings>>,
     tracks: RefCell<Vec<LibraryTrack>>,
@@ -386,7 +388,7 @@ impl MediaLibrary {
     pub fn wire(
         main: &MainWindow,
         preferences: &SettingsWindow,
-        engine: Rc<PlaybackEngine>,
+        playlists: Rc<Playlists>,
         store: Rc<Store>,
         settings: Rc<RefCell<Settings>>,
     ) -> Rc<Self> {
@@ -394,7 +396,7 @@ impl MediaLibrary {
         let library = Rc::new(Self {
             main: main.as_weak(),
             preferences: preferences.as_weak(),
-            engine,
+            playlists,
             tracks: RefCell::new(store.library_tracks()),
             store,
             settings,
@@ -764,8 +766,9 @@ impl MediaLibrary {
         if paths.is_empty() {
             return;
         }
-        self.engine.send(EngineCommand::LoadPlaylist(paths));
-        self.engine.send(EngineCommand::PlayIndex(start));
+        // Not into the playlist shown, which this would replace for good
+        // (issue #37).
+        self.playlists.play_library(paths, start);
     }
 
     fn add_to_playlist(&self, row: i32) {
@@ -780,7 +783,7 @@ impl MediaLibrary {
         }) else {
             return;
         };
-        self.engine.send(EngineCommand::AppendToPlaylist(paths));
+        self.playlists.add_to_active(paths);
     }
 
     fn add_folder(&self) {

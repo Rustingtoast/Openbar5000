@@ -156,3 +156,23 @@ fn switching_playlists_keeps_the_song_playing_and_names_the_playlist() {
 
     std::fs::remove_file(&other).unwrap();
 }
+
+#[test]
+fn play_library_reports_the_throwaway_playlist_id_and_plays_the_picked_track() {
+    let engine = PlaybackEngine::spawn();
+
+    // The media library plays a whole album (here three copies of the
+    // fixture) starting at the double-clicked track, and must report
+    // `TEMP_PLAYLIST_ID` so the app knows not to save it over a named
+    // playlist (issue #37).
+    engine.send(EngineCommand::PlayLibrary {
+        paths: vec![fixture(), fixture(), fixture()],
+        start: 1,
+    });
+    let (count, current, id) = next_update_with_id(&engine);
+    assert_eq!(count, 3);
+    assert_eq!(current, None);
+    assert_eq!(id, engine::TEMP_PLAYLIST_ID);
+
+    assert_eq!(next_track_changed(&engine), 1);
+}

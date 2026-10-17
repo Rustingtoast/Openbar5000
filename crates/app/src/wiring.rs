@@ -25,6 +25,7 @@ use crate::store::Store;
 use crate::theme::{self, ThemeColors, ThemeRegistry};
 use engine::{
     EngineCommand, EngineEvent, PlaybackClock, PlaybackEngine, PlaybackMode, PlaybackState, Track,
+    TEMP_PLAYLIST_ID,
 };
 use slint::{ComponentHandle, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, Timer, TimerMode, VecModel};
 use std::cell::{Cell, RefCell};
@@ -396,7 +397,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     let media_library = MediaLibrary::wire(
         window,
         &settings_window,
-        engine.clone(),
+        playlists.clone(),
         store.clone(),
         settings.clone(),
     );
@@ -1003,6 +1004,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     {
         let window_weak = window.as_weak();
         let engine = engine.clone();
+        let playlists = playlists.clone();
         window.on_open_files_clicked(move || {
             let Some(paths) = rfd::FileDialog::new()
                 .add_filter("Audio", engine::AUDIO_EXTENSIONS)
@@ -1011,6 +1013,8 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                 return;
             };
             let count = paths.len();
+            // Into a named playlist, where they're kept (issue #37).
+            playlists.leave_library();
             engine.send(EngineCommand::LoadPlaylist(paths));
             if let Some(window) = window_weak.upgrade() {
                 window.set_status_text("Loading playlist\u{2026}".into());
@@ -1022,10 +1026,12 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     {
         let window_weak = window.as_weak();
         let engine = engine.clone();
+        let playlists = playlists.clone();
         window.on_open_folder_clicked(move || {
             let Some(dir) = rfd::FileDialog::new().pick_folder() else {
                 return;
             };
+            playlists.leave_library();
             // Scanned on the engine thread: a big (or network) folder would
             // otherwise freeze the window while it's walked.
             engine.send(EngineCommand::LoadFolder(dir));
@@ -1553,6 +1559,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                         &presence,
                         &track_panels,
                         &clock,
+                        &playlists_for_poll,
                         event,
                     );
                 }
@@ -3441,6 +3448,7 @@ fn apply_event(
     presence: &PresenceClient,
     track_panels: &TrackPanels,
     clock: &PlaybackClock,
+    playlists: &Playlists,
     event: EngineEvent,
 ) {
     match event {
@@ -3505,6 +3513,7 @@ fn apply_event(
             playlist_id,
         } => {
             window.set_loading_active(false);
+            playlists.engine_reported(playlist_id);
             let track_count = tracks.len();
             // Only when the playlist's contents or order changed.
             let same_paths = {
@@ -3512,9 +3521,11 @@ fn apply_event(
                 state.tracks.len() == tracks.len()
                     && state.tracks.iter().zip(&tracks).all(|(a, b)| a.path == b.path)
             };
-            if !same_paths {
+            if !same_paths && playlist_id != TEMP_PLAYLIST_ID {
                 // To the playlist the engine says this is -- an update
                 // still in flight after a switch belongs to the old one.
+                // The media library's throwaway playlist (issue #37) is
+                // never saved.
                 store.save_playlist(playlist_id, &tracks.iter().map(|t| t.path.clone()).collect::<Vec<_>>());
             }
             *current_track.borrow_mut() = current_index.and_then(|i| tracks.get(i).cloned());

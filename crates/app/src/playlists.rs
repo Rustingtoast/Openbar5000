@@ -4,10 +4,15 @@
 //! interrupts playback -- the song playing carries on, and the next one
 //! comes from the new playlist. File > New Playlist, the summary bar's
 //! menu and the Playlist Manager window all drive this.
+//!
+//! Playing from the media library shows its tracks in a throwaway "Library"
+//! playlist instead (issue #37), which is never saved and goes away when a
+//! named playlist is chosen again. Meanwhile, adding tracks goes to the
+//! active named playlist, and opening files returns to it first.
 
 use crate::settings::Settings;
 use crate::store::{PlaylistInfo, Store};
-use engine::{EngineCommand, PlaybackEngine};
+use engine::{EngineCommand, PlaybackEngine, TEMP_PLAYLIST_ID};
 use slint::{ComponentHandle, ModelRc, VecModel};
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -33,6 +38,10 @@ pub struct Playlists {
     settings: Rc<RefCell<Settings>>,
     list: RefCell<Vec<PlaylistInfo>>,
     active: Cell<i64>,
+    /// The playlist the engine holds: the one it was last told to show,
+    /// or last reported (see `engine_reported`). [`TEMP_PLAYLIST_ID`] while
+    /// it's the media library's throwaway one.
+    held: Cell<i64>,
     /// A cut or copied playlist: name and paths, for Paste.
     clipboard: RefCell<Option<(String, Vec<PathBuf>)>>,
 }
@@ -58,6 +67,7 @@ impl Playlists {
             settings,
             list: RefCell::new(list),
             active: Cell::new(active),
+            held: Cell::new(active),
             clipboard: RefCell::new(None),
         });
         let paths = playlists.store.playlist_paths(active, false);
@@ -98,15 +108,21 @@ impl Playlists {
     pub fn refresh(&self) {
         let list = self.store.playlists();
         let active = self.active.get();
+        // While the library's tracks are shown, no named playlist is.
+        let library = self.showing_library();
         if let Some(main) = self.main.upgrade() {
             // A fresh model each time: activating a checkable menu item
             // toggles its own check mark (see `show_sort_choices`).
             main.set_playlist_choices(ModelRc::from(Rc::new(VecModel::from(
                 list.iter()
-                    .map(|p| PlaylistChoice { title: p.name.as_str().into(), checked: p.id == active })
+                    .map(|p| PlaylistChoice { title: p.name.as_str().into(), checked: !library && p.id == active })
                     .collect::<Vec<_>>(),
             ))));
-            let name = list.iter().find(|p| p.id == active).map(|p| p.name.clone()).unwrap_or_default();
+            let name = if library {
+                "Library".to_string()
+            } else {
+                list.iter().find(|p| p.id == active).map(|p| p.name.clone()).unwrap_or_default()
+            };
             main.set_playlist_name(name.into());
         }
         self.manager.set_rows(ModelRc::from(Rc::new(VecModel::from(
@@ -114,7 +130,7 @@ impl Playlists {
                 .map(|p| PlaylistManagerRow {
                     name: p.name.as_str().into(),
                     count: p.count.to_string().into(),
-                    active: p.id == active,
+                    active: !library && p.id == active,
                 })
                 .collect::<Vec<_>>(),
         ))));
@@ -135,8 +151,10 @@ impl Playlists {
         }
     }
 
+    /// Shows playlist `id`. Choosing the active one again leaves the
+    /// library's tracks for it.
     pub fn activate(&self, id: i64) {
-        if id == self.active.get() {
+        if id == self.active.get() && id == self.held.get() {
             return;
         }
         self.active.set(id);
@@ -144,7 +162,35 @@ impl Playlists {
         self.settings.borrow().save(&self.store);
         let paths = self.store.playlist_paths(id, false);
         self.engine.send(EngineCommand::SwitchPlaylist { id, paths });
+        // Commands are handled in order: whatever is sent from now on
+        // applies to this playlist.
+        self.held.set(id);
         self.refresh();
+    }
+
+    /// Plays `paths` from `start` in the throwaway "Library" playlist,
+    /// leaving the named ones as they are.
+    pub fn play_library(&self, paths: Vec<PathBuf>, start: usize) {
+        self.engine.send(EngineCommand::PlayLibrary { paths, start });
+        self.held.set(TEMP_PLAYLIST_ID);
+    }
+
+    /// Before something replaces what's shown (Open Files...): back from
+    /// the library's tracks to the active named playlist, so the result is
+    /// saved there like any other change to it.
+    pub fn leave_library(&self) {
+        if self.showing_library() {
+            self.activate(self.active.get());
+        }
+    }
+
+    /// The engine says it holds playlist `id` (`PlaylistUpdated`).
+    pub fn engine_reported(&self, id: i64) {
+        self.held.set(id);
+    }
+
+    fn showing_library(&self) -> bool {
+        self.held.get() == TEMP_PLAYLIST_ID
     }
 
     fn names(&self) -> Vec<String> {
@@ -212,11 +258,22 @@ impl Playlists {
 
     /// Adds `paths` to the end of the playlist at `index`.
     pub fn send_to(&self, index: i32, paths: Vec<PathBuf>) {
-        let Some(id) = self.id_at(index) else { return };
+        if let Some(id) = self.id_at(index) {
+            self.append(id, paths);
+        }
+    }
+
+    /// Adds `paths` to the end of the active named playlist -- even while
+    /// the library's tracks are shown, which would lose them.
+    pub fn add_to_active(&self, paths: Vec<PathBuf>) {
+        self.append(self.active.get(), paths);
+    }
+
+    fn append(&self, id: i64, paths: Vec<PathBuf>) {
         if paths.is_empty() {
             return;
         }
-        if id == self.active.get() {
+        if id == self.held.get() {
             // Shown: through the engine, which saves it as usual.
             self.engine.send(EngineCommand::AppendToPlaylist(paths));
         } else {

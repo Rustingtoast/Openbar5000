@@ -384,6 +384,7 @@ fn handle_command(
             state.pipeline.set_volume(state.volume);
         }
         EngineCommand::LoadPlaylist(paths) => load_playlist(state, paths, event_tx),
+        EngineCommand::PlayLibrary { paths, start } => play_library(state, paths, start, event_tx),
         EngineCommand::AppendToPlaylist(paths) => append_to_playlist(state, paths, event_tx),
         EngineCommand::LoadFolder(dir) => {
             let paths = scan_audio_files(&dir);
@@ -396,14 +397,7 @@ fn handle_command(
                 load_playlist(state, paths, event_tx);
             }
         }
-        EngineCommand::PlayIndex(index) => {
-            drop_queued_audio(state, false);
-            load_track(state, index, event_tx);
-            set_playback_state(state, PlaybackState::Playing, event_tx);
-            // Re-anchor the shuffle cycle on the track the user just picked
-            // by hand, rather than leaving it mid-way through the old one.
-            rebuild_shuffle_order(state, Some(index));
-        }
+        EngineCommand::PlayIndex(index) => play_index(state, index, event_tx),
         EngineCommand::RemoveIndex(index) => {
             if remove_index(state, index) {
                 set_playback_state(state, PlaybackState::Stopped, event_tx);
@@ -497,6 +491,27 @@ fn load_playlist(
     paths: Vec<std::path::PathBuf>,
     event_tx: &Sender<EngineEvent>,
 ) {
+    replace_tracks(state, paths, event_tx);
+    send_playlist_update(state, event_tx);
+}
+
+/// Loads `paths` as the media library's throwaway playlist (issue #37) and
+/// plays from `start`: reported under [`crate::TEMP_PLAYLIST_ID`], so the
+/// app shows it without saving it over a named playlist.
+fn play_library(
+    state: &mut EngineState,
+    paths: Vec<std::path::PathBuf>,
+    start: usize,
+    event_tx: &Sender<EngineEvent>,
+) {
+    replace_tracks(state, paths, event_tx);
+    state.playlist_id = crate::TEMP_PLAYLIST_ID;
+    send_playlist_update(state, event_tx);
+    play_index(state, start, event_tx);
+}
+
+/// The playlist becomes `paths` (their tags read), with nothing queued.
+fn replace_tracks(state: &mut EngineState, paths: Vec<std::path::PathBuf>, event_tx: &Sender<EngineEvent>) {
     let metadata = load_metadata_with_progress(&paths, event_tx);
     let tracks: Vec<Track> = paths
         .into_iter()
@@ -507,7 +522,15 @@ fn load_playlist(
     state.samples_played = 0;
     state.queue.clear();
     rebuild_shuffle_order(state, None);
-    send_playlist_update(state, event_tx);
+}
+
+fn play_index(state: &mut EngineState, index: usize, event_tx: &Sender<EngineEvent>) {
+    drop_queued_audio(state, false);
+    load_track(state, index, event_tx);
+    set_playback_state(state, PlaybackState::Playing, event_tx);
+    // Re-anchor the shuffle cycle on the track the user just picked by
+    // hand, rather than leaving it mid-way through the old one.
+    rebuild_shuffle_order(state, Some(index));
 }
 
 /// Takes `index` out of the playlist and the queue; `true` if it was the

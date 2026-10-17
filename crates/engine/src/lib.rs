@@ -18,7 +18,7 @@ mod waveform;
 
 pub use background::lower_thread_priority;
 pub use clock::PlaybackClock;
-pub use commands::{EngineCommand, PlaybackMode};
+pub use commands::{EngineCommand, PlaybackMode, TEMP_PLAYLIST_ID};
 pub use dsp::{EqualizerSettings, EQ_BANDS_HZ, EQ_BAND_COUNT, EQ_MAX_DB};
 pub use output::{default_output_device, output_devices, OutputDeviceInfo};
 pub use events::{EngineEvent, PlaybackState};

@@ -23,6 +23,12 @@ pub enum PlaybackMode {
     Shuffle,
 }
 
+/// The id the engine reports in `PlaylistUpdated` for the throwaway
+/// playlist the media library plays into (see [`EngineCommand::PlayLibrary`]).
+/// Real stored playlists have ids of 1 or more, so `0` can never collide
+/// with one -- and the app knows not to persist it.
+pub const TEMP_PLAYLIST_ID: i64 = 0;
+
 /// Sent from the UI thread to the playback thread. See
 /// [`crate::PlaybackEngine`] for how these are consumed.
 #[derive(Debug, Clone)]
@@ -37,6 +43,12 @@ pub enum EngineCommand {
     /// 0.0 (silent) to 1.0 (unity gain).
     SetVolume(f32),
     LoadPlaylist(Vec<std::path::PathBuf>),
+    /// Loads `paths` as a throwaway "Library" playlist and starts playing at
+    /// `start` (the media library's double-click, issue #37). Unlike
+    /// `LoadPlaylist`, the tracks are *not* saved to the active named
+    /// playlist: the engine reports [`TEMP_PLAYLIST_ID`] in `PlaylistUpdated`,
+    /// and they're discarded the moment a named playlist is chosen again.
+    PlayLibrary { paths: Vec<std::path::PathBuf>, start: usize },
     /// Adds tracks to the end of the playlist, keeping what's playing.
     AppendToPlaylist(Vec<std::path::PathBuf>),
     /// Recursively scans a folder for audio files and loads them as the
