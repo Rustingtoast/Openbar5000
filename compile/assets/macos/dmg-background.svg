@@ -103,6 +103,17 @@
     <path d="M376 222 L392 236 L376 250"/>
   </g>
 
+  <!-- Little backlit displays under the icons' names: Finder writes them in
+       black, even in dark mode, which the dark body would swallow. -->
+  <g>
+    <rect x="96" y="298" width="128" height="26" rx="6" fill="#0e0803"/>
+    <rect x="99" y="301" width="122" height="20" rx="4" fill="url(#backlight)"/>
+    <rect x="99" y="301" width="122" height="20" rx="4" fill="url(#pixels)"/>
+    <rect x="416" y="298" width="128" height="26" rx="6" fill="#0e0803"/>
+    <rect x="419" y="301" width="122" height="20" rx="4" fill="url(#backlight)"/>
+    <rect x="419" y="301" width="122" height="20" rx="4" fill="url(#pixels)"/>
+  </g>
+
   <!-- Hint -->
   <text x="320" y="376" font-family="Avenir Next, Helvetica Neue, sans-serif" font-size="14" font-weight="500"
         fill="#fff4de" fill-opacity="0.75" text-anchor="middle">Drag Openbar5000 onto Applications to install it</text>

@@ -132,15 +132,12 @@ mkdir -p "$STAGE/.background"
 cp -R "$BUNDLE_DIR" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
 cp "$SCRIPT_DIR/assets/macos/dmg-background.tiff" "$STAGE/.background/background.tiff"
-cp "$SCRIPT_DIR/assets/macos/AppIcon.icns" "$STAGE/.VolumeIcon.icns"
 
 # Made writable first, with room for the window layout Finder saves.
 STAGE_MB="$(du -sm "$STAGE" | cut -f1)"
 hdiutil create -quiet -ov -fs HFS+ -format UDRW -volname "$VOLUME_NAME" \
     -srcfolder "$STAGE" -size "$((STAGE_MB + 20))m" "$WORK_DIR/rw.dmg"
 hdiutil attach -quiet -readwrite -noverify -noautoopen -mountpoint "$MOUNT_POINT" "$WORK_DIR/rw.dmg"
-# The volume shows the app's icon (the "custom icon" Finder flag on its root).
-xattr -wx com.apple.FinderInfo 0000000000000000040000000000000000000000000000000000000000000000 "$MOUNT_POINT"
 
 # The window's look is saved by Finder itself (in the volume's .DS_Store),
 # so Finder is asked to set it up: an icon view of 640x400 points over the
@@ -196,11 +193,32 @@ else
     echo "         Allow your terminal to control Finder (System Settings > Privacy & Security >" >&2
     echo "         Automation), then build again." >&2
 fi
+
+# The volume shows the app's icon: its .VolumeIcon.icns, once the root has
+# the "custom icon" Finder flag. Added only now, as laying out the window
+# deletes the file and clears the flag. SetFile comes with Xcode's command
+# line tools; without them, the flag is written directly.
+cp "$SCRIPT_DIR/assets/macos/AppIcon.icns" "$MOUNT_POINT/.VolumeIcon.icns"
+if command -v SetFile >/dev/null 2>&1; then
+    SetFile -a C "$MOUNT_POINT"
+else
+    xattr -wx com.apple.FinderInfo 0000000000000000040000000000000000000000000000000000000000000000 "$MOUNT_POINT"
+fi
 rm -rf "$MOUNT_POINT/.fseventsd"
 hdiutil detach -quiet "$MOUNT_POINT"
 
 # Compressed and read-only, as shared.
 rm -f "$DMG"
 hdiutil convert -quiet "$WORK_DIR/rw.dmg" -format UDZO -imagekey zlib-level=9 -o "$DMG"
+# The image file shows the app's icon too. It's kept with the file on a Mac
+# (copies, zips, AirDrop); a browser download drops it, as for every disk
+# image, and shows the standard one.
+osascript -l JavaScript - "$SCRIPT_DIR/assets/macos/AppIcon.icns" "$DMG" >/dev/null <<'JAVASCRIPT' ||
+ObjC.import("AppKit");
+function run([icon, file]) {
+    return $.NSWorkspace.sharedWorkspace.setIconForFileOptions($.NSImage.alloc.initWithContentsOfFile(icon), file, 0);
+}
+JAVASCRIPT
+    echo "warning: couldn't give the disk image file its icon." >&2
 
 echo "==> Done: $DMG"
