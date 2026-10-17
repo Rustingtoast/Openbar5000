@@ -11,6 +11,7 @@ Openbar5000 is an open-source, cross-platform (Windows, macOS, Linux) alternativ
 - Dark/Light/One Dark/Dracula themes, plus fully custom user-defined themes
 - Shuffle (fair-cycle: every track plays once before any repeat) and a 3-state Repeat (off → repeat queue → repeat track, with a "1" badge), mutually exclusive, in the transport bar
 - Discord Rich Presence ("Listening to \<track\>")
+- A now-playing file for OBS stream overlays, compatible with foobar2000's foo_np_simple
 - A native Rust plugin API (`plugin-api` + `plugin-host`), proven end-to-end with a sample DSP plugin
 
 ## Getting Started
@@ -88,6 +89,22 @@ whoever registers it in the portal above.
 
 This all works by speaking Discord's own local IPC protocol directly — no
 Discord-side approval needed.
+
+## Now playing in OBS
+
+Openbar5000 can keep what's playing in a small JSON file for a stream
+overlay to show: artist, album, title, track number, elapsed and total time,
+and the track's folder (so an overlay can show its `folder.jpg`). It writes
+the same format as foobar2000's **foo_np_simple**, so overlays made for it
+work as they are, such as the "nowplaying" OBS browser source from
+[issue #2](https://github.com/Rustingtoast/Openbar5000/issues/2).
+
+1. In **Preferences > Integrations > Now playing file (OBS)**, click
+   **Choose…** and pick the `nowplaying.json` in the overlay's folder.
+2. In OBS, add the overlay's HTML file as a **Browser** source (Local file).
+
+The file is updated about once a second while a track plays, and shows
+nothing playing when playback stops.
 
 ## Project layout
 

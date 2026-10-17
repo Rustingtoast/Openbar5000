@@ -146,6 +146,11 @@ export component SettingsWindow inherits Window {
     in property <bool> discord-presence-enabled: false;
     in property <string> discord-client-id: "";
     in property <string> discord-status-text: "Disabled";
+    // The now-playing file for stream overlays (see `app::now_playing_file`).
+    // In-out: the box is unticked again when no file gets chosen.
+    in-out property <bool> now-playing-file-enabled: false;
+    /// The chosen file, or "" for none yet.
+    in property <string> now-playing-file-path: "";
 
     in property <bool> artist-wikipedia: true;
     in property <[string]> wikipedia-languages: [];
@@ -163,6 +168,8 @@ export component SettingsWindow inherits Window {
 
     callback discord-presence-toggled(bool);
     callback discord-client-id-edited(string);
+    callback now-playing-file-toggled(bool);
+    callback now-playing-file-choose-clicked();
 
     callback spectrum-channels-changed(string);
     callback spectrum-min-db-changed(int);
@@ -638,6 +645,32 @@ export component SettingsWindow inherits Window {
                             Row {
                                 FieldLabel { text: "Status:"; }
                                 UnitText { text: root.discord-status-text; }
+                            }
+                        }
+
+                        Rectangle { height: 8px; }
+                        SectionHeading { text: "Now playing file (OBS)"; }
+                        HintText {
+                            text: "Keeps what's playing -- artist, album, title, time, and the track's folder for its folder.jpg -- in a JSON file for a stream overlay to show. It's the format of foobar2000's foo_np_simple, so an overlay made for it, like the OBS \u{201c}nowplaying\u{201d} browser source, works as it is: choose the nowplaying.json in the overlay's folder.";
+                        }
+                        CheckBox {
+                            text: "Write the now playing file";
+                            checked <=> root.now-playing-file-enabled;
+                            toggled => { root.now-playing-file-toggled(self.checked); }
+                        }
+                        GridLayout {
+                            spacing: 8px;
+                            Row {
+                                FieldLabel { text: "File:"; }
+                                UnitText {
+                                    horizontal-stretch: 1;
+                                    overflow: elide;
+                                    text: root.now-playing-file-path == "" ? "None chosen yet" : root.now-playing-file-path;
+                                }
+                                Button {
+                                    text: "Choose\u{2026}";
+                                    clicked => { root.now-playing-file-choose-clicked(); }
+                                }
                             }
                         }
 

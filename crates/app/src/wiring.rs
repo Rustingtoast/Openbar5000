@@ -7,6 +7,7 @@ use crate::artist_info::{self, ArtistInfo, Candidate, Outcome, WIKIPEDIA_LANGUAG
 use crate::audio_output::AudioOutput;
 use crate::equalizer::Equalizer;
 use crate::media_library::MediaLibrary;
+use crate::now_playing_file::{self, NowPlayingFile};
 use crate::playlists::Playlists;
 use crate::properties::PropertiesEditor;
 use crate::lyrics::Lyrics;
@@ -617,6 +618,10 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         settings_window.set_spectrum_gravity(spectrum.gravity_db_per_s2 as i32);
         settings_window.set_spectrum_interval_ms(spectrum.interval_ms as i32);
     }
+
+    // The now-playing file for stream overlays (issue #2), kept up to date
+    // by the poll tick below.
+    let now_playing_file = NowPlayingFile::wire(&settings_window, store.clone(), settings.clone());
 
     // --- Discord Rich Presence setup --------------------------------------
     let presence = Rc::new(PresenceClient::spawn(&settings.borrow()));
@@ -1517,6 +1522,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
 
     let clock = engine.clock().clone();
     let shown_position = Cell::new(Duration::ZERO);
+    let playback_state = Cell::new(PlaybackState::Stopped);
 
     let window_weak = window.as_weak();
     let settings_window_weak = settings_window.as_weak();
@@ -1537,6 +1543,9 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                 }
                 event => {
                     playlist_changed |= matches!(event, EngineEvent::PlaylistUpdated { .. });
+                    if let EngineEvent::PlaybackStateChanged(state) = event {
+                        playback_state.set(state);
+                    }
                     if let EngineEvent::TrackChanged { track, .. } = &event {
                         let threshold = (track.metadata.duration / 2)
                             .min(Duration::from_secs(240))
@@ -1595,6 +1604,11 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         }
         // Read when it's drawn: the playback thread doesn't wake for it.
         let position = clock.position();
+        now_playing_file.update(&now_playing_file::NowPlaying {
+            track: current_track.borrow().as_ref(),
+            state: playback_state.get(),
+            elapsed: position,
+        });
         if let Some((path, threshold, counted)) = play_count.borrow_mut().as_mut() {
             if !*counted && position >= *threshold {
                 *counted = true;

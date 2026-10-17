@@ -13,6 +13,7 @@ mod layout;
 mod lyrics;
 mod media_library;
 mod media_keys;
+mod now_playing_file;
 mod platform;
 mod playlist_rows;
 mod playlists;

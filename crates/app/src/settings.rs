@@ -43,6 +43,10 @@ pub struct Settings {
     /// they can create -- see README for the one-time setup steps.
     pub discord_presence_enabled: bool,
     pub discord_client_id: String,
+    /// The now-playing file for stream overlays (issue #2, see
+    /// `now_playing_file`): written while on and given a path.
+    pub now_playing_file_enabled: bool,
+    pub now_playing_file_path: String,
     /// Whether an artist lookup also fetches a biography and photo from
     /// Wikipedia (MusicBrainz is always used to identify the artist).
     pub artist_wikipedia: bool,
@@ -85,6 +89,8 @@ impl Default for Settings {
             visualization_fps: 60,
             discord_presence_enabled: false,
             discord_client_id: String::new(),
+            now_playing_file_enabled: false,
+            now_playing_file_path: String::new(),
             artist_wikipedia: true,
             artist_wikipedia_language: "en".to_string(),
             volume: 1.0,
@@ -269,6 +275,12 @@ impl Settings {
         if let Some(v) = get("discord_client_id") {
             settings.discord_client_id = v;
         }
+        if let Some(v) = get("now_playing_file_enabled") {
+            settings.now_playing_file_enabled = v == "true";
+        }
+        if let Some(v) = get("now_playing_file_path") {
+            settings.now_playing_file_path = v;
+        }
         if let Some(v) = get("artist_wikipedia") {
             settings.artist_wikipedia = v == "true";
         }
@@ -366,6 +378,8 @@ impl Settings {
                 self.discord_presence_enabled.to_string(),
             ),
             ("discord_client_id", self.discord_client_id.clone()),
+            ("now_playing_file_enabled", self.now_playing_file_enabled.to_string()),
+            ("now_playing_file_path", self.now_playing_file_path.clone()),
             ("artist_wikipedia", self.artist_wikipedia.to_string()),
             ("artist_wikipedia_language", self.artist_wikipedia_language.clone()),
             ("volume", self.volume.to_string()),
