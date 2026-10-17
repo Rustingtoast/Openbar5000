@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.7.3-alpha"
+version = "0.8.0-beta"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Rustingtoast/Openbar5000"
