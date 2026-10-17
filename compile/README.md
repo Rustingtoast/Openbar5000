@@ -6,7 +6,7 @@ and copies the resulting binary to a predictable location — nothing magic.
 
 | Platform | Script | Output |
 |---|---|---|
-| macOS | `./compile/build-macos.sh` | `dist/macos/openbar5000` + `dist/macos/Openbar5000.app` |
+| macOS | `./compile/build-macos.sh` | `dist/macos/openbar5000` + `dist/macos/Openbar5000.app` + `dist/macos/Openbar5000-<version>-<arch>.dmg` |
 | Linux | `./compile/build-linux.sh` | `dist/linux/openbar5000` + `dist/linux/openbar5000_<version>_<arch>.deb` |
 | Linux (any distro) | `./compile/build-flatpak.sh` | `dist/flatpak/Openbar5000-<version>-<arch>.flatpak` |
 | Windows | `.\compile\build-windows.ps1` | `dist\windows\openbar5000.exe` + `dist\windows\Openbar5000-Setup-<version>.msi` |
@@ -39,6 +39,29 @@ the only way to get a custom icon on macOS — `cargo run` won't show one in
 the Dock, since macOS ties the Dock icon to the app bundle, not the window
 (unlike Windows/Linux, where the window icon shows up even unbundled).
 Open `dist/macos/Openbar5000.app` to see the real icon.
+
+## macOS: disk image (.dmg)
+
+To share the app, `build-macos.sh` then puts it on a disk image,
+`dist/macos/Openbar5000-<version>-<arch>.dmg` (`<arch>` is `arm64`,
+`x86_64` or `universal`). Opened, it shows the app next to a link to
+Applications over an MP3-player-style background, with an arrow from one to
+the other: dragging the app onto Applications installs it.
+
+- Everything it uses comes with macOS (`hdiutil`, `codesign`, `osascript`).
+- The window's layout is saved by Finder itself, so the script asks Finder
+  to set it up. The first time, macOS asks whether your terminal may control
+  Finder: allow it. Without that permission, or on a machine with no desktop
+  session (CI), the image still works but opens as a plain folder.
+- Eject any open `Openbar5000` disk image before building; the script stops
+  if one is mounted.
+- The app is signed ad hoc (no developer certificate). macOS then asks once
+  before opening it, instead of calling it damaged. If it's blocked, go to
+  System Settings > Privacy & Security and choose **Open Anyway**. Opening
+  without being asked needs a paid Apple Developer ID and notarization.
+- The background is `assets/macos/dmg-background.svg`. After editing it,
+  render `dmg-background.tiff` again with the commands in its header comment
+  (they need `rsvg-convert`, from Homebrew's `librsvg`).
 
 ## Linux: .deb packaging
 

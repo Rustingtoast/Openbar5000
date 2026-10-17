@@ -4,13 +4,18 @@
 # show it correctly -- a raw binary has no icon of its own outside the Dock
 # while it's actually running.
 #
+# It then puts the bundle on a disk image for sharing: opened, it shows the
+# app next to a link to Applications, to drag it onto -- the usual way a Mac
+# app is installed.
+#
 # Usage:
 #   ./compile/build-macos.sh              # build for the host architecture
 #   ./compile/build-macos.sh --universal  # build a universal (x86_64 + arm64) binary
 #
 # Produces:
-#   dist/macos/openbar5000       (raw binary)
-#   dist/macos/Openbar5000.app   (app bundle, with icon)
+#   dist/macos/openbar5000                        (raw binary)
+#   dist/macos/Openbar5000.app                    (app bundle, with icon)
+#   dist/macos/Openbar5000-<version>-<arch>.dmg   (disk image, to share)
 
 set -euo pipefail
 
@@ -47,10 +52,12 @@ if [ "$UNIVERSAL" = true ]; then
     lipo -create -output "$DIST_DIR/$APP_NAME" \
         "target/x86_64-apple-darwin/release/$APP_NAME" \
         "target/aarch64-apple-darwin/release/$APP_NAME"
+    ARCH="universal"
 else
     echo "==> Building release binary for the host architecture..."
     cargo build --release -p app
     cp "target/release/$APP_NAME" "$DIST_DIR/$APP_NAME"
+    ARCH="$(uname -m)"
 fi
 
 echo "==> Binary: $DIST_DIR/$APP_NAME"
@@ -97,4 +104,103 @@ cat > "$BUNDLE_DIR/Contents/Info.plist" <<EOF
 </plist>
 EOF
 
-echo "==> Done: $BUNDLE_DIR"
+# Signed as a whole (ad hoc: no developer certificate needed), so the
+# bundle's contents match its signature. Copied from a downloaded disk
+# image, an app whose signature doesn't cover its Info.plist is reported as
+# "damaged"; signed, macOS instead asks once whether to open it.
+codesign --force --deep --sign - "$BUNDLE_DIR"
+
+echo "==> App: $BUNDLE_DIR"
+
+echo "==> Making the disk image..."
+VOLUME_NAME="Openbar5000"
+DMG="$DIST_DIR/Openbar5000-$VERSION-$ARCH.dmg"
+MOUNT_POINT="/Volumes/$VOLUME_NAME"
+# Finder finds the volume to lay out by its name: another one by that name
+# (an earlier image still open) would be laid out instead.
+if [ -e "$MOUNT_POINT" ]; then
+    echo "error: $MOUNT_POINT is already in use -- eject it first." >&2
+    exit 1
+fi
+WORK_DIR="$(mktemp -d)"
+trap 'hdiutil detach -quiet "$MOUNT_POINT" 2>/dev/null || true; rm -rf "$WORK_DIR"' EXIT
+
+# What the image holds: the app, a link to Applications to drop it on, and
+# the window's background, hidden in a dot folder.
+STAGE="$WORK_DIR/stage"
+mkdir -p "$STAGE/.background"
+cp -R "$BUNDLE_DIR" "$STAGE/"
+ln -s /Applications "$STAGE/Applications"
+cp "$SCRIPT_DIR/assets/macos/dmg-background.tiff" "$STAGE/.background/background.tiff"
+cp "$SCRIPT_DIR/assets/macos/AppIcon.icns" "$STAGE/.VolumeIcon.icns"
+
+# Made writable first, with room for the window layout Finder saves.
+STAGE_MB="$(du -sm "$STAGE" | cut -f1)"
+hdiutil create -quiet -ov -fs HFS+ -format UDRW -volname "$VOLUME_NAME" \
+    -srcfolder "$STAGE" -size "$((STAGE_MB + 20))m" "$WORK_DIR/rw.dmg"
+hdiutil attach -quiet -readwrite -noverify -noautoopen -mountpoint "$MOUNT_POINT" "$WORK_DIR/rw.dmg"
+# The volume shows the app's icon (the "custom icon" Finder flag on its root).
+xattr -wx com.apple.FinderInfo 0000000000000000040000000000000000000000000000000000000000000000 "$MOUNT_POINT"
+
+# The window's look is saved by Finder itself (in the volume's .DS_Store),
+# so Finder is asked to set it up: an icon view of 640x400 points over the
+# background, the two icons where the background's arrow points. The first
+# time, macOS asks whether the terminal may control Finder, and waits for
+# an answer: given LAYOUT_TIMEOUT seconds, then left. Without that (or
+# without a desktop session), the image still works, just unstyled.
+# The bounds are the whole window, title bar included.
+LAYOUT_TIMEOUT=120
+echo "    Asking Finder to lay out the window (if macOS asks, allow the terminal to control Finder)..."
+osascript >/dev/null <<APPLESCRIPT &
+tell application "Finder"
+    tell disk "$VOLUME_NAME"
+        open
+        set current view of container window to icon view
+        set toolbar visible of container window to false
+        set statusbar visible of container window to false
+        set bounds of container window to {200, 120, 840, 548}
+        set view_options to icon view options of container window
+        set arrangement of view_options to not arranged
+        set icon size of view_options to 112
+        set text size of view_options to 13
+        set background picture of view_options to file ".background:background.tiff"
+        set position of item "Openbar5000.app" of container window to {160, 236}
+        set position of item "Applications" of container window to {480, 236}
+        update without registering applications
+        delay 1
+        close
+    end tell
+end tell
+APPLESCRIPT
+LAYOUT_PID=$!
+for _ in $(seq 1 "$LAYOUT_TIMEOUT"); do
+    kill -0 "$LAYOUT_PID" 2>/dev/null || break
+    sleep 1
+done
+if kill -0 "$LAYOUT_PID" 2>/dev/null; then
+    kill "$LAYOUT_PID" 2>/dev/null || true
+    LAID_OUT=false
+elif wait "$LAYOUT_PID"; then
+    LAID_OUT=true
+else
+    LAID_OUT=false
+fi
+if [ "$LAID_OUT" = true ]; then
+    # Finder writes the layout out in its own time.
+    for _ in $(seq 1 20); do
+        [ -f "$MOUNT_POINT/.DS_Store" ] && break
+        sleep 0.5
+    done
+else
+    echo "warning: Finder didn't lay out the disk image's window, so it opens as a plain folder." >&2
+    echo "         Allow your terminal to control Finder (System Settings > Privacy & Security >" >&2
+    echo "         Automation), then build again." >&2
+fi
+rm -rf "$MOUNT_POINT/.fseventsd"
+hdiutil detach -quiet "$MOUNT_POINT"
+
+# Compressed and read-only, as shared.
+rm -f "$DMG"
+hdiutil convert -quiet "$WORK_DIR/rw.dmg" -format UDZO -imagekey zlib-level=9 -o "$DMG"
+
+echo "==> Done: $DMG"

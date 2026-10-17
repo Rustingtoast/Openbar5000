@@ -144,7 +144,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         search_query: String::new(),
         grouping: PlaylistGrouping::default(),
         list_view: false,
-        smart_grouping: true,
+        smart_grouping: false,
         collapsed: HashSet::new(),
         covers: CoverCache::default(),
         selected: HashSet::new(),

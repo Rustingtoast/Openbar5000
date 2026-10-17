@@ -20,8 +20,9 @@ pub struct Settings {
     pub spectrum: SpectrumConfig,
     pub playback_mode: PlaybackMode,
     pub playlist_grouping: PlaylistGrouping,
-    /// Smart grouping (Preferences > Appearance): albums matched loosely and
-    /// their tracks gathered together (see `playlist_rows::smart_order`).
+    /// Smart grouping (Preferences > Appearance; off by default): albums
+    /// matched loosely and their tracks gathered together (see
+    /// `playlist_rows::smart_order`).
     pub playlist_smart_grouping: bool,
     /// Holiday logos (issue #23); Pride Month shows regardless.
     pub holiday_logos: bool,
@@ -80,7 +81,7 @@ impl Default for Settings {
             active_playlist: crate::store::DEFAULT_PLAYLIST_ID,
             holiday_logos: true,
             holiday_special_mode: false,
-            playlist_smart_grouping: true,
+            playlist_smart_grouping: false,
             visualization_fps: 60,
             discord_presence_enabled: false,
             discord_client_id: String::new(),
