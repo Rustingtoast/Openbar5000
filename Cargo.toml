@@ -51,7 +51,6 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 rusqlite = { version = "0.40", features = ["bundled"] }
 discord-rich-presence = "1.1"
 rand = "0.10"
-arboard = "3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = "3"
@@ -60,8 +59,10 @@ notify = "8"
 # Local date, for the holiday logos.
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
-# Slint's winit backend with two fixes: on X11 it drew every frame twice,
-# and a window icon loaded at run time never showed (see
-# `patches/README.md`). Remove once Slint ships the fixes.
+# Slint's winit backend with five changes (see `patches/README.md`): on X11
+# it drew every frame twice; a window icon loaded at run time never showed;
+# on Wayland no window icon showed at all; every window, shown or not, was
+# made at start-up; and in a Flatpak on Wayland there was no clipboard.
+# Remove once Slint ships the fixes.
 [patch.crates-io]
 i-slint-backend-winit = { path = "patches/i-slint-backend-winit" }

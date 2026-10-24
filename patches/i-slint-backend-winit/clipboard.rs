@@ -104,15 +104,24 @@ pub fn create_clipboard(
             // arboard selects Wayland (data-control protocol, with the "wayland" feature)
             // or X11 at runtime; on compositors without wlr-data-control it falls back to
             // the X11/XWayland clipboard, which such compositors keep in sync.
-            let make = |kind| -> Box<dyn ClipboardProvider> {
-                arboard::Clipboard::new().map_or(
-                    Box::new(SilentClipboardContext) as Box<dyn ClipboardProvider>,
-                    |clipboard| Box::new(SelectableClipboard { clipboard, kind }),
-                )
+            let make = |kind| -> Option<Box<dyn ClipboardProvider>> {
+                let clipboard = arboard::Clipboard::new().ok()?;
+                Some(Box::new(SelectableClipboard { clipboard, kind }))
             };
+            let clipboard = make(arboard::LinuxClipboardKind::Clipboard);
+            // Openbar5000 patch: where arboard reaches no clipboard at all on Wayland -- in
+            // a Flatpak, the compositor keeps the data-control protocols from sandboxed apps,
+            // and there's no X server -- the Wayland clipboard itself, as the focused window.
+            #[cfg(feature = "wayland")]
+            if clipboard.is_none()
+                && let Some(pair) = wayland::create_clipboard(_display_handle)
+            {
+                return pair;
+            }
+            let silent = || Box::new(SilentClipboardContext) as Box<dyn ClipboardProvider>;
             (
-                make(arboard::LinuxClipboardKind::Clipboard),
-                make(arboard::LinuxClipboardKind::Primary),
+                clipboard.unwrap_or_else(silent),
+                make(arboard::LinuxClipboardKind::Primary).unwrap_or_else(silent),
             )
         } else if #[cfg(target_os = "ios")] {
             // iOS exposes a single general pasteboard; the selection clipboard is a no-op.
@@ -128,5 +137,61 @@ pub fn create_clipboard(
         } else {
             (Box::new(SilentClipboardContext), Box::new(SilentClipboardContext))
         }
+    }
+}
+
+// Openbar5000 patch: the Wayland clipboard where arboard can't reach one (see
+// `create_clipboard`).
+#[cfg(all(
+    unix,
+    not(any(target_vendor = "apple", target_os = "android", target_os = "emscripten")),
+    feature = "wayland"
+))]
+mod wayland {
+    use super::{ClipboardPair, ClipboardProvider};
+    use std::rc::Rc;
+    use winit::raw_window_handle::{DisplayHandle, RawDisplayHandle};
+
+    /// The regular clipboard, or the primary selection.
+    struct WaylandClipboard {
+        clipboard: Rc<smithay_clipboard::Clipboard>,
+        primary: bool,
+    }
+
+    impl ClipboardProvider for WaylandClipboard {
+        fn get_contents(
+            &mut self,
+        ) -> Result<String, Box<dyn std::error::Error + Send + Sync + 'static>> {
+            let contents =
+                if self.primary { self.clipboard.load_primary() } else { self.clipboard.load() };
+            contents.map_err(Into::into)
+        }
+
+        fn set_contents(
+            &mut self,
+            contents: String,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+            if self.primary {
+                self.clipboard.store_primary(contents);
+            } else {
+                self.clipboard.store(contents);
+            }
+            Ok(())
+        }
+    }
+
+    /// Both clipboards, served on the event loop's own connection; `None` off Wayland.
+    pub fn create_clipboard(display_handle: &DisplayHandle<'_>) -> Option<ClipboardPair> {
+        let RawDisplayHandle::Wayland(display) = display_handle.as_raw() else {
+            return None;
+        };
+        // SAFETY: the event loop's display, which outlives the backend's clipboard (a
+        // field dropped before the event loop's).
+        let clipboard =
+            Rc::new(unsafe { smithay_clipboard::Clipboard::new(display.display.as_ptr()) });
+        Some((
+            Box::new(WaylandClipboard { clipboard: clipboard.clone(), primary: false }),
+            Box::new(WaylandClipboard { clipboard, primary: true }),
+        ))
     }
 }

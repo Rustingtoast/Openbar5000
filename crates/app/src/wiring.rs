@@ -1005,6 +1005,14 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     window.on_exit_clicked(|| {
         slint::quit_event_loop().expect("failed to quit event loop");
     });
+    // Closing the main window ends the app, as Exit does, and takes every
+    // other window with it: Slint only stops once the last window is
+    // closed, so a dialog left open (Preferences, Properties, ...) would
+    // otherwise keep the app running -- and playing -- without its window.
+    window.window().on_close_requested(|| {
+        slint::quit_event_loop().expect("failed to quit event loop");
+        slint::CloseRequestResponse::HideWindow
+    });
 
     {
         let window_weak = window.as_weak();
@@ -1100,29 +1108,28 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         });
     }
 
-    // Created on first use and then kept alive: on Linux/X11 the copied
-    // text is only served while the `Clipboard` that set it still exists.
-    let clipboard: Rc<RefCell<Option<arboard::Clipboard>>> = Rc::new(RefCell::new(None));
     {
         let playlist_view_state = playlist_view_state.clone();
-        let clipboard = clipboard.clone();
+        let window_weak = window.as_weak();
         window.on_row_copy_clicked(move |index| {
             let paths = selected_paths(&playlist_view_state.borrow(), index as usize);
-            if !paths.is_empty() {
-                copy_to_clipboard(&clipboard, paths);
+            if let (false, Some(window)) = (paths.is_empty(), window_weak.upgrade()) {
+                window.invoke_copy_to_clipboard(paths.into());
             }
         });
     }
     {
         let playlist_view_state = playlist_view_state.clone();
-        let clipboard = clipboard.clone();
         let engine = engine.clone();
+        let window_weak = window.as_weak();
         window.on_row_cut_clicked(move |index| {
+            let Some(window) = window_weak.upgrade() else { return };
             let (paths, targets) = {
                 let state = playlist_view_state.borrow();
                 (selected_paths(&state, index as usize), state.targets(index as usize))
             };
-            if !paths.is_empty() && copy_to_clipboard(&clipboard, paths) {
+            if !paths.is_empty() {
+                window.invoke_copy_to_clipboard(paths.into());
                 engine.send(EngineCommand::RemoveIndices(targets));
             }
         });
@@ -1355,14 +1362,20 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         let engine = engine.clone();
         window.on_previous_clicked(move || engine.send(EngineCommand::Previous));
     }
+    // OS media keys (registered below), told about seeks here.
+    let media_keys: Rc<RefCell<Option<MediaKeys>>> = Rc::new(RefCell::new(None));
     {
         let engine = engine.clone();
         let presence = presence.clone();
         let current_track = current_track.clone();
+        let media_keys = media_keys.clone();
         let window_weak = window.as_weak();
         window.on_seek_requested(move |position_seconds| {
             let position = Duration::from_secs_f32(position_seconds.max(0.0));
             engine.send(EngineCommand::Seek(position));
+            if let Some(media) = media_keys.borrow_mut().as_mut() {
+                media.seeked(position);
+            }
             if let (Some(track), Some(window)) =
                 (current_track.borrow().clone(), window_weak.upgrade())
             {
@@ -1456,7 +1469,6 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
 
     // OS media keys (issue #17). Registered once the event loop runs: on
     // Windows it needs the native window, which only exists once shown.
-    let media_keys: Rc<RefCell<Option<MediaKeys>>> = Rc::new(RefCell::new(None));
     // On Windows the native window can appear a little after the event loop
     // starts (issue #31): wait for it rather than register without one.
     let media_keys_timer = Rc::new(Timer::default());
@@ -2173,11 +2185,36 @@ fn apply_media_action(window: &MainWindow, clock: &PlaybackClock, action: MediaA
             window.set_volume(volume);
             window.invoke_volume_changed(volume);
         }
-        MediaAction::Raise => {
-            let _ = window.show();
-        }
+        MediaAction::Raise => raise(window),
         MediaAction::Quit => window.invoke_exit_clicked(),
     }
+}
+
+/// Brings the main window to the front, minimized or not. Slint's `show`
+/// only maps a hidden window; un-minimizing and focusing it is up to
+/// winit. On Wayland, an app can neither tell it's minimized nor raise
+/// itself outright: it asks the compositor to activate the window, which
+/// restores it -- or, if the compositor won't hand focus over, flags it in
+/// the task bar instead. winit only makes that request when asked for the
+/// user's attention (its `focus_window` does nothing there).
+fn raise(window: &MainWindow) {
+    use slint::winit_030::winit::window::UserAttentionType;
+    use slint::winit_030::WinitWindowAccessor;
+    let _ = window.show();
+    window.window().with_winit_window(|winit| {
+        // `None` on Wayland, which would only warn that it can't.
+        if winit.is_minimized() == Some(true) {
+            winit.set_minimized(false);
+        }
+        winit.focus_window();
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            use slint::winit_030::winit::platform::wayland::WindowExtWayland;
+            if winit.xdg_toplevel().is_some() {
+                winit.request_user_attention(Some(UserAttentionType::Informational));
+            }
+        }
+    });
 }
 
 /// The main window's native handle where the OS media controls need one
@@ -3365,28 +3402,6 @@ fn selected_paths(state: &PlaylistViewState, index: usize) -> String {
         .map(|t| t.path.display().to_string())
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-/// Puts `text` on the system clipboard, returning whether it worked.
-fn copy_to_clipboard(clipboard: &RefCell<Option<arboard::Clipboard>>, text: String) -> bool {
-    let mut clipboard = clipboard.borrow_mut();
-    if clipboard.is_none() {
-        match arboard::Clipboard::new() {
-            Ok(c) => *clipboard = Some(c),
-            Err(e) => {
-                tracing::warn!("clipboard unavailable: {e}");
-                return false;
-            }
-        }
-    }
-    let result = clipboard
-        .as_mut()
-        .expect("initialized above")
-        .set_text(text);
-    if let Err(e) = &result {
-        tracing::warn!("failed to copy to clipboard: {e}");
-    }
-    result.is_ok()
 }
 
 fn refresh_theme_list(

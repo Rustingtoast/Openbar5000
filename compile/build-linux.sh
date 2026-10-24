@@ -75,6 +75,7 @@ Comment=Open-source, cross-platform alternative to foobar2000
 Exec=$APP_NAME
 Icon=$APP_NAME
 Terminal=false
+StartupNotify=true
 Categories=AudioVideo;Audio;Player;
 EOF
 

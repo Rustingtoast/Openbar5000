@@ -85,11 +85,14 @@ component TabPage inherits ScrollView {
 export component SettingsWindow inherits Window {
     title: "Preferences";
     icon: Theme.logo;
-    preferred-width: 680px;
+    // Never narrower than the content needs -- above all the tab titles,
+    // whose width depends on the font: a fixed width let a wide font push
+    // the tabs, and every page with them, past the window's right edge.
+    preferred-width: Math.max(760px, content.min-width);
     // Tall enough for every tab without scrolling. Shorter, they scroll
     // (see `TabPage`).
     preferred-height: 720px;
-    min-width: 560px;
+    min-width: Math.max(560px, content.min-width);
     min-height: 420px;
     // See MainWindow: an explicit max keeps the window resizable.
     max-width: 100000px;
@@ -225,7 +228,7 @@ export component SettingsWindow inherits Window {
     callback eq-save-preset-clicked();
     callback eq-preset-chosen(int);
 
-    VerticalLayout {
+    content := VerticalLayout {
         padding: 16px;
         spacing: 12px;
 

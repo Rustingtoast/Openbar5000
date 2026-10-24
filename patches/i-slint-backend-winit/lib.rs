@@ -118,6 +118,9 @@ mod accesskit;
 mod muda;
 #[cfg(xdg_desktop_settings)]
 mod xdg_desktop_settings;
+// Openbar5000 patch: the window icon on Wayland.
+#[cfg(wayland_icon)]
+mod wayland_icon;
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod wasm_input_helper;

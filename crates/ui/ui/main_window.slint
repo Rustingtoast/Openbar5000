@@ -237,6 +237,17 @@ export component MainWindow inherits Window {
         root.playlist-scroll-serial += 1;
     }
 
+    // Puts `text` on the system clipboard -- Slint's own, the one its text
+    // fields use (it has no clipboard API apart from them). One clipboard
+    // for the whole app: on Wayland in a Flatpak, each is a thread woken by
+    // every message from the compositor (see `patches/README.md`).
+    public function copy-to-clipboard(text: string) {
+        clipboard-proxy.text = text;
+        clipboard-proxy.select-all();
+        clipboard-proxy.copy();
+        clipboard-proxy.text = "";
+    }
+
     callback panel-area-resized(length, length);
     // Read once at startup: `panel-area`'s init runs before the Rust side
     // has connected `panel-area-resized`.
@@ -763,6 +774,12 @@ export component MainWindow inherits Window {
             }
             reject
         }
+    }
+
+    // Never shown: what `copy-to-clipboard` copies from.
+    clipboard-proxy := TextInput {
+        visible: false;
+        single-line: false;
     }
 
     // Over everything: progress while a playlist loads.

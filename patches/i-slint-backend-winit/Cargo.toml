@@ -95,6 +95,10 @@ wayland = [
     "i-slint-renderer-skia?/wayland",
     "softbuffer?/wayland",
     "softbuffer?/wayland-dlopen",
+    "dep:rustix",
+    "dep:smithay-clipboard",
+    "dep:wayland-client",
+    "dep:wayland-protocols",
 ]
 x11 = [
     "winit/x11",
@@ -259,6 +263,34 @@ default-features = false
 
 [target.'cfg(not(any(target_family = "windows", target_vendor = "apple", target_arch = "wasm32", target_os = "android")))'.dependencies.futures]
 version = "0.3.31"
+
+[target.'cfg(not(any(target_family = "windows", target_vendor = "apple", target_arch = "wasm32", target_os = "android")))'.dependencies.rustix]
+version = "1"
+features = [
+    "fs",
+    "std",
+]
+optional = true
+default-features = false
+
+[target.'cfg(not(any(target_family = "windows", target_vendor = "apple", target_arch = "wasm32", target_os = "android")))'.dependencies.smithay-clipboard]
+version = "=0.7.2"
+optional = true
+default-features = false
+
+[target.'cfg(not(any(target_family = "windows", target_vendor = "apple", target_arch = "wasm32", target_os = "android")))'.dependencies.wayland-client]
+version = "0.31"
+features = ["system"]
+optional = true
+
+[target.'cfg(not(any(target_family = "windows", target_vendor = "apple", target_arch = "wasm32", target_os = "android")))'.dependencies.wayland-protocols]
+version = "0.32"
+features = [
+    "client",
+    "staging",
+]
+optional = true
+default-features = false
 
 [target.'cfg(not(any(target_family = "windows", target_vendor = "apple", target_arch = "wasm32", target_os = "android")))'.dependencies.zbus]
 version = "5.14.0"

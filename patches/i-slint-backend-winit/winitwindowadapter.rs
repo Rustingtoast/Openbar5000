@@ -186,6 +186,14 @@ fn same_icon(a: &Image, b: &Image) -> bool {
     matches!((a, b), (ImageInner::None, ImageInner::None)) || a == b
 }
 
+/// The window icon's side in pixels, for a `scale_factor`: 64 logical
+/// pixels, as for winit.
+// Openbar5000 patch: for `wayland_icon`.
+#[cfg(wayland_icon)]
+fn window_icon_size(scale_factor: f32) -> u32 {
+    (64. * scale_factor).round().max(1.) as u32
+}
+
 fn icon_to_winit(
     icon: corelib::graphics::Image,
     size: euclid::Size2D<Coord, PhysicalPx>,
@@ -531,7 +539,10 @@ impl WinitWindowAdapter {
             touch_finger_ids: Default::default(),
         });
 
-        self_rc.shared_backend_data.register_inactive_window((self_rc.clone()) as _);
+        // Openbar5000 patch: not made right away, but the first time it's
+        // shown (`set_visibility` registers it then): a window never shown
+        // -- a dialog -- needn't cost a native window and a GPU surface,
+        // set up before the first window can show.
 
         self_rc
     }
@@ -704,6 +715,13 @@ impl WinitWindowAdapter {
             &winit_window,
             self.shared_backend_data.is_wayland,
         );
+
+        // Openbar5000 patch: the icon set before the window was made, which
+        // winit only passes on itself on X11 and Windows.
+        #[cfg(wayland_icon)]
+        if let Some(icon) = self.window_icon.borrow().as_ref() {
+            crate::wayland_icon::set(&winit_window, icon, window_icon_size(self.window().scale_factor()));
+        }
 
         *self.winit_window_or_none.borrow_mut() = WinitWindowOrNone::HasWindow {
             window: winit_window.clone(),
@@ -1884,6 +1902,12 @@ impl WindowAdapter for WinitWindowAdapter {
         let icon_image = window_item.icon();
         if !self.window_icon.borrow().as_ref().is_some_and(|shown| same_icon(shown, &icon_image)) {
             *self.window_icon.borrow_mut() = Some(icon_image.clone());
+            // Openbar5000 patch: winit shows no icon on Wayland (see
+            // `wayland_icon`). A window made later gets it as it's made.
+            #[cfg(wayland_icon)]
+            if let Some(window) = winit_window_or_none.as_window() {
+                crate::wayland_icon::set(&window, &icon_image, window_icon_size(sf));
+            }
             winit_window_or_none.set_window_icon(icon_to_winit(
                 icon_image,
                 i_slint_core::lengths::LogicalSize::new(64., 64.) * ScaleFactor::new(sf),

@@ -1,6 +1,19 @@
 use std::path::Path;
 use std::process::Command;
 
+/// The name the app's desktop entry is installed under, without the
+/// `.desktop`: what Linux desktops go by to find the app's name and icon
+/// for its windows (Wayland's app id, X11's WM_CLASS) and for the MPRIS
+/// now-playing widget. Inside a Flatpak it's the Flatpak's own id; the .deb
+/// installs `openbar5000.desktop`.
+#[cfg(all(unix, not(target_os = "macos")))]
+pub fn desktop_id() -> String {
+    std::env::var("FLATPAK_ID")
+        .ok()
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| "openbar5000".to_string())
+}
+
 /// Opens `url` in the default browser.
 pub fn open_url(url: &str) {
     if !(url.starts_with("https://") || url.starts_with("http://")) {

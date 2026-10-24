@@ -22,7 +22,6 @@ crossbeam-channel.workspace = true
 discord-rich-presence.workspace = true
 rfd.workspace = true
 rand.workspace = true
-arboard.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 ureq.workspace = true
@@ -34,9 +33,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 
-# OS media keys / now-playing integration (issue #17). On Linux it talks
-# MPRIS over the pure-Rust zbus instead of libdbus, so building needs no
-# extra system packages.
+# OS media keys / now-playing integration (issue #17): the System Media
+# Transport Controls on Windows.
 [target.'cfg(target_os = "windows")'.dependencies]
 souvlaki = { version = "0.8", default-features = false }
 
@@ -49,8 +47,11 @@ block2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSDictionary", "NSValue", "NSObject"] }
 objc2-media-player = { version = "0.3", default-features = false, features = ["std", "block2", "MPRemoteCommandCenter", "MPRemoteCommand", "MPRemoteCommandEvent", "MPNowPlayingInfoCenter", "MPMediaItem", "MPMediaEntity"] }
 
+# Linux serves MPRIS itself (see `media_keys`), over the pure-Rust zbus that
+# Slint's tray icon already builds -- no libdbus, so no extra system
+# packages.
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
-souvlaki = { version = "0.8", default-features = false, features = ["use_zbus"] }
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
 
 [target.'cfg(windows)'.dependencies]
 slint = { workspace = true, features = ["raw-window-handle-06"] }
