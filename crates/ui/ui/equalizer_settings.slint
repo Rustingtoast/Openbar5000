@@ -1,0 +1,331 @@
+import { Button, CheckBox, ComboBox, LineEdit, Switch } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Vfd } from "vintage_equalizer.slint";
+
+/// One band's vertical slider: whole dB from -max to +max, +max at the
+/// top. Reports every step while dragging, like foobar2000's.
+component BandSlider inherits Rectangle {
+    in property <int> value;
+    in property <int> max-db: 20;
+    /// Hardware fader look: black groove, black cap with a white line.
+    in property <bool> vintage;
+    callback changed(int);
+
+    property <bool> dragging: false;
+    property <length> thumb-height: root.vintage ? 16px : 12px;
+    property <length> travel: root.height - root.thumb-height;
+    // 0 at the top (+max), 1 at the bottom (-max).
+    property <float> fraction: (root.max-db - root.value) / (2 * root.max-db);
+
+    // 0 dB tick.
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        height: 1px;
+        background: root.vintage ? Vfd.print.transparentize(0.6) : Theme.text-muted.transparentize(0.6);
+    }
+    // The groove.
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        width: 4px;
+        border-radius: 2px;
+        background: root.vintage ? #050505 : Theme.text-muted.transparentize(0.75);
+        border-width: root.vintage ? 1px : 0;
+        border-color: #3a3a3a;
+    }
+    if !root.vintage: Rectangle {
+        y: root.travel * root.fraction;
+        x: 2px;
+        height: root.thumb-height;
+        width: parent.width - 4px;
+        border-radius: 2px;
+        background: touch.has-hover || root.dragging ? Theme.accent.brighter(0.15) : Theme.accent;
+    }
+    if root.vintage: Rectangle {
+        y: root.travel * root.fraction;
+        x: (parent.width - self.width) / 2;
+        height: root.thumb-height;
+        width: Math.min(parent.width - 4px, 22px);
+        border-radius: 2px;
+        border-width: 1px;
+        border-color: #000000;
+        background: touch.has-hover || root.dragging
+            ? @linear-gradient(180deg, #4a4a4a 0%, #1c1c1c 100%)
+            : @linear-gradient(180deg, #3b3b3b 0%, #111111 100%);
+        // The indicator line.
+        Rectangle {
+            height: 2px;
+            width: parent.width - 6px;
+            background: #e6e6e6;
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        function value-at(y: length) -> int {
+            return Math.round(root.max-db - Math.clamp((y - root.thumb-height / 2) / root.travel, 0, 1) * 2 * root.max-db);
+        }
+        pointer-event(event) => {
+            if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                root.dragging = true;
+                root.changed(self.value-at(self.mouse-y));
+            } else if event.button == PointerEventButton.left && event.kind == PointerEventKind.up {
+                root.dragging = false;
+            }
+        }
+        moved => {
+            if root.dragging {
+                root.changed(self.value-at(self.mouse-y));
+            }
+        }
+        scroll-event(event) => {
+            if event.delta-y > 0 {
+                root.changed(Math.min(root.max-db, root.value + 1));
+                return accept;
+            } else if event.delta-y < 0 {
+                root.changed(Math.max(-root.max-db, root.value - 1));
+                return accept;
+            }
+            reject
+        }
+    }
+}
+
+/// A colour to click; outlined when it's the one in use.
+component ColorSwatch inherits Rectangle {
+    in property <color> swatch;
+    in property <bool> current;
+    callback clicked();
+
+    width: 22px;
+    height: 22px;
+    border-radius: 4px;
+    background: root.swatch;
+    border-width: root.current ? 2px : 1px;
+    border-color: root.current ? Theme.text-primary : Theme.text-muted.transparentize(0.6);
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+/// The equalizer's tab in Preferences (issue #7): 18 bands of ±20 dB,
+/// presets as foobar2000 `.feq` files. Changes are heard as they are made.
+/// "Vintage look" puts the faders on a hardware faceplate under the same
+/// vacuum fluorescent display as the Vintage Equalizer panel.
+export component EqualizerSettingsPage inherits VerticalLayout {
+    in property <[string]> band-labels;
+    in property <[int]> gains;
+    in property <int> max-db: 20;
+    in property <bool> enabled;
+    in property <bool> vintage;
+    /// Built-in presets; index 0 is "Custom" (no preset matches).
+    in property <[string]> preset-names;
+    in property <int> preset-index;
+    in property <string> status;
+    /// The display's band dots (see `VintageEqualizer`).
+    in property <string> lit-dots;
+    in property <string> half-dots;
+    in property <string> dim-dots;
+    /// The vintage display's colour (issue #35), and its hex text.
+    in property <color> vfd-color;
+    in property <string> vfd-color-hex;
+
+    callback band-changed(int, int);
+    callback enabled-toggled(bool);
+    callback vintage-toggled(bool);
+    callback zero-all-clicked();
+    callback auto-level-clicked();
+    callback load-preset-clicked();
+    callback save-preset-clicked();
+    callback preset-chosen(int);
+    callback vfd-color-chosen(color);
+    callback vfd-color-edited(string);
+
+    property <length> scale-width: 46px;
+
+    padding: 16px;
+    spacing: 8px;
+
+    HorizontalLayout {
+        spacing: 16px;
+        CheckBox {
+            text: "Enable equalizer";
+            checked: root.enabled;
+            toggled => { root.enabled-toggled(self.checked); }
+        }
+        Switch {
+            text: "Vintage look";
+            checked: root.vintage;
+            toggled => { root.vintage-toggled(self.checked); }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        Text {
+            text: "Presets";
+            vertical-alignment: center;
+            color: Theme.text-muted;
+        }
+        ComboBox {
+            width: 160px;
+            model: root.preset-names;
+            current-index: root.preset-index;
+            selected => { root.preset-chosen(self.current-index); }
+        }
+    }
+
+    // The bands: plain, or on the faceplate.
+    Rectangle {
+        vertical-stretch: 1;
+        min-height: root.vintage ? 190px : 120px;
+        border-radius: root.vintage ? 4px : 0;
+        border-width: root.vintage ? 1px : 0;
+        border-color: #000000;
+        background: root.vintage ? @linear-gradient(180deg, Vfd.body-top 0%, Vfd.body-bottom 100%) : transparent;
+        // A faint top-edge highlight, like the anodised panel catching light.
+        if root.vintage: Rectangle {
+            y: 1px;
+            x: 4px;
+            width: parent.width - 8px;
+            height: 1px;
+            background: #ffffff.transparentize(0.9);
+        }
+
+        VerticalLayout {
+            padding: root.vintage ? 12px : 0;
+            padding-top: root.vintage ? 8px : 0;
+            spacing: 6px;
+
+            if root.vintage: HorizontalLayout {
+                height: 14px;
+                Text {
+                    text: "Stereo Graphic Equalizer";
+                    font-size: 11px;
+                    color: Vfd.print;
+                    vertical-alignment: center;
+                }
+                Text {
+                    horizontal-stretch: 1;
+                    text: "OB-5000";
+                    font-size: 12px;
+                    font-weight: 800;
+                    color: Vfd.print;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                }
+            }
+
+            // The display, its columns over the faders.
+            if root.vintage: Rectangle {
+                height: 52px;
+                background: Vfd.glass;
+                border-radius: 3px;
+                border-width: 1px;
+                border-color: #000000;
+                for layer in [
+                    { dots: root.dim-dots, color: Vfd.dim },
+                    { dots: root.half-dots, color: Vfd.half },
+                    { dots: root.lit-dots, color: Vfd.glow },
+                ]: Path {
+                    x: 0;
+                    y: 4px;
+                    width: parent.width - root.scale-width - 6px;
+                    height: parent.height - 8px;
+                    viewbox-x: 0;
+                    viewbox-y: 0;
+                    viewbox-width: 180;
+                    viewbox-height: 84;
+                    fit: fill;
+                    commands: layer.dots;
+                    fill: layer.color;
+                }
+                VerticalLayout {
+                    x: parent.width - root.scale-width;
+                    width: root.scale-width;
+                    alignment: center;
+                    spacing: 2px;
+                    Text { text: "EQ ON"; font-size: 9px; color: root.enabled ? Vfd.glow : Vfd.dim; }
+                    Text { text: "EQ OFF"; font-size: 9px; color: root.enabled ? Vfd.dim : Vfd.glow; }
+                }
+            }
+
+            // Faders with the dB scale on the right.
+            HorizontalLayout {
+                vertical-stretch: 1;
+                min-height: 70px;
+                spacing: 6px;
+                sliders := HorizontalLayout {
+                    opacity: root.enabled || root.vintage ? 1 : 0.55;
+                    for gain[i] in root.gains: BandSlider {
+                        min-width: 18px;
+                        horizontal-stretch: 1;
+                        value: gain;
+                        max-db: root.max-db;
+                        vintage: root.vintage;
+                        changed(v) => { root.band-changed(i, v); }
+                    }
+                }
+                Rectangle {
+                    width: root.scale-width;
+                    property <color> ink: root.vintage ? Vfd.print : Theme.text-muted;
+                    Text { y: 0; text: "+" + root.max-db + " dB"; font-size: 11px; color: parent.ink; }
+                    Text { y: (parent.height - self.height) / 2; text: "0 dB"; font-size: 11px; color: parent.ink; }
+                    Text { y: parent.height - self.height; text: "-" + root.max-db + " dB"; font-size: 11px; color: parent.ink; }
+                }
+            }
+            // Two staggered rows, so the labels don't collide at narrow widths.
+            Rectangle {
+                height: 30px;
+                property <length> column: sliders.width / Math.max(1, root.gains.length);
+                for label[i] in root.band-labels: Text {
+                    x: i * parent.column + parent.column / 2 - self.width / 2;
+                    y: Math.mod(i, 2) == 0 ? 0 : 15px;
+                    text: label;
+                    font-size: 11px;
+                    color: root.vintage ? Vfd.print : Theme.text-muted;
+                }
+            }
+        }
+    }
+
+    HorizontalLayout {
+        spacing: 6px;
+        Button { text: "Zero all"; clicked => { root.zero-all-clicked(); } }
+        Button { text: "Auto level"; clicked => { root.auto-level-clicked(); } }
+        Button { text: "Load preset\u{2026}"; clicked => { root.load-preset-clicked(); } }
+        Button { text: "Save preset\u{2026}"; clicked => { root.save-preset-clicked(); } }
+        Text {
+            horizontal-stretch: 1;
+            text: root.status;
+            vertical-alignment: center;
+            horizontal-alignment: right;
+            overflow: elide;
+            color: Theme.text-muted;
+            font-size: 11px;
+        }
+    }
+
+    // The vintage display's colour: the Vintage Equalizer panel and the
+    // vintage look above.
+    HorizontalLayout {
+        spacing: 6px;
+        Text {
+            text: "Display color";
+            vertical-alignment: center;
+            color: Theme.text-muted;
+        }
+        Rectangle { width: 4px; }
+        for swatch in [#6fd6ff, #2fe6c8, #6dff6d, #ffb340, #ff4d4d, #c38bff, #e9f6ff]: ColorSwatch {
+            y: (parent.height - self.height) / 2;
+            swatch: swatch;
+            current: swatch == root.vfd-color;
+            clicked => { root.vfd-color-chosen(swatch); }
+        }
+        Rectangle { width: 4px; }
+        LineEdit {
+            width: 90px;
+            text: root.vfd-color-hex;
+            placeholder-text: "#6fd6ff";
+            accepted(text) => { root.vfd-color-edited(text); }
+        }
+        Rectangle { horizontal-stretch: 1; }
+    }
+}

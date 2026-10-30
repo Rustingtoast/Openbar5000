@@ -1,3 +1,4 @@
+use crate::media_library::LibraryTrack;
 use crate::theme::{ThemeColors, ThemeEntry};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
@@ -57,12 +58,39 @@ const MIGRATIONS: &[&str] = &[
         fetched_at INTEGER NOT NULL
     );
     "#,
+    // v3: the media library index (see `media_library`): one row per audio
+    // file under the music folders, with the tags the LIB panel groups by.
+    // `modified`/`size` tell a rescan which files need reading again.
+    r#"
+    CREATE TABLE library_tracks (
+        path         TEXT PRIMARY KEY,
+        modified     INTEGER NOT NULL,
+        size         INTEGER NOT NULL,
+        title        TEXT NOT NULL,
+        artist       TEXT NOT NULL,
+        album_artist TEXT NOT NULL,
+        album        TEXT NOT NULL,
+        track        INTEGER,
+        disc         INTEGER,
+        date         TEXT NOT NULL,
+        genre        TEXT NOT NULL,
+        duration_ms  INTEGER NOT NULL
+    );
+    "#,
+    // v4: playback statistics for the Properties window (issue #34).
+    // Times are Unix seconds.
+    r#"
+    CREATE TABLE play_stats (
+        path         TEXT PRIMARY KEY,
+        count        INTEGER NOT NULL,
+        first_played INTEGER NOT NULL,
+        last_played  INTEGER NOT NULL
+    );
+    "#,
 ];
 
-/// The id of the one playlist this app currently exposes in the UI. The
-/// schema already supports more (see `MIGRATIONS`); wiring up multiple
-/// playlists is future UI work, not a storage change.
-const DEFAULT_PLAYLIST_ID: i64 = 1;
+/// The playlist every database starts with (migration v1).
+pub const DEFAULT_PLAYLIST_ID: i64 = 1;
 
 pub struct Store {
     conn: Connection,
@@ -113,6 +141,80 @@ impl Store {
             params![key, data, photo, now],
         ) {
             tracing::warn!("failed to cache artist info: {e}");
+        }
+    }
+
+    // --- media library ---------------------------------------------------
+
+    pub fn library_tracks(&self) -> Vec<LibraryTrack> {
+        let result = (|| -> rusqlite::Result<Vec<LibraryTrack>> {
+            let mut stmt = self.conn.prepare(
+                "SELECT path, modified, size, title, artist, album_artist, album, track, disc,
+                        date, genre, duration_ms
+                 FROM library_tracks",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok(LibraryTrack {
+                    path: PathBuf::from(row.get::<_, String>(0)?),
+                    modified: row.get(1)?,
+                    size: row.get::<_, i64>(2)? as u64,
+                    tags: engine::LibraryTags {
+                        title: row.get(3)?,
+                        artist: row.get(4)?,
+                        album_artist: row.get(5)?,
+                        album: row.get(6)?,
+                        track_number: row.get(7)?,
+                        disc_number: row.get(8)?,
+                        date: row.get(9)?,
+                        genre: row.get(10)?,
+                        duration: std::time::Duration::from_millis(row.get::<_, i64>(11)?.max(0) as u64),
+                    },
+                })
+            })?;
+            rows.collect()
+        })();
+        result.unwrap_or_else(|e| {
+            tracing::warn!("failed to load the media library: {e}");
+            Vec::new()
+        })
+    }
+
+    /// Adds or updates `upserts` and drops `removed`, in one transaction.
+    pub fn update_library(&self, upserts: &[LibraryTrack], removed: &[PathBuf]) {
+        let result = (|| -> rusqlite::Result<()> {
+            let tx = self.conn.unchecked_transaction()?;
+            {
+                let mut insert = tx.prepare(
+                    "INSERT OR REPLACE INTO library_tracks (path, modified, size, title, artist,
+                        album_artist, album, track, disc, date, genre, duration_ms)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                )?;
+                for track in upserts {
+                    let tags = &track.tags;
+                    insert.execute(params![
+                        track.path.to_string_lossy(),
+                        track.modified,
+                        track.size as i64,
+                        tags.title,
+                        tags.artist,
+                        tags.album_artist,
+                        tags.album,
+                        tags.track_number,
+                        tags.disc_number,
+                        tags.date,
+                        tags.genre,
+                        tags.duration.as_millis() as i64,
+                    ])?;
+                }
+                let mut delete = tx.prepare("DELETE FROM library_tracks WHERE path = ?1")?;
+                for path in removed {
+                    delete.execute(params![path.to_string_lossy()])?;
+                }
+            }
+            tx.commit()
+        })();
+        if let Err(e) = result {
+            tracing::warn!("failed to update the media library: {e}");
         }
     }
 
@@ -218,16 +320,94 @@ impl Store {
         }
     }
 
-    // --- playlist: ordered paths for the single default playlist --------
+    // --- playback statistics (issue #34) --------------------------------
 
-    pub fn load_playlist(&self) -> Vec<PathBuf> {
+    /// Counts a play of `path` at `when` (Unix seconds).
+    pub fn record_play(&self, path: &Path, when: i64) {
+        if let Err(e) = self.conn.execute(
+            "INSERT INTO play_stats (path, count, first_played, last_played) VALUES (?1, 1, ?2, ?2)
+             ON CONFLICT(path) DO UPDATE SET count = count + 1, last_played = excluded.last_played",
+            params![path.to_string_lossy(), when],
+        ) {
+            tracing::warn!("failed to record a play: {e}");
+        }
+    }
+
+    pub fn play_stats(&self, path: &Path) -> Option<PlayStats> {
+        self.conn
+            .query_row(
+                "SELECT count, first_played, last_played FROM play_stats WHERE path = ?1",
+                params![path.to_string_lossy()],
+                |row| Ok(PlayStats { count: row.get::<_, i64>(0)? as u64, first_played: row.get(1)?, last_played: row.get(2)? }),
+            )
+            .optional()
+            .unwrap_or(None)
+    }
+
+    // --- playlists: named, ordered lists of paths (issue #33) ----------
+
+    /// Every playlist, oldest first, with how many tracks it holds.
+    pub fn playlists(&self) -> Vec<PlaylistInfo> {
+        let result = (|| -> rusqlite::Result<Vec<PlaylistInfo>> {
+            let mut stmt = self.conn.prepare(
+                "SELECT p.id, p.name, COUNT(t.path) FROM playlists p
+                 LEFT JOIN playlist_tracks t ON t.playlist_id = p.id
+                 GROUP BY p.id ORDER BY p.id",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok(PlaylistInfo {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    count: row.get::<_, i64>(2)? as usize,
+                })
+            })?;
+            rows.collect()
+        })();
+        let mut playlists = result.unwrap_or_else(|e| {
+            tracing::warn!("failed to list playlists: {e}");
+            Vec::new()
+        });
+        // There's always at least one.
+        if playlists.is_empty() {
+            let id = self.create_playlist("Default", &[]);
+            playlists.push(PlaylistInfo { id, name: "Default".into(), count: 0 });
+        }
+        playlists
+    }
+
+    /// A new playlist holding `paths`; returns its id.
+    pub fn create_playlist(&self, name: &str, paths: &[PathBuf]) -> i64 {
+        if let Err(e) = self.conn.execute("INSERT INTO playlists (name) VALUES (?1)", params![name]) {
+            tracing::warn!("failed to create playlist: {e}");
+            return DEFAULT_PLAYLIST_ID;
+        }
+        let id = self.conn.last_insert_rowid();
+        self.save_playlist(id, paths);
+        id
+    }
+
+    pub fn rename_playlist(&self, id: i64, name: &str) {
+        if let Err(e) = self.conn.execute("UPDATE playlists SET name = ?1 WHERE id = ?2", params![name, id]) {
+            tracing::warn!("failed to rename playlist: {e}");
+        }
+    }
+
+    /// Deletes the playlist and its tracks (`ON DELETE CASCADE`).
+    pub fn delete_playlist(&self, id: i64) {
+        if let Err(e) = self.conn.execute("DELETE FROM playlists WHERE id = ?1", params![id]) {
+            tracing::warn!("failed to delete playlist: {e}");
+        }
+    }
+
+    /// The playlist's paths, in order -- missing files included only when
+    /// `keep_missing` (dropping them is right for playback, not for
+    /// copying a playlist).
+    pub fn playlist_paths(&self, id: i64, keep_missing: bool) -> Vec<PathBuf> {
         let result = (|| -> rusqlite::Result<Vec<PathBuf>> {
             let mut stmt = self.conn.prepare(
                 "SELECT path FROM playlist_tracks WHERE playlist_id = ?1 ORDER BY position",
             )?;
-            let rows = stmt.query_map(params![DEFAULT_PLAYLIST_ID], |row| {
-                row.get::<_, String>(0)
-            })?;
+            let rows = stmt.query_map(params![id], |row| row.get::<_, String>(0))?;
             rows.map(|r| r.map(PathBuf::from)).collect()
         })();
         let paths = result.unwrap_or_else(|e| {
@@ -236,21 +416,24 @@ impl Store {
         });
         // Drop entries for files that have since moved or been deleted
         // rather than handing the engine paths it can't open.
-        paths.into_iter().filter(|p| p.exists()).collect()
+        if keep_missing {
+            paths
+        } else {
+            paths.into_iter().filter(|p| p.exists()).collect()
+        }
     }
 
-    pub fn save_playlist(&self, paths: &[PathBuf]) {
+    pub fn save_playlist(&self, id: i64, paths: &[PathBuf]) {
         let result = (|| -> rusqlite::Result<()> {
             let tx = self.conn.unchecked_transaction()?;
-            tx.execute(
-                "DELETE FROM playlist_tracks WHERE playlist_id = ?1",
-                params![DEFAULT_PLAYLIST_ID],
-            )?;
-            for (position, path) in paths.iter().enumerate() {
-                tx.execute(
+            tx.execute("DELETE FROM playlist_tracks WHERE playlist_id = ?1", params![id])?;
+            {
+                let mut insert = tx.prepare(
                     "INSERT INTO playlist_tracks (playlist_id, position, path) VALUES (?1, ?2, ?3)",
-                    params![DEFAULT_PLAYLIST_ID, position as i64, path.to_string_lossy()],
                 )?;
+                for (position, path) in paths.iter().enumerate() {
+                    insert.execute(params![id, position as i64, path.to_string_lossy()])?;
+                }
             }
             tx.commit()
         })();
@@ -258,6 +441,22 @@ impl Store {
             tracing::warn!("failed to save playlist: {e}");
         }
     }
+}
+
+/// How often and when a file was played (times are Unix seconds).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlayStats {
+    pub count: u64,
+    pub first_played: i64,
+    pub last_played: i64,
+}
+
+/// A playlist as the Playlist Manager lists it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlaylistInfo {
+    pub id: i64,
+    pub name: String,
+    pub count: usize,
 }
 
 fn parse_or_black(hex: &str) -> slint::Color {
@@ -356,12 +555,46 @@ mod tests {
         std::fs::write(&b, b"").unwrap();
         let missing = dir.join("missing.wav");
 
-        store.save_playlist(&[b.clone(), missing, a.clone()]);
-        let loaded = store.load_playlist();
+        store.save_playlist(DEFAULT_PLAYLIST_ID, &[b.clone(), missing.clone(), a.clone()]);
+        let loaded = store.playlist_paths(DEFAULT_PLAYLIST_ID, false);
+        let all = store.playlist_paths(DEFAULT_PLAYLIST_ID, true);
 
         std::fs::remove_dir_all(&dir).unwrap();
 
-        assert_eq!(loaded, vec![b, a]);
+        assert_eq!(loaded, vec![b.clone(), a.clone()]);
+        assert_eq!(all, vec![b, missing, a]);
+    }
+
+    #[test]
+    fn plays_are_counted_with_first_and_last_times() {
+        let store = Store::open_in_memory().unwrap();
+        let song = Path::new("/m/song.flac");
+        assert_eq!(store.play_stats(song), None);
+        store.record_play(song, 100);
+        store.record_play(song, 250);
+        assert_eq!(store.play_stats(song), Some(PlayStats { count: 2, first_played: 100, last_played: 250 }));
+    }
+
+    #[test]
+    fn playlists_can_be_created_renamed_and_deleted() {
+        let store = Store::open_in_memory().unwrap();
+        // Every database starts with the Default playlist.
+        assert_eq!(store.playlists(), vec![PlaylistInfo { id: DEFAULT_PLAYLIST_ID, name: "Default".into(), count: 0 }]);
+
+        let chill = store.create_playlist("Chill", &[PathBuf::from("/m/a.flac"), PathBuf::from("/m/b.flac")]);
+        store.rename_playlist(chill, "Chill Evening");
+        let listed = store.playlists();
+        assert_eq!(listed.len(), 2);
+        assert_eq!((listed[1].name.as_str(), listed[1].count), ("Chill Evening", 2));
+
+        // Deleting takes its tracks with it; deleting the last one leaves a
+        // fresh Default behind.
+        store.delete_playlist(chill);
+        store.delete_playlist(DEFAULT_PLAYLIST_ID);
+        assert!(store.playlist_paths(chill, true).is_empty());
+        let listed = store.playlists();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "Default");
     }
 
     #[test]
@@ -382,10 +615,11 @@ mod tests {
         let conn = Connection::open(&path).unwrap();
         let store = Store::from_connection(conn).unwrap();
         store.set_settings(&[("theme_id", "dark".to_string())]);
-
-        std::fs::remove_dir_all(&dir).unwrap();
-
         assert_eq!(store.get_setting("theme_id"), Some("dark".to_string()));
+
+        // Closed first: Windows won't delete a file that's open.
+        drop(store);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

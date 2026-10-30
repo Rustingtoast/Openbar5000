@@ -1,6 +1,19 @@
 use std::path::Path;
 use std::process::Command;
 
+/// The name the app's desktop entry is installed under, without the
+/// `.desktop`: what Linux desktops go by to find the app's name and icon
+/// for its windows (Wayland's app id, X11's WM_CLASS) and for the MPRIS
+/// now-playing widget. Inside a Flatpak it's the Flatpak's own id; the .deb
+/// installs `openbar5000.desktop`.
+#[cfg(all(unix, not(target_os = "macos")))]
+pub fn desktop_id() -> String {
+    std::env::var("FLATPAK_ID")
+        .ok()
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| "openbar5000".to_string())
+}
+
 /// Opens `url` in the default browser.
 pub fn open_url(url: &str) {
     if !(url.starts_with("https://") || url.starts_with("http://")) {
@@ -18,8 +31,22 @@ fn open_url_with_os(url: &str) -> std::io::Result<()> {
 
 #[cfg(target_os = "windows")]
 fn open_url_with_os(url: &str) -> std::io::Result<()> {
-    // `start`'s first quoted argument is the window title, hence the "".
-    Command::new("cmd").args(["/C", "start", "", url]).spawn().map(|_| ())
+    // The shell's own "open", as a double-click does. Not `cmd /C start`:
+    // run from the app, which has no console, that flashes one up -- and
+    // `cmd` reads a `&` in the URL as the start of another command.
+    use windows::core::{w, HSTRING, PCWSTR};
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    // SAFETY: valid strings for the call's duration.
+    let result = unsafe {
+        ShellExecuteW(None, w!("open"), &HSTRING::from(url), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL)
+    };
+    // Anything above 32 means it worked.
+    if result.0 as usize > 32 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]

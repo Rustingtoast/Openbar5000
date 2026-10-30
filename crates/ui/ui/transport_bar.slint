@@ -71,10 +71,15 @@ export component ThinSlider inherits Rectangle {
 export component IconButton inherits Rectangle {
     in property <image> icon;
     in property <bool> active: false;
+    /// What the button does, for screen readers.
+    in property <string> label;
     callback clicked();
 
     width: 26px;
     height: 26px;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
 
     touch := TouchArea {
         mouse-cursor: pointer;
@@ -111,8 +116,10 @@ export component TransportBar inherits Rectangle {
     callback shuffle-clicked();
     callback loop-clicked();
 
-    // Whole seconds left, shown as "-m:ss" like the reference.
-    property <int> remaining: Math.max(0, Math.floor(root.duration-seconds - root.position-seconds));
+    // Whole seconds left, "-m:ss" like the reference: from Rust, so it
+    // only changes once a second -- worked out here from the position, it
+    // would be re-laid out on every frame.
+    in property <string> remaining-text: "-0:00";
 
     height: 32px;
     background: Theme.bg-raised;
@@ -126,21 +133,25 @@ export component TransportBar inherits Rectangle {
         IconButton {
             y: (parent.height - self.height) / 2;
             icon: @image-url("assets/icons/skip-back.svg");
+            label: "Previous";
             clicked => { root.previous-clicked(); }
         }
         IconButton {
             y: (parent.height - self.height) / 2;
             icon: root.is-playing ? @image-url("assets/icons/pause.svg") : @image-url("assets/icons/play.svg");
+            label: root.is-playing ? "Pause" : "Play";
             clicked => { root.play-pause-clicked(); }
         }
         IconButton {
             y: (parent.height - self.height) / 2;
             icon: @image-url("assets/icons/stop.svg");
+            label: "Stop";
             clicked => { root.stop-clicked(); }
         }
         IconButton {
             y: (parent.height - self.height) / 2;
             icon: @image-url("assets/icons/skip-forward.svg");
+            label: "Next";
             clicked => { root.next-clicked(); }
         }
         Rectangle { width: 6px; }
@@ -157,20 +168,21 @@ export component TransportBar inherits Rectangle {
             horizontal-alignment: right;
             vertical-alignment: center;
             color: Theme.text-muted;
-            text: "-" + Math.floor(root.remaining / 60) + ":"
-                + (Math.mod(root.remaining, 60) < 10 ? "0" : "") + Math.mod(root.remaining, 60);
+            text: root.remaining-text;
         }
         Rectangle { width: 8px; }
         IconButton {
             y: (parent.height - self.height) / 2;
             icon: root.repeat-one-active ? @image-url("assets/icons/repeat-one.svg") : @image-url("assets/icons/repeat.svg");
             active: root.loop-active;
+            label: "Repeat";
             clicked => { root.loop-clicked(); }
         }
         IconButton {
             y: (parent.height - self.height) / 2;
             icon: @image-url("assets/icons/shuffle.svg");
             active: root.shuffle-active;
+            label: "Shuffle";
             clicked => { root.shuffle-clicked(); }
         }
         Rectangle { width: 6px; }
@@ -213,21 +225,25 @@ export component PlaybackButtons inherits Rectangle {
         IconButton {
             y: (parent.height - self.height) / 2;
             icon: @image-url("assets/icons/stop.svg");
+            label: "Stop";
             clicked => { root.stop-clicked(); }
         }
         IconButton {
             y: (parent.height - self.height) / 2;
             icon: @image-url("assets/icons/skip-back.svg");
+            label: "Previous";
             clicked => { root.previous-clicked(); }
         }
         IconButton {
             y: (parent.height - self.height) / 2;
             icon: root.is-playing ? @image-url("assets/icons/pause.svg") : @image-url("assets/icons/play.svg");
+            label: root.is-playing ? "Pause" : "Play";
             clicked => { root.play-pause-clicked(); }
         }
         IconButton {
             y: (parent.height - self.height) / 2;
             icon: @image-url("assets/icons/skip-forward.svg");
+            label: "Next";
             clicked => { root.next-clicked(); }
         }
         // One system dialog can't reliably pick files *or* a folder on
@@ -262,7 +278,8 @@ export component SeekBar inherits Rectangle {
     callback shuffle-clicked();
     callback loop-clicked();
 
-    property <int> remaining: Math.max(0, Math.floor(root.duration-seconds - root.position-seconds));
+    /// Whole seconds left, "-m:ss" (see `TransportBar`).
+    in property <string> remaining-text: "-0:00";
 
     height: 26px;
     background: Theme.bg-base;
@@ -290,20 +307,21 @@ export component SeekBar inherits Rectangle {
             horizontal-alignment: right;
             vertical-alignment: center;
             color: Theme.text-muted;
-            text: "-" + Math.floor(root.remaining / 60) + ":"
-                + (Math.mod(root.remaining, 60) < 10 ? "0" : "") + Math.mod(root.remaining, 60);
+            text: root.remaining-text;
         }
         Rectangle { width: 4px; }
         IconButton {
             y: (parent.height - self.height) / 2;
             icon: root.repeat-one-active ? @image-url("assets/icons/repeat-one.svg") : @image-url("assets/icons/repeat.svg");
             active: root.loop-active;
+            label: "Repeat";
             clicked => { root.loop-clicked(); }
         }
         IconButton {
             y: (parent.height - self.height) / 2;
             icon: @image-url("assets/icons/shuffle.svg");
             active: root.shuffle-active;
+            label: "Shuffle";
             clicked => { root.shuffle-clicked(); }
         }
         Rectangle { width: 4px; }
@@ -348,10 +366,9 @@ export component SeekSlider inherits Rectangle {
 }
 
 /// "0:33 / -1:59", Repeat, Shuffle and volume -- the seek row's controls,
-/// above the album art as issue #10 asks.
+/// above the album art as issue #10 asks. Nothing here moves with every
+/// frame: the times change once a second.
 export component PlaybackOptions inherits Rectangle {
-    in property <float> position-seconds: 0;
-    in property <float> duration-seconds: 0;
     in property <float> volume: 1.0;
     in property <string> position-text: "0:00";
     in property <bool> shuffle-active: false;
@@ -361,7 +378,8 @@ export component PlaybackOptions inherits Rectangle {
     callback shuffle-clicked();
     callback loop-clicked();
 
-    property <int> remaining: Math.max(0, Math.floor(root.duration-seconds - root.position-seconds));
+    /// Whole seconds left, "-m:ss" (see `TransportBar`).
+    in property <string> remaining-text: "-0:00";
 
     height: 22px;
     background: Theme.bg-base;
@@ -376,19 +394,20 @@ export component PlaybackOptions inherits Rectangle {
             color: Theme.text-muted;
             font-size: 11px;
             overflow: elide;
-            text: root.position-text + " / -" + Math.floor(root.remaining / 60) + ":"
-                + (Math.mod(root.remaining, 60) < 10 ? "0" : "") + Math.mod(root.remaining, 60);
+            text: root.position-text + " / " + root.remaining-text;
         }
         IconButton {
             y: (parent.height - self.height) / 2;
             icon: root.repeat-one-active ? @image-url("assets/icons/repeat-one.svg") : @image-url("assets/icons/repeat.svg");
             active: root.loop-active;
+            label: "Repeat";
             clicked => { root.loop-clicked(); }
         }
         IconButton {
             y: (parent.height - self.height) / 2;
             icon: @image-url("assets/icons/shuffle.svg");
             active: root.shuffle-active;
+            label: "Shuffle";
             clicked => { root.shuffle-clicked(); }
         }
         ThinSlider {

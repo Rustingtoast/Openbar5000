@@ -6,6 +6,8 @@ use std::time::Duration;
 pub struct TrackMetadata {
     pub title: String,
     pub artist: String,
+    /// The album's artist when tagged (often unset); "" otherwise.
+    pub album_artist: String,
     pub album: String,
     pub track_number: Option<u32>,
     pub disc_number: Option<u32>,

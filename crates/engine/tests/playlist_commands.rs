@@ -19,6 +19,7 @@ fn next_playlist_update(engine: &PlaybackEngine) -> (usize, Option<usize>) {
         if let Some(EngineEvent::PlaylistUpdated {
             tracks,
             current_index,
+            ..
         }) = engine.try_recv_event()
         {
             return (tracks.len(), current_index);
@@ -103,5 +104,75 @@ fn queued_tracks_play_before_the_normal_order() {
     assert_eq!(next_track_changed(&engine), 2);
     // Queue consumed -- back to the normal order from where we are now.
     engine.send(EngineCommand::Previous);
+    assert_eq!(next_track_changed(&engine), 1);
+}
+
+/// The next `PlaylistUpdated`'s track count, current index and playlist id.
+fn next_update_with_id(engine: &PlaybackEngine) -> (usize, Option<usize>, i64) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if let Some(EngineEvent::PlaylistUpdated { tracks, current_index, playlist_id }) =
+            engine.try_recv_event()
+        {
+            return (tracks.len(), current_index, playlist_id);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("timed out waiting for PlaylistUpdated");
+}
+
+#[test]
+fn several_tracks_go_in_one_removal() {
+    let engine = PlaybackEngine::spawn();
+    engine.send(EngineCommand::LoadPlaylist(vec![fixture(), fixture(), fixture(), fixture()]));
+    next_playlist_update(&engine);
+    engine.send(EngineCommand::RemoveIndices(vec![0, 2, 2, 3]));
+    let (count, _) = next_playlist_update(&engine);
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn switching_playlists_keeps_the_song_playing_and_names_the_playlist() {
+    // A second file, so one playlist can lack the song that's playing.
+    let other = std::env::temp_dir().join(format!("openbar5000-switch-{}.wav", std::process::id()));
+    std::fs::copy(fixture(), &other).unwrap();
+
+    let engine = PlaybackEngine::spawn();
+    engine.send(EngineCommand::SwitchPlaylist { id: 7, paths: vec![fixture(), other.clone()] });
+    assert_eq!(next_update_with_id(&engine), (2, None, 7));
+    engine.send(EngineCommand::PlayIndex(0));
+    assert_eq!(next_track_changed(&engine), 0);
+
+    // The playing song is in the new playlist too: it's the current one.
+    engine.send(EngineCommand::SwitchPlaylist { id: 8, paths: vec![other.clone(), fixture()] });
+    assert_eq!(next_update_with_id(&engine), (2, Some(1), 8));
+
+    // It isn't: nothing is current, but playback isn't stopped.
+    engine.send(EngineCommand::SwitchPlaylist { id: 9, paths: vec![other.clone()] });
+    assert_eq!(next_update_with_id(&engine), (1, None, 9));
+    let stopped = std::iter::from_fn(|| engine.try_recv_event())
+        .any(|event| matches!(event, EngineEvent::PlaybackStateChanged(engine::PlaybackState::Stopped)));
+    assert!(!stopped, "switching playlists must not stop playback");
+
+    std::fs::remove_file(&other).unwrap();
+}
+
+#[test]
+fn play_library_reports_the_throwaway_playlist_id_and_plays_the_picked_track() {
+    let engine = PlaybackEngine::spawn();
+
+    // The media library plays a whole album (here three copies of the
+    // fixture) starting at the double-clicked track, and must report
+    // `TEMP_PLAYLIST_ID` so the app knows not to save it over a named
+    // playlist (issue #37).
+    engine.send(EngineCommand::PlayLibrary {
+        paths: vec![fixture(), fixture(), fixture()],
+        start: 1,
+    });
+    let (count, current, id) = next_update_with_id(&engine);
+    assert_eq!(count, 3);
+    assert_eq!(current, None);
+    assert_eq!(id, engine::TEMP_PLAYLIST_ID);
+
     assert_eq!(next_track_changed(&engine), 1);
 }

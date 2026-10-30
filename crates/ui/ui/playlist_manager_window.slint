@@ -1,0 +1,167 @@
+import { LineEdit, ListView, Palette } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+export struct PlaylistManagerRow {
+    name: string,
+    count: string,
+    /// The playlist being shown in the main window.
+    active: bool,
+}
+
+/// File > Playlist Manager... (issue #33): every playlist with its track
+/// count. Double-click or Enter activates; right-click for rename, remove,
+/// create, cut, copy and paste. F2 renames, Delete removes.
+export component PlaylistManagerWindow inherits Window {
+    title: "Playlist Manager";
+    icon: Theme.logo;
+    preferred-width: 640px;
+    preferred-height: 380px;
+    min-width: 360px;
+    min-height: 220px;
+    max-width: 100000px;
+    max-height: 100000px;
+    background: Theme.bg-base;
+
+    in property <bool> theme-is-dark: true;
+    init => {
+        Palette.color-scheme = root.theme-is-dark ? ColorScheme.dark : ColorScheme.light;
+    }
+    changed theme-is-dark => {
+        Palette.color-scheme = root.theme-is-dark ? ColorScheme.dark : ColorScheme.light;
+    }
+
+    in property <[PlaylistManagerRow]> rows;
+    in-out property <int> selected: -1;
+    /// The row being renamed in place, or -1.
+    in-out property <int> renaming: -1;
+    in property <bool> can-paste;
+
+    callback activate(int);
+    callback rename(int, string);
+    callback remove(int);
+    callback create-new();
+    callback cut(int);
+    callback copy(int);
+    callback paste();
+
+    property <bool> can-remove: root.rows.length > 1;
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if root.renaming >= 0 {
+                return reject;
+            }
+            if event.text == Key.Return && root.selected >= 0 {
+                root.activate(root.selected);
+                return accept;
+            }
+            if event.text == Key.F2 && root.selected >= 0 {
+                root.renaming = root.selected;
+                return accept;
+            }
+            if (event.text == Key.Delete || event.text == Key.Backspace) && root.selected >= 0 && root.can-remove {
+                root.remove(root.selected);
+                return accept;
+            }
+            if event.text == Key.UpArrow && root.selected > 0 {
+                root.selected -= 1;
+                return accept;
+            }
+            if event.text == Key.DownArrow && root.selected < root.rows.length - 1 {
+                root.selected += 1;
+                return accept;
+            }
+            reject
+        }
+
+        // Right-click on the empty area: create or paste.
+        ContextMenuArea {
+            Menu {
+                MenuItem { title: "Create New"; activated => { root.create-new(); } }
+                MenuItem { title: "Paste"; enabled: root.can-paste; activated => { root.paste(); } }
+            }
+
+            VerticalLayout {
+                // Column headers.
+                Rectangle {
+                    height: 24px;
+                    background: Theme.bg-raised;
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 12px;
+                        Text { text: "Playlist name"; horizontal-stretch: 1; vertical-alignment: center; font-size: 12px; color: Theme.text-muted; }
+                        Text { text: "Items"; width: 70px; horizontal-alignment: right; vertical-alignment: center; font-size: 12px; color: Theme.text-muted; }
+                    }
+                }
+                ListView {
+                    vertical-stretch: 1;
+                    for row[i] in root.rows: Rectangle {
+                        height: 24px;
+                        background: i == root.selected ? Theme.accent.transparentize(0.6)
+                            : Math.mod(i, 2) == 1 ? Theme.bg-raised.transparentize(0.5) : transparent;
+
+                        row-menu := ContextMenuArea {
+                            Menu {
+                                MenuItem { title: "Activate"; enabled: !row.active; activated => { root.activate(i); } }
+                                MenuItem { title: "Rename"; activated => { root.selected = i; root.renaming = i; } }
+                                MenuItem { title: "Remove"; enabled: root.can-remove; activated => { root.remove(i); } }
+                                MenuItem { title: "Create New"; activated => { root.create-new(); } }
+                                MenuSeparator {}
+                                MenuItem { title: "Cut"; enabled: root.can-remove; activated => { root.cut(i); } }
+                                MenuItem { title: "Copy"; activated => { root.copy(i); } }
+                                MenuItem { title: "Paste"; enabled: root.can-paste; activated => { root.paste(); } }
+                            }
+                            TouchArea {
+                                pointer-event(event) => {
+                                    if event.kind == PointerEventKind.down {
+                                        root.selected = i;
+                                        keys.focus();
+                                    }
+                                    // A TouchArea takes every button: open the
+                                    // row's menu here.
+                                    if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
+                                        row-menu.show({ x: self.mouse-x, y: self.mouse-y });
+                                    }
+                                }
+                                double-clicked => { root.activate(i); }
+                            }
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                padding-right: 12px;
+                                if root.renaming != i: Text {
+                                    text: row.name;
+                                    horizontal-stretch: 1;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                    font-weight: row.active ? 600 : 400;
+                                    color: row.active ? Theme.accent : Theme.text-primary;
+                                }
+                                if root.renaming == i: LineEdit {
+                                    horizontal-stretch: 1;
+                                    text: row.name;
+                                    font-size: 12px;
+                                    init => {
+                                        self.focus();
+                                        self.select-all();
+                                    }
+                                    accepted(text) => {
+                                        root.rename(i, text);
+                                        root.renaming = -1;
+                                        keys.focus();
+                                    }
+                                }
+                                Text {
+                                    text: row.count;
+                                    width: 70px;
+                                    horizontal-alignment: right;
+                                    vertical-alignment: center;
+                                    color: row.active ? Theme.accent : Theme.text-primary;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

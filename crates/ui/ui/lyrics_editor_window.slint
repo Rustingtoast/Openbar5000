@@ -7,7 +7,7 @@ import { Theme } from "theme.slint";
 /// current playback time ([mm:ss.xx], LRC style) and moves to the next.
 export component LyricsEditorWindow inherits Window {
     title: "Lyrics Editor" + (root.track-title == "" ? "" : " \u{2014} " + root.track-title);
-    icon: @image-url("assets/icons/app-icon.svg");
+    icon: Theme.logo;
     preferred-width: 900px;
     preferred-height: 640px;
     min-width: 640px;

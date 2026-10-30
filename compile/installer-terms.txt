@@ -1,0 +1,22 @@
+# Openbar5000 License Agreement
+
+Please read this before installing Openbar5000.
+
+Openbar5000 is free, open-source software. You may use it for any purpose, and copy, change and share it, under the Apache License, Version 2.0, whose full text follows. It is provided "as is", without warranty of any kind.
+
+# Privacy
+
+Openbar5000 does not track you. It has no telemetry, analytics, crash reporting, advertising or accounts, and it never sends anything about you, your PC or your music library to the Openbar5000 project or to anyone else.
+
+Your settings, playlists, play counts and music library index stay on this PC, in your user profile (%APPDATA%\Openbar5000).
+
+Openbar5000 goes online only for these features, and only while you use them:
+
+- Artist information (the BIO panel): while the panel is open, the name of the artist playing and the track's title are sent to MusicBrainz (musicbrainz.org) to find the artist; unless you turn Wikipedia off in Preferences, the artist's biography and photo then come from Wikidata and Wikipedia. What's found is kept on this PC, so each artist is looked up once. Like any web request, these show your IP address to those services, whose own privacy policies apply.
+- Discord Rich Presence (off unless you turn it on in Preferences): shows what you're listening to on your Discord profile, through the Discord app on this PC.
+
+Links you open from Openbar5000 open in your web browser.
+
+# Third-party software
+
+Openbar5000's user interface is built with Slint (https://slint.dev), Copyright SixtyFPS GmbH, used under the Slint Royalty-free Desktop, Mobile, and Web Applications License, Version 2.0. Openbar5000 also includes other open-source libraries, among them Symphonia, cpal, Skia, wgpu and SQLite, each under its own license.

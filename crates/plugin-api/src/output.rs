@@ -27,4 +27,16 @@ pub trait OutputSink: Send {
     fn queued_samples(&self) -> usize {
         0
     }
+
+    /// Drops whatever was written but not yet heard, so a pause, seek or
+    /// track change is immediate rather than after the queued audio. The
+    /// default does nothing (the queue then simply plays out).
+    fn flush(&mut self) {}
+
+    /// Applies `volume` (0.0 to 1.0) as the audio leaves the sink, so it
+    /// changes immediately. Returns `false` (the default) if the sink can't,
+    /// and the engine then scales samples before writing them instead.
+    fn set_volume(&mut self, _volume: f32) -> bool {
+        false
+    }
 }

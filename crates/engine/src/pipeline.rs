@@ -1,4 +1,4 @@
-use crate::dsp::GainDsp;
+use crate::dsp::{EqualizerDsp, EqualizerSettings, GainDsp};
 use crate::spectrum::{SpectrumAnalyzer, SpectrumConfig};
 use plugin_api::{AudioInfo, DecodeError, Decoder, Dsp, OutputError, OutputSink};
 use std::fmt;
@@ -100,7 +100,10 @@ impl From<OutputError> for PipelineError {
 pub struct Pipeline {
     decoder: Option<Box<dyn Decoder>>,
     plugin_dsp_chain: Vec<Box<dyn Dsp>>,
+    equalizer: EqualizerDsp,
     gain: GainDsp,
+    /// Kept to hand to a replacement sink (see `replace_sink`).
+    volume: f32,
     sink: Box<dyn OutputSink>,
     channels: u16,
     sample_rate: u32,
@@ -117,7 +120,9 @@ impl Pipeline {
         Self {
             decoder: None,
             plugin_dsp_chain: Vec::new(),
+            equalizer: EqualizerDsp::new(),
             gain: GainDsp::new(1.0),
+            volume: 1.0,
             sink,
             channels: 2,
             sample_rate: 44_100,
@@ -129,8 +134,24 @@ impl Pipeline {
         }
     }
 
+    /// In the sink when it can (heard at once), else on the samples.
     pub fn set_volume(&mut self, volume: f32) {
-        self.gain.set_volume(volume);
+        self.volume = volume;
+        if self.sink.set_volume(volume) {
+            self.gain.set_volume(1.0);
+        } else {
+            self.gain.set_volume(volume);
+        }
+    }
+
+    /// Drops the audio queued in the sink but not yet heard.
+    pub fn flush(&mut self) {
+        self.sink.flush();
+        self.history.clear();
+    }
+
+    pub fn set_equalizer(&mut self, settings: EqualizerSettings) {
+        self.equalizer.set_settings(settings);
     }
 
     pub fn set_spectrum_enabled(&mut self, enabled: bool) {
@@ -171,21 +192,38 @@ impl Pipeline {
             .is_none_or(|free| free >= CHUNK_SAMPLES)
     }
 
-    /// Roughly how long until the sink has drained enough to take a whole
-    /// chunk -- zero if it already can (or can't tell).
-    pub fn time_until_room(&self) -> std::time::Duration {
+    /// How long until the sink has drained to half full, when it's worth
+    /// waking to top it up again -- zero if it already has (or can't
+    /// tell). Refilling in batches like this, rather than a chunk at a
+    /// time as room appears, lets the playback thread sleep for most of
+    /// the buffer's length instead of waking every few milliseconds.
+    pub fn time_until_refill(&self) -> std::time::Duration {
         let Some(free) = self.sink.free_samples() else {
             return std::time::Duration::ZERO;
         };
-        let missing = CHUNK_SAMPLES.saturating_sub(free);
+        let queued = self.sink.queued_samples();
+        let low_water = ((free + queued) / 2).max(CHUNK_SAMPLES);
         let samples_per_sec = self.sample_rate.max(1) as f64 * self.channels.max(1) as f64;
-        std::time::Duration::from_secs_f64(missing as f64 / samples_per_sec)
+        std::time::Duration::from_secs_f64(queued.saturating_sub(low_water) as f64 / samples_per_sec)
     }
 
     /// How long until the next spectrum analysis is due, or `None` when the
     /// spectrum is off.
     pub fn time_until_spectrum(&self) -> Option<std::time::Duration> {
         self.spectrum_enabled.then(|| self.spectrum.time_until_due())
+    }
+
+    /// Swaps in another output (a different device), set up for the
+    /// current track's format if one is open. Whatever the old sink still
+    /// had queued is dropped.
+    pub fn replace_sink(&mut self, mut sink: Box<dyn OutputSink>) -> Result<(), PipelineError> {
+        if self.decoder.is_some() {
+            sink.configure(self.sample_rate, self.channels)?;
+        }
+        self.sink = sink;
+        self.history.clear();
+        self.set_volume(self.volume);
+        Ok(())
     }
 
     /// Samples written to the sink that haven't been heard yet.
@@ -227,6 +265,8 @@ impl Pipeline {
         for dsp in self.plugin_dsp_chain.iter_mut() {
             dsp.reset();
         }
+        self.equalizer.set_format(info.sample_rate, info.channels);
+        self.equalizer.reset();
         self.gain.reset();
         self.decoder = Some(decoder);
         Ok(info)
@@ -257,6 +297,7 @@ impl Pipeline {
         for dsp in self.plugin_dsp_chain.iter_mut() {
             dsp.process(chunk, self.channels);
         }
+        self.equalizer.process(chunk, self.channels);
         self.gain.process(chunk, self.channels);
 
         if self.spectrum_enabled {
@@ -271,6 +312,60 @@ impl Pipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
+
+    /// Records what reaches it; "plays" nothing, so writes just queue.
+    #[derive(Default)]
+    struct RecordingSink {
+        queued: Arc<Mutex<Vec<f32>>>,
+        volume: Arc<Mutex<Option<f32>>>,
+    }
+
+    impl OutputSink for RecordingSink {
+        fn configure(&mut self, _: u32, _: u16) -> Result<(), OutputError> {
+            Ok(())
+        }
+        fn write(&mut self, samples: &[f32]) -> Result<(), OutputError> {
+            self.queued.lock().unwrap().extend_from_slice(samples);
+            Ok(())
+        }
+        fn queued_samples(&self) -> usize {
+            self.queued.lock().unwrap().len()
+        }
+        fn flush(&mut self) {
+            self.queued.lock().unwrap().clear();
+        }
+        fn set_volume(&mut self, volume: f32) -> bool {
+            *self.volume.lock().unwrap() = Some(volume);
+            true
+        }
+    }
+
+    #[test]
+    fn flushing_drops_unheard_audio_and_volume_is_applied_on_the_way_out() {
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/test_tone.wav");
+        let first_chunk = |volume_setting: f32| {
+            let sink = RecordingSink::default();
+            let (queued, volume) = (sink.queued.clone(), sink.volume.clone());
+            let mut pipeline = Pipeline::new(Box::new(sink));
+            pipeline
+                .open_track(Box::new(crate::decoders::SymphoniaDecoder::new()), &fixture)
+                .unwrap();
+            pipeline.set_volume(volume_setting);
+            assert_eq!(*volume.lock().unwrap(), Some(volume_setting));
+            pipeline.process_chunk().unwrap();
+            let samples = queued.lock().unwrap().clone();
+            (pipeline, samples)
+        };
+        // The sink takes the volume, so samples are written unscaled.
+        let (_, full) = first_chunk(1.0);
+        let (mut pipeline, quiet) = first_chunk(0.25);
+        assert_eq!(full, quiet, "samples were scaled before reaching the sink");
+
+        assert!(pipeline.queued_samples() > 0);
+        pipeline.flush();
+        assert_eq!(pipeline.queued_samples(), 0);
+    }
 
     fn window(history: &SampleHistory, skip: usize, len: usize) -> Vec<f32> {
         let mut out = Vec::new();

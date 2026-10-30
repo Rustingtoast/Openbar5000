@@ -1,11 +1,12 @@
 use crate::playlist::{CoverThumbnail, TrackMetadata};
 use lofty::file::{FileType, TaggedFileExt};
 use lofty::prelude::{Accessor, AudioFile};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-fn format_label(file_type: FileType) -> String {
+pub(crate) fn format_label(file_type: FileType) -> String {
     match file_type {
         FileType::Aac => "AAC",
         FileType::Aiff => "AIFF",
@@ -35,6 +36,35 @@ fn cover_thumbnail(bytes: &[u8]) -> Option<CoverThumbnail> {
     scaled_cover(bytes, COVER_THUMBNAIL_SIZE)
 }
 
+/// Thumbnails already made, by a hash of the embedded image's bytes: an
+/// album's tracks usually all embed the same cover, and decoding a large
+/// JPEG/PNG is by far the slowest part of reading a track (~97% of loading
+/// a playlist of tagged albums), so each distinct cover is decoded once.
+/// Each entry is a `OnceLock` so loader threads that meet the same new
+/// cover at once wait for one decode instead of all doing it.
+type CoverSlot = Arc<std::sync::OnceLock<Option<Arc<CoverThumbnail>>>>;
+static COVER_CACHE: std::sync::Mutex<Option<HashMap<u64, CoverSlot>>> = std::sync::Mutex::new(None);
+/// Distinct covers kept (at ~37 KB each) before the cache starts over.
+const COVER_CACHE_LIMIT: usize = 4096;
+
+fn shared_cover_thumbnail(bytes: &[u8]) -> Option<Arc<CoverThumbnail>> {
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        bytes.hash(&mut hasher);
+        hasher.finish()
+    };
+    let slot = {
+        let mut cache = COVER_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        let cache = cache.get_or_insert_with(HashMap::new);
+        if cache.len() >= COVER_CACHE_LIMIT && !cache.contains_key(&key) {
+            cache.clear();
+        }
+        cache.entry(key).or_default().clone()
+    };
+    slot.get_or_init(|| cover_thumbnail(bytes).map(Arc::new)).clone()
+}
+
 /// Reads `path`'s embedded cover art at up to `max_size` px on its longest
 /// edge -- for the album-art panel, which shows one cover far larger than
 /// the playlist thumbnails kept in `TrackMetadata`. Decodes the file's
@@ -59,11 +89,11 @@ fn lyrics_key(name: &str) -> bool {
 }
 
 /// The audio container of `path`, sniffed from its content.
-fn file_type(path: &Path) -> Option<lofty::file::FileType> {
+pub(crate) fn file_type(path: &Path) -> Option<lofty::file::FileType> {
     lofty::probe::Probe::open(path).ok()?.guess_file_type().ok()?.file_type()
 }
 
-fn open_for_tags(path: &Path) -> Result<std::fs::File, String> {
+pub(crate) fn open_for_tags(path: &Path) -> Result<std::fs::File, String> {
     std::fs::File::open(path).map_err(|e| format!("couldn't open the file: {e}"))
 }
 
@@ -293,7 +323,7 @@ pub fn write_lyrics(path: &Path, lyrics: &str) -> Result<(), String> {
 /// e.g. a FLAC whose Vorbis comments are blank while a stray ID3v2 block
 /// (which lofty reads, warning that it couldn't *write* it back) holds the
 /// title and artist (issue #20).
-fn best_tag(tagged_file: &lofty::file::TaggedFile) -> Option<&lofty::tag::Tag> {
+pub(crate) fn best_tag(tagged_file: &lofty::file::TaggedFile) -> Option<&lofty::tag::Tag> {
     let has_text = |tag: &&lofty::tag::Tag| tag.title().is_some() || tag.artist().is_some();
     tagged_file
         .primary_tag()
@@ -312,7 +342,7 @@ fn first_picture(tagged_file: &lofty::file::TaggedFile) -> Option<&[u8]> {
         .map(|picture| picture.data())
 }
 
-fn scaled_cover(bytes: &[u8], max_size: u32) -> Option<CoverThumbnail> {
+pub(crate) fn scaled_cover(bytes: &[u8], max_size: u32) -> Option<CoverThumbnail> {
     let decoded = image::load_from_memory(bytes).ok()?;
     // `thumbnail` only ever shrinks; small art stays as it is.
     let scaled = if decoded.width().max(decoded.height()) > max_size {
@@ -350,11 +380,14 @@ pub fn load_metadata_parallel(
         for _ in 0..workers {
             let done_tx = done_tx.clone();
             let next = &next;
-            scope.spawn(move || loop {
-                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let Some(path) = paths.get(i) else { break };
-                if done_tx.send((i, load_metadata(path))).is_err() {
-                    break;
+            scope.spawn(move || {
+                crate::background::lower_thread_priority();
+                loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(path) = paths.get(i) else { break };
+                    if done_tx.send((i, load_metadata(path))).is_err() {
+                        break;
+                    }
                 }
             });
         }
@@ -368,6 +401,66 @@ pub fn load_metadata_parallel(
         .into_iter()
         .map(|m| m.expect("every index is loaded exactly once"))
         .collect()
+}
+
+/// The tags the media library indexes -- a lighter read than
+/// [`load_metadata`]: no cover art is loaded, let alone decoded.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LibraryTags {
+    pub title: String,
+    pub artist: String,
+    pub album_artist: String,
+    pub album: String,
+    pub track_number: Option<u32>,
+    pub disc_number: Option<u32>,
+    pub date: String,
+    pub genre: String,
+    pub duration: Duration,
+}
+
+/// Reads [`LibraryTags`]; like `load_metadata`, an unreadable file still
+/// gets an entry, titled after its file name.
+pub fn read_library_tags(path: &Path) -> LibraryTags {
+    let fallback_title = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tagged_file = lofty::probe::Probe::open(path)
+        .map(|probe| probe.options(lofty::config::ParseOptions::new().read_cover_art(false)))
+        .and_then(|probe| probe.read());
+    let Ok(tagged_file) = tagged_file else {
+        return LibraryTags {
+            title: fallback_title,
+            ..Default::default()
+        };
+    };
+    let duration = Duration::from_secs_f64(tagged_file.properties().duration().as_secs_f64());
+    let Some(tag) = best_tag(&tagged_file) else {
+        return LibraryTags {
+            title: fallback_title,
+            duration,
+            ..Default::default()
+        };
+    };
+    let text = |value: Option<std::borrow::Cow<'_, str>>| {
+        value.map(|s| s.trim().to_string()).unwrap_or_default()
+    };
+    LibraryTags {
+        title: Some(text(tag.title()))
+            .filter(|title| !title.is_empty())
+            .unwrap_or(fallback_title),
+        artist: text(tag.artist()),
+        album_artist: tag
+            .get_string(lofty::tag::ItemKey::AlbumArtist)
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default(),
+        album: text(tag.album()),
+        track_number: tag.track(),
+        disc_number: tag.disk(),
+        date: tag.date().map(|d| d.to_string()).unwrap_or_default(),
+        genre: text(tag.genre()),
+        duration,
+    }
 }
 
 /// Reads tag + duration metadata for the playlist grid. Best-effort: a file
@@ -402,6 +495,7 @@ pub fn load_metadata(path: &Path) -> TrackMetadata {
     };
     let genre = tag.and_then(|tag| tag.genre()).map(|g| g.trim().to_string()).unwrap_or_default();
     let composer = text(lofty::tag::ItemKey::Composer);
+    let album_artist = text(lofty::tag::ItemKey::AlbumArtist);
     let bpm = [lofty::tag::ItemKey::IntegerBpm, lofty::tag::ItemKey::Bpm]
         .into_iter()
         .find_map(|key| tag?.get_string(key)?.trim().parse::<f32>().ok())
@@ -419,9 +513,7 @@ pub fn load_metadata(path: &Path) -> TrackMetadata {
             tag.track(),
             tag.disk(),
             tag.date().map(|d| d.to_string()).unwrap_or_default(),
-            first_picture(&tagged_file)
-                .and_then(cover_thumbnail)
-                .map(Arc::new),
+            first_picture(&tagged_file).and_then(shared_cover_thumbnail),
         ),
         None => (
             fallback_title,
@@ -437,6 +529,7 @@ pub fn load_metadata(path: &Path) -> TrackMetadata {
     TrackMetadata {
         title,
         artist,
+        album_artist,
         album,
         track_number,
         disc_number,

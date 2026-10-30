@@ -1,0 +1,316 @@
+// The "Vintage Equalizer" panel (issue #7): the same 18 bands as
+// Playback > Equalizer, drawn like a 1980s hardware graphic equalizer --
+// a vacuum fluorescent display over a +1 dB and a -1 dB key per band.
+// The display's dots are built on the Rust side (`app::equalizer`) as path
+// strings in grid units, so they stay crisp at any panel size.
+
+// Hardware colours: this mimics a physical device, so it looks the same in
+// every theme. The display's colour can be picked in Preferences >
+// Equalizer (issue #35); half-lit and unlit dots follow it.
+export global Vfd {
+    in-out property <color> glow: #6fd6ff;
+    out property <color> half: self.glow.transparentize(0.55);
+    out property <color> dim: self.glow.transparentize(0.9);
+    out property <color> glass: #03080b;
+    out property <color> body-top: #2b2b2b;
+    out property <color> body-bottom: #151515;
+    out property <color> print: #a9a9a9;
+}
+
+/// A long, flat hardware key.
+component HardwareKey inherits Rectangle {
+    in property <string> glyph;
+    in property <string> label;
+    callback clicked();
+
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
+
+    border-radius: 2px;
+    border-width: 1px;
+    border-color: #050505;
+    background: touch.pressed
+        ? @linear-gradient(180deg, #161616 0%, #222222 100%)
+        : @linear-gradient(180deg, touch.has-hover ? #444444 : #3a3a3a 0%, #1f1f1f 100%);
+
+    Text {
+        text: root.glyph;
+        font-size: Math.min(9px, root.height * 0.6);
+        color: Vfd.print;
+        y: (parent.height - self.height) / 2 + (touch.pressed ? 1px : 0);
+    }
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+export component VintageEqualizer inherits Rectangle {
+    in property <[string]> band-labels;
+    in property <bool> enabled;
+    /// Band dots: fully lit, half lit (an odd dB between two segments) and
+    /// unlit, in a 180 x 84 grid (10 units per band, 21 rows of 2 dB).
+    in property <string> lit-dots;
+    in property <string> half-dots;
+    in property <string> dim-dots;
+    /// "1.2 kHz" / "+6 dB": the band touched last.
+    in property <string> readout-band;
+    in property <string> readout-gain;
+    /// A message to scroll across the display instead of the bands ("" for
+    /// none): dots in a grid 9 rows high, `message-columns` wide.
+    in property <string> message-dots;
+    in property <int> message-columns;
+    /// Unlit dots behind the message, `grid-columns` wide.
+    in property <string> grid-dots;
+    in property <int> grid-columns;
+
+    callback step(int, int);
+    callback power-clicked();
+    callback flat-clicked();
+
+    property <length> gutter: 34px;
+    property <length> side: 66px;
+    property <int> bands: root.band-labels.length;
+    property <bool> show-message: root.message-dots != "";
+
+    background: @linear-gradient(180deg, Vfd.body-top 0%, Vfd.body-bottom 100%);
+    border-radius: 3px;
+    clip: true;
+    min-height: 120px;
+    min-width: 420px;
+
+    VerticalLayout {
+        padding: 8px;
+        padding-top: 6px;
+        spacing: 4px;
+
+        HorizontalLayout {
+            height: 12px;
+            Text {
+                text: "Stereo Graphic Equalizer";
+                font-size: 10px;
+                color: Vfd.print;
+                vertical-alignment: center;
+            }
+            Text {
+                horizontal-stretch: 1;
+                text: "OB-5000";
+                font-size: 10px;
+                font-weight: 700;
+                color: Vfd.print;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+        }
+
+        // The display.
+        glass := Rectangle {
+            vertical-stretch: 1;
+            min-height: 48px;
+            background: Vfd.glass;
+            border-radius: 3px;
+            border-width: 1px;
+            border-color: #000000;
+
+            // dB scale.
+            if !root.show-message: Rectangle {
+                x: 0;
+                width: root.gutter;
+                for mark[i] in ["+20", "+10", "0", "-10", "-20"]: Text {
+                    x: 2px;
+                    width: parent.width - 6px;
+                    // Aligned with rows 0, 5, 10, 15 and 20 of the 21.
+                    y: 3px + (bars.height) * (i * 5 + 0.5) / 21 - self.height / 2;
+                    text: mark;
+                    font-size: 8px;
+                    horizontal-alignment: right;
+                    color: Vfd.half;
+                }
+            }
+
+            bars := Path {
+                x: root.gutter;
+                y: 3px;
+                width: parent.width - root.gutter - root.side;
+                height: parent.height - 6px;
+                visible: !root.show-message;
+                viewbox-x: 0;
+                viewbox-y: 0;
+                viewbox-width: 180;
+                viewbox-height: 84;
+                fit: fill;
+                commands: root.dim-dots;
+                fill: Vfd.dim;
+            }
+            Path {
+                x: bars.x;
+                y: bars.y;
+                width: bars.width;
+                height: bars.height;
+                visible: !root.show-message;
+                viewbox-x: 0;
+                viewbox-y: 0;
+                viewbox-width: 180;
+                viewbox-height: 84;
+                fit: fill;
+                commands: root.half-dots;
+                fill: Vfd.half;
+            }
+            Path {
+                x: bars.x;
+                y: bars.y;
+                width: bars.width;
+                height: bars.height;
+                visible: !root.show-message;
+                viewbox-x: 0;
+                viewbox-y: 0;
+                viewbox-width: 180;
+                viewbox-height: 84;
+                fit: fill;
+                commands: root.lit-dots;
+                fill: Vfd.glow;
+            }
+
+            // The rolling message: a dot-matrix strip, square dots, moved
+            // one column at a time from right to left.
+            if root.show-message: Rectangle {
+                x: 0;
+                width: parent.width - root.side;
+                property <length> pitch: Math.min(self.height / 9, 10px);
+                property <int> columns: Math.min(root.grid-columns, Math.floor((self.width - 8px) / self.pitch));
+                // Starts with the message just off the right edge.
+                property <int> offset: 0;
+                Timer {
+                    interval: 70ms;
+                    running: true;
+                    triggered => {
+                        parent.offset = Math.mod(parent.offset + 1, root.message-columns + parent.columns);
+                    }
+                }
+                Path {
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    width: parent.columns * parent.pitch;
+                    height: 9 * parent.pitch;
+                    viewbox-x: 0;
+                    viewbox-y: 0;
+                    viewbox-width: parent.columns;
+                    viewbox-height: 9;
+                    fit: fill;
+                    clip: true;
+                    commands: root.grid-dots;
+                    fill: Vfd.dim;
+                }
+                Path {
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    width: parent.columns * parent.pitch;
+                    height: 9 * parent.pitch;
+                    viewbox-x: parent.offset - parent.columns;
+                    viewbox-y: 0;
+                    viewbox-width: parent.columns;
+                    viewbox-height: 9;
+                    fit: fill;
+                    clip: true;
+                    commands: root.message-dots;
+                    fill: Vfd.glow;
+                }
+            }
+
+            // Status legends, lit like the real thing's.
+            VerticalLayout {
+                x: parent.width - root.side;
+                width: root.side;
+                padding: 4px;
+                spacing: 1px;
+                alignment: center;
+                Text { text: "EQ ON"; font-size: 9px; color: root.enabled ? Vfd.glow : Vfd.dim; }
+                Text { text: "EQ OFF"; font-size: 9px; color: root.enabled ? Vfd.dim : Vfd.glow; }
+                Rectangle { height: 4px; }
+                Text { text: root.readout-band; font-size: 9px; color: Vfd.glow; }
+                Text { text: root.readout-gain; font-size: 9px; color: Vfd.glow; }
+            }
+        }
+
+        // Band names, printed on the body.
+        Rectangle {
+            height: 11px;
+            property <length> column: (self.width - root.gutter - root.side) / Math.max(1, root.bands);
+            for label[i] in root.band-labels: Text {
+                x: root.gutter + i * parent.column;
+                width: parent.column;
+                text: label;
+                font-size: 8px;
+                horizontal-alignment: center;
+                overflow: clip;
+                color: Vfd.print;
+            }
+        }
+
+        // +1 dB / -1 dB keys, with the power and flat keys on the right.
+        keys := Rectangle {
+            height: Math.clamp(root.height * 0.22, 26px, 44px);
+            property <length> column: (self.width - root.gutter - root.side) / Math.max(1, root.bands);
+            property <length> key-height: (self.height - 2px) / 2;
+
+            Text {
+                x: 0;
+                width: root.gutter - 6px;
+                y: 0;
+                height: parent.key-height;
+                text: "+1 dB \u{25B3}";
+                font-size: 8px;
+                color: Vfd.print;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+            Text {
+                x: 0;
+                width: root.gutter - 6px;
+                y: parent.key-height + 2px;
+                height: parent.key-height;
+                text: "-1 dB \u{25BD}";
+                font-size: 8px;
+                color: Vfd.print;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+            for label[i] in root.band-labels: HardwareKey {
+                x: root.gutter + i * parent.column + 1px;
+                y: 0;
+                width: parent.column - 2px;
+                height: parent.key-height;
+                glyph: "\u{25B2}";
+                label: label + " +1 dB";
+                clicked => { root.step(i, 1); }
+            }
+            for label[i] in root.band-labels: HardwareKey {
+                x: root.gutter + i * parent.column + 1px;
+                y: parent.key-height + 2px;
+                width: parent.column - 2px;
+                height: parent.key-height;
+                glyph: "\u{25BC}";
+                label: label + " -1 dB";
+                clicked => { root.step(i, -1); }
+            }
+            HardwareKey {
+                x: parent.width - root.side + 6px;
+                y: 0;
+                width: root.side - 6px;
+                height: parent.key-height;
+                glyph: "EQ on/off";
+                label: "Equalizer on/off";
+                clicked => { root.power-clicked(); }
+            }
+            HardwareKey {
+                x: parent.width - root.side + 6px;
+                y: parent.key-height + 2px;
+                width: root.side - 6px;
+                height: parent.key-height;
+                glyph: "flat";
+                label: "Flat";
+                clicked => { root.flat-clicked(); }
+            }
+        }
+    }
+}

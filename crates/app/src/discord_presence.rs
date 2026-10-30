@@ -15,12 +15,15 @@ use discord_rich_presence::{
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, SystemTime};
 
-/// How often to retry connecting while enabled but not yet connected (e.g.
-/// Discord hasn't been launched yet, or was just closed).
+/// How soon to retry connecting while enabled but not connected (e.g.
+/// Discord hasn't been launched yet, or was just closed). Each failed
+/// attempt doubles the wait, up to `MAX_RECONNECT_INTERVAL`, so a closed
+/// Discord isn't polled every few seconds for hours.
 const RECONNECT_INTERVAL: Duration = Duration::from_secs(5);
-/// How often to re-check the connection while already connected -- Discord
-/// IPC has no "you got disconnected" push, so this just bounds how long a
-/// silently-dropped connection can go unnoticed.
+const MAX_RECONNECT_INTERVAL: Duration = Duration::from_secs(60);
+/// How often to re-check the connection while connected -- Discord IPC has
+/// no "you got disconnected" push, so the current activity is re-sent this
+/// often: if Discord was closed, that fails and reconnecting starts.
 const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(15);
 
 /// Openbar5000's own shared Discord Application ID, auto-filled into the
@@ -114,6 +117,8 @@ struct State {
     client_id: String,
     client: Option<DiscordIpcClient>,
     connected: bool,
+    /// Wait before the next connection attempt (see `RECONNECT_INTERVAL`).
+    retry_delay: Duration,
     /// Re-applied on every successful (re)connect, since connecting resets
     /// any activity Discord previously had for this client ID.
     last_activity: Option<ActivityState>,
@@ -131,27 +136,76 @@ fn run(command_rx: Receiver<PresenceCommand>, event_tx: Sender<PresenceEvent>) {
         client_id: String::new(),
         client: None,
         connected: false,
+        retry_delay: RECONNECT_INTERVAL,
         last_activity: None,
     };
+    // When the next connection attempt is due.
+    let mut next_attempt = std::time::Instant::now();
 
     loop {
-        let timeout = if state.connected {
-            IDLE_CHECK_INTERVAL
-        } else {
-            RECONNECT_INTERVAL
+        let received = match wait_for_command(&state, next_attempt, std::time::Instant::now()) {
+            Some(timeout) => command_rx.recv_timeout(timeout),
+            None => command_rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
         };
-        match command_rx.recv_timeout(timeout) {
-            Ok(command) => handle_command(&mut state, command, &event_tx),
-            Err(RecvTimeoutError::Timeout) => {}
+        match received {
+            Ok(command) => {
+                if matches!(command, PresenceCommand::Configure { .. }) {
+                    // Turned on or pointed at another app: try right away.
+                    state.retry_delay = RECONNECT_INTERVAL;
+                    next_attempt = std::time::Instant::now();
+                }
+                handle_command(&mut state, command, &event_tx);
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                if state.connected {
+                    // Health check: re-send what Discord should be showing.
+                    if let Some(activity) = state.last_activity.clone() {
+                        apply_activity(&mut state, &activity, &event_tx);
+                    }
+                    if !state.connected {
+                        state.retry_delay = RECONNECT_INTERVAL;
+                        next_attempt = std::time::Instant::now() + RECONNECT_INTERVAL;
+                    }
+                }
+            }
             Err(RecvTimeoutError::Disconnected) => break,
         }
 
-        if state.enabled && !state.client_id.is_empty() && !state.connected {
+        if state.enabled
+            && !state.client_id.is_empty()
+            && !state.connected
+            && std::time::Instant::now() >= next_attempt
+        {
             try_connect(&mut state, &event_tx);
+            if state.connected {
+                state.retry_delay = RECONNECT_INTERVAL;
+            } else {
+                next_attempt = std::time::Instant::now() + state.retry_delay;
+                state.retry_delay = next_retry_delay(state.retry_delay);
+            }
         }
     }
 
     disconnect(&mut state, &event_tx);
+}
+
+/// How long the thread may wait for a command before it has something of
+/// its own to do: a health check, or the next connection attempt. `None`
+/// when off (or without a client ID): nothing to do until told otherwise,
+/// so it sleeps -- `next_attempt` isn't moved forward while off, and
+/// waiting it out would make the wait zero and the thread spin.
+fn wait_for_command(state: &State, next_attempt: std::time::Instant, now: std::time::Instant) -> Option<Duration> {
+    if state.connected {
+        Some(IDLE_CHECK_INTERVAL)
+    } else if state.enabled && !state.client_id.is_empty() {
+        Some(next_attempt.saturating_duration_since(now))
+    } else {
+        None
+    }
+}
+
+fn next_retry_delay(delay: Duration) -> Duration {
+    (delay * 2).min(MAX_RECONNECT_INTERVAL)
 }
 
 fn handle_command(state: &mut State, command: PresenceCommand, event_tx: &Sender<PresenceEvent>) {
@@ -281,6 +335,45 @@ fn unix_millis_now() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reconnect_attempts_back_off_to_once_a_minute() {
+        let mut delay = RECONNECT_INTERVAL;
+        let mut waits = Vec::new();
+        for _ in 0..6 {
+            waits.push(delay.as_secs());
+            delay = next_retry_delay(delay);
+        }
+        assert_eq!(waits, [5, 10, 20, 40, 60, 60]);
+    }
+
+    #[test]
+    fn sleeps_until_told_while_off_instead_of_spinning() {
+        let mut state = State {
+            enabled: false,
+            client_id: String::new(),
+            client: None,
+            connected: false,
+            retry_delay: RECONNECT_INTERVAL,
+            last_activity: None,
+        };
+        // An attempt "due" long ago, as when the feature was never enabled.
+        let now = std::time::Instant::now();
+        let past = now - Duration::from_secs(60);
+        assert_eq!(wait_for_command(&state, past, now), None);
+
+        // Enabled without a client ID: still nothing to connect to.
+        state.enabled = true;
+        assert_eq!(wait_for_command(&state, past, now), None);
+
+        state.client_id = "123".to_string();
+        assert_eq!(wait_for_command(&state, past, now), Some(Duration::ZERO));
+        let later = now + Duration::from_secs(5);
+        assert_eq!(wait_for_command(&state, later, now), Some(Duration::from_secs(5)));
+
+        state.connected = true;
+        assert_eq!(wait_for_command(&state, past, now), Some(IDLE_CHECK_INTERVAL));
+    }
 
     fn sample(is_playing: bool) -> NowPlaying {
         NowPlaying {

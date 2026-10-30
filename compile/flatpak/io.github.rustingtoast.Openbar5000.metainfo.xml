@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.rustingtoast.Openbar5000</id>
+  <name>Openbar5000</name>
+  <summary>Open-source alternative to foobar2000</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>Apache-2.0</project_license>
+  <developer id="io.github.rustingtoast">
+    <name>Rustingtoast</name>
+  </developer>
+  <description>
+    <p>
+      Openbar5000 is a cross-platform music player built in Rust, aiming to
+      look and feel as close to foobar2000 as practical.
+    </p>
+    <ul>
+      <li>Playlist grouped by album with cover art, or a plain song list</li>
+      <li>Waveform seekbar and spectrum analyzer</li>
+      <li>18-band equalizer with foobar2000 presets and a vintage panel</li>
+      <li>Media library with folder watching and search</li>
+      <li>Lyrics, artist information and a configurable panel layout</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.rustingtoast.Openbar5000.desktop</launchable>
+  <url type="homepage">https://github.com/Rustingtoast/Openbar5000</url>
+  <url type="bugtracker">https://github.com/Rustingtoast/Openbar5000/issues</url>
+  <categories>
+    <category>AudioVideo</category>
+    <category>Audio</category>
+    <category>Player</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.8.0~beta" date="2026-10-17" type="development"/>
+    <release version="0.7.3~alpha" date="2026-10-17" type="development"/>
+    <release version="0.7.1~alpha" date="2026-10-17" type="development"/>
+    <release version="0.6.0" date="2026-10-15"/>
+  </releases>
+</component>
