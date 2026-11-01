@@ -81,9 +81,72 @@ sandboxed apps (KWin does; GNOME has none at all), and with
 **Effect** (Flatpak, KDE Plasma 6.8 on Wayland): copy and paste work in text
 fields; before, they did nothing. Elsewhere arboard is used as before.
 
+**What (6):** `winitwindowadapter.rs`, `ensure_window`. On Windows, with a
+native menu bar, a size the application gave (`Window::set_size`) is asked
+for again once the menu bar is in, and a window to be maximized is
+maximized only after that.
+
+**Why:** muda puts the menu bar in once winit has made the window, and the
+menu bar takes its height from the window's contents. A preferred size is
+asked for again on showing, so it comes out right; a given size wasn't, so
+the window came out short by the menu bar. When maximized, that was the
+size it went back to.
+
+**Effect** (Windows, 150%): the main window, put back where it was closed
+(issue #39), is 30 pixels shorter no more -- before, it shrank by that much
+at every start.
+
+**What (7):** `lib.rs`, the new `SharedBackendData::recover_rendering` and
+`frame_drawn`, and `can_recreate_surface`/`recreate_surface` on
+`WinitCompatibleRenderer`; `winitwindowadapter.rs`, `draw` and the new
+`recreate_surface`; `renderer/skia.rs`, the two implemented. A frame that
+fails no longer ends the event loop: every window lets go of its surface,
+and so of the GPU device they share; shown windows get new surfaces, on a
+new device, and hidden ones are destroyed, to be made anew when shown.
+Should that fail, or frames keep failing with none drawn, it's tried again
+a second later.
+
+**Why:** once the GPU device is lost -- in a driver reset (TDR), which a game
+working the GPU hard can cause, or a driver update -- every frame fails.
+Upstream ends the event loop at the first, and the app with it. Losing the
+device usually ends the game too, so the two going down together looked
+like Openbar5000 taking the game with it.
+
+**Effect** (Windows, Radeon iGPU; the D3D12 device removed with
+`ID3D12Device5::RemoveDevice`, five times in a row, while playing): the
+window draws again within a quarter of a second each time, playback
+uninterrupted. Before, the next frame ended the app.
+
 **Updating Slint:** if a newer `i-slint-backend-winit` still has the old
 `request_throttled_redraw`, still compares the icon's cache keys, is still
 on a winit without window icons on Wayland, still makes every window at
-start-up, or still has no clipboard in a Flatpak on Wayland, copy the new release here and re-apply what's still needed. If
+start-up, still has no clipboard in a Flatpak on Wayland, still sizes a
+window before its menu bar goes in, or still ends the event loop when a
+frame fails, copy the new release here and re-apply what's still needed. If
 none is, delete this folder and the `[patch.crates-io]` entry. Either way,
 keep the version in step with `slint`'s.
+
+## `i-slint-renderer-skia` 1.18.1
+
+**What (1):** `wgpu_30_surface.rs`, `SharedWgpuState::new` (a flag set by
+wgpu's device-lost callback, which also logs it), `WGPUSurface::device_lost`
+and its uses in `render` and `resize_event`, and a `Drop` for `WGPUSurface`;
+`lib.rs`, `Surface::abandon_if_device_lost`, called first in
+`SkiaRenderer::clear_surface`; the `log` dependency in `Cargo.toml` (already
+built for wgpu). Once the device is lost, Skia is told so (`abandon`) before
+it does anything more with it, and frames fail from then on, for the winit
+backend to set drawing up anew (its change 7).
+
+**Why:** after the device is lost, Skia's Direct3D backend fails to make its
+next command list and keeps the null one, which it dereferences at the next
+frame, resize, or when its context is dropped -- an access violation in
+`GrD3DCommandList::close`.
+
+**Effect** (Windows, as for the winit backend's change 7): closing the app,
+or setting drawing up anew, right after the device was lost no longer
+crashes it.
+
+**Updating Slint:** if a newer `i-slint-renderer-skia` still doesn't abandon
+Skia's context when the wgpu device is lost, copy the new release here and
+re-apply the change; otherwise delete this folder and its
+`[patch.crates-io]` entry. Keep the version in step with `slint`'s.

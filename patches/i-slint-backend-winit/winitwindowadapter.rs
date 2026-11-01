@@ -656,6 +656,19 @@ impl WinitWindowAdapter {
             window_attributes.inner_size = Some(preferred_size.into());
         }
 
+        // Openbar5000 patch: on Windows the native menu bar goes in once the window is made,
+        // taking its height from the window's contents. A size the application gave is asked
+        // for again once it's in (a preferred size is, on showing), and maximizing waits for
+        // that, so that the size the window goes back to has room for the menu bar too.
+        #[cfg(all(muda, target_os = "windows"))]
+        let (explicit_size, maximize_after_menu_bar) = match self.menubar() {
+            Some(_) => (
+                window_attributes.inner_size.filter(|_| self.has_explicit_size.get()),
+                std::mem::take(&mut window_attributes.maximized),
+            ),
+            None => (None, false),
+        };
+
         let winit_window =
             self.renderer.resume(active_event_loop, window_attributes, self.self_weak.clone())?;
         self.first_frame_presented.set(false);
@@ -787,6 +800,17 @@ impl WinitWindowAdapter {
             }
         }
 
+        // Openbar5000 patch: see `explicit_size` above.
+        #[cfg(all(muda, target_os = "windows"))]
+        {
+            if let Some(size) = explicit_size {
+                self.resize_window(size)?;
+            }
+            if maximize_after_menu_bar {
+                winit_window.set_maximized(true);
+            }
+        }
+
         if show_after_creation {
             self.shown.set(WindowVisibility::Hidden);
             self.set_visibility(WindowVisibility::ShownFirstTime)?;
@@ -894,8 +918,18 @@ impl WinitWindowAdapter {
         if !matches!(outcome, Ok(DrawOutcome::Occluded | DrawOutcome::Skipped)) {
             self.reveal_on_first_frame.take();
         }
-        if matches!(outcome?, DrawOutcome::Success) {
+        // Openbar5000 patch: a failed frame -- as every frame is once the GPU device is lost --
+        // doesn't end the event loop; see `SharedBackendData::recover_rendering`.
+        let outcome = match outcome {
+            Err(error) if renderer.can_recreate_surface() => {
+                self.shared_backend_data.recover_rendering(&error);
+                return Ok(());
+            }
+            outcome => outcome?,
+        };
+        if matches!(outcome, DrawOutcome::Success) {
             self.first_frame_presented.set(true);
+            self.shared_backend_data.frame_drawn();
         } else {
             // Frame was skipped (e.g. surface occluded). pending_redraw was already
             // cleared above, so re-arm it so we try again.
@@ -907,6 +941,17 @@ impl WinitWindowAdapter {
 
     pub fn winit_window(&self) -> Option<Arc<winit::window::Window>> {
         self.winit_window_or_none.borrow().as_window()
+    }
+
+    /// Openbar5000 patch: a new surface to draw in, after the renderer was suspended -- see
+    /// `SharedBackendData::recover_rendering`.
+    pub(crate) fn recreate_surface(&self) -> Result<(), PlatformError> {
+        let Some(winit_window) = self.winit_window() else {
+            return Ok(());
+        };
+        self.renderer.recreate_surface(&winit_window)?;
+        self.request_redraw();
+        Ok(())
     }
 
     #[cfg(target_os = "ios")]

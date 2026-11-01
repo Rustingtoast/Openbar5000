@@ -1,0 +1,133 @@
+import { Button, Palette, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+// Shown by the crash watcher, a process of its own (see `app::crash_report`),
+// after the app crashed: what happened, to copy into a GitHub issue.
+export component CrashReportWindow inherits Window {
+    title: "Openbar5000 crashed";
+    icon: Theme.logo;
+    preferred-width: 720px;
+    preferred-height: 520px;
+    min-width: 480px;
+    min-height: 320px;
+    // Resizable: see the same lines in MainWindow.
+    max-width: 100000px;
+    max-height: 100000px;
+    background: Theme.bg-raised;
+
+    init => {
+        Palette.color-scheme = ColorScheme.dark;
+    }
+
+    in property <string> report;
+    // Where the report was saved, if it was.
+    in property <string> saved-to;
+    callback report-clicked();
+    callback restart-clicked();
+    callback close-clicked();
+
+    property <bool> copied;
+
+    // Through a text field: Slint's only way to the clipboard.
+    function copy-report() {
+        clipboard-proxy.text = root.report;
+        clipboard-proxy.select-all();
+        clipboard-proxy.copy();
+        clipboard-proxy.text = "";
+        root.copied = true;
+    }
+
+    VerticalLayout {
+        padding: 18px;
+        spacing: 10px;
+
+        HorizontalLayout {
+            spacing: 14px;
+            Image {
+                source: Theme.logo;
+                width: 44px;
+                height: 44px;
+            }
+            VerticalLayout {
+                alignment: center;
+                spacing: 2px;
+                Text {
+                    text: "Openbar5000 closed unexpectedly";
+                    font-size: 17px;
+                    font-weight: 700;
+                    color: Theme.text-primary;
+                }
+                Text {
+                    text: "This is what happened. To get it fixed, copy it into a new issue on GitHub. It can contain file names, so look it over first.";
+                    color: Theme.text-muted;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+            background: Theme.bg-sunken;
+            border-radius: 4px;
+            ScrollView {
+                VerticalLayout {
+                    padding: 10px;
+                    alignment: start;
+                    Text {
+                        text: root.report;
+                        color: Theme.text-primary;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+
+        if root.saved-to != "": Text {
+            text: "Also saved as " + root.saved-to;
+            color: Theme.text-muted;
+            font-size: 11px;
+            wrap: word-wrap;
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            Button {
+                text: root.copied ? "Copied" : "Copy Report";
+                primary: true;
+                clicked => {
+                    root.copy-report();
+                }
+            }
+            // Copies it too: it's too long to go into the link.
+            Button {
+                text: "Report on GitHub...";
+                clicked => {
+                    root.copy-report();
+                    root.report-clicked();
+                }
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+            Button {
+                text: "Restart Openbar5000";
+                clicked => {
+                    root.restart-clicked();
+                }
+            }
+            Button {
+                text: "Close";
+                clicked => {
+                    root.close-clicked();
+                }
+            }
+        }
+    }
+
+    // Never shown: what `copy-report` copies from.
+    clipboard-proxy := TextInput {
+        visible: false;
+        single-line: false;
+    }
+}
