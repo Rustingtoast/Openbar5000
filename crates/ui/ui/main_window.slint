@@ -16,6 +16,7 @@ import { VintageEqualizer, Vfd } from "vintage_equalizer.slint";
 import { LibraryView, LibraryRow } from "library_view.slint";
 import { LoadingOverlay } from "loading_overlay.slint";
 import { PlaylistManagerWindow, PlaylistManagerRow } from "playlist_manager_window.slint";
+import { CrashReportWindow } from "crash_report_window.slint";
 
 /// One placed panel (see `app::layout`): which panel to draw and where,
 /// relative to the panel area below the menu bar.
@@ -79,7 +80,7 @@ export struct PanelChoice {
     label: string,
 }
 
-export { Vfd, PropertyField, DetailRow, ArtworkRow, LibraryRow, PlaylistManagerWindow, PlaylistManagerRow, PlaylistRow, PropertiesWindow, AboutWindow, SettingsWindow, ThemeListEntry, ThemeEditorWindow, LyricsEditorWindow, Theme }
+export { Vfd, PropertyField, DetailRow, ArtworkRow, LibraryRow, PlaylistManagerWindow, PlaylistManagerRow, PlaylistRow, PropertiesWindow, AboutWindow, SettingsWindow, ThemeListEntry, ThemeEditorWindow, LyricsEditorWindow, CrashReportWindow, Theme }
 
 export component MainWindow inherits Window {
     // Set from Cargo.toml's version at startup (see `app::wiring`).

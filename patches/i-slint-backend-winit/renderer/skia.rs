@@ -1,6 +1,7 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
+use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -14,6 +15,8 @@ use i_slint_renderer_skia::SkiaRenderer;
 pub struct WinitSkiaRenderer {
     renderer: SkiaRenderer,
     requested_graphics_api: Option<RequestedGraphicsAPI>,
+    // Openbar5000 patch: for `recreate_surface`.
+    transparent: Cell<bool>,
 }
 
 impl WinitSkiaRenderer {
@@ -23,6 +26,7 @@ impl WinitSkiaRenderer {
         Ok(Box::new(Self {
             renderer: SkiaRenderer::default(&shared_backend_data.skia_context),
             requested_graphics_api: shared_backend_data.requested_graphics_api.clone(),
+            transparent: Cell::new(false),
         }))
     }
 
@@ -33,6 +37,7 @@ impl WinitSkiaRenderer {
         Ok(Box::new(Self {
             renderer: SkiaRenderer::default_software(&shared_backend_data.skia_context),
             requested_graphics_api: shared_backend_data.requested_graphics_api.clone(),
+            transparent: Cell::new(false),
         }))
     }
 
@@ -43,6 +48,7 @@ impl WinitSkiaRenderer {
         Ok(Box::new(Self {
             renderer: SkiaRenderer::default_opengl(&shared_backend_data.skia_context),
             requested_graphics_api: shared_backend_data.requested_graphics_api.clone(),
+            transparent: Cell::new(false),
         }))
     }
 
@@ -53,6 +59,7 @@ impl WinitSkiaRenderer {
         Ok(Box::new(Self {
             renderer: SkiaRenderer::default_metal(&shared_backend_data.skia_context),
             requested_graphics_api: shared_backend_data.requested_graphics_api.clone(),
+            transparent: Cell::new(false),
         }))
     }
 
@@ -63,6 +70,7 @@ impl WinitSkiaRenderer {
         Ok(Box::new(Self {
             renderer: SkiaRenderer::default_vulkan(&shared_backend_data.skia_context),
             requested_graphics_api: shared_backend_data.requested_graphics_api.clone(),
+            transparent: Cell::new(false),
         }))
     }
 
@@ -73,6 +81,7 @@ impl WinitSkiaRenderer {
         Ok(Box::new(Self {
             renderer: SkiaRenderer::default_direct3d(&shared_backend_data.skia_context),
             requested_graphics_api: shared_backend_data.requested_graphics_api.clone(),
+            transparent: Cell::new(false),
         }))
     }
 
@@ -83,6 +92,7 @@ impl WinitSkiaRenderer {
         Ok(Box::new(Self {
             renderer: SkiaRenderer::default_wgpu_29(&shared_backend_data.skia_context),
             requested_graphics_api: shared_backend_data.requested_graphics_api.clone(),
+            transparent: Cell::new(false),
         }))
     }
 
@@ -93,6 +103,7 @@ impl WinitSkiaRenderer {
         Ok(Box::new(Self {
             renderer: SkiaRenderer::default_wgpu_30(&shared_backend_data.skia_context),
             requested_graphics_api: shared_backend_data.requested_graphics_api.clone(),
+            transparent: Cell::new(false),
         }))
     }
 
@@ -169,7 +180,29 @@ impl super::WinitCompatibleRenderer for WinitSkiaRenderer {
 
     #[cfg(target_os = "macos")]
     fn set_transparent(&self, transparent: bool) -> Result<(), PlatformError> {
+        self.transparent.set(transparent);
         self.renderer.set_transparent(transparent)
+    }
+
+    fn can_recreate_surface(&self) -> bool {
+        true
+    }
+
+    fn recreate_surface(&self, winit_window: &Arc<winit::window::Window>) -> Result<(), PlatformError> {
+        self.renderer.set_window_handle(
+            winit_window.clone(),
+            winit_window.clone(),
+            physical_size_to_slint(&winit_window.surface_size()),
+            self.requested_graphics_api.clone(),
+            self.transparent.get(),
+        )?;
+        self.renderer.set_pre_present_callback(Some(Box::new({
+            let winit_window = winit_window.clone();
+            move || {
+                winit_window.pre_present_notify();
+            }
+        })));
+        Ok(())
     }
 
     fn resume(
@@ -179,6 +212,7 @@ impl super::WinitCompatibleRenderer for WinitSkiaRenderer {
         _window_adapter_weak: std::rc::Weak<crate::winitwindowadapter::WinitWindowAdapter>,
     ) -> Result<Arc<winit::window::Window>, PlatformError> {
         let transparent = window_attributes.transparent;
+        self.transparent.set(transparent);
         let winit_window = Arc::new(active_event_loop.create_window(window_attributes).map_err(
             |winit_os_error| {
                 PlatformError::from(format!(

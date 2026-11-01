@@ -53,13 +53,20 @@ objc2-media-player = { version = "0.3", default-features = false, features = ["s
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
 
+# Crash signals noted for the crash report (`crash_report`). Already built
+# for winit.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 slint = { workspace = true, features = ["raw-window-handle-06"] }
 raw-window-handle = "0.6"
 # Whether the window can be seen: displays off (`display_power`), or on
-# another virtual desktop (`wiring`); the terminal it was started from
-# (`main`); opening links (`platform`). Already built for cpal.
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_System_Console", "Win32_System_Power", "Win32_System_SystemServices", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+# another virtual desktop (`wiring`); the terminal it was started from and
+# the system's error boxes (`main`); opening links (`platform`); crashes,
+# the watched app's exit code and full-screen programs (`crash_report`).
+# Already built for cpal.
+windows = { version = "0.62", features = ["Wdk_System_SystemServices", "Win32_Foundation", "Win32_Graphics_Dwm", "Win32_System_Console", "Win32_System_Diagnostics_Debug", "Win32_System_LibraryLoader", "Win32_System_Power", "Win32_System_SystemInformation", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"

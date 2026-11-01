@@ -252,6 +252,7 @@ dependencies = [
  "discord-rich-presence",
  "engine",
  "image",
+ "libc",
  "notify",
  "objc2 0.6.5",
  "objc2-foundation 0.3.2",
@@ -2340,8 +2341,6 @@ dependencies = [
 [[package]]
 name = "i-slint-renderer-skia"
 version = "1.18.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc9c1cf02385f1d26fc1f423544e52390a8e5c2d89420a8042aa94b4fe109d1f"
 dependencies = [
  "bytemuck",
  "cfg-if",
@@ -2353,6 +2352,7 @@ dependencies = [
  "i-slint-common",
  "i-slint-core",
  "i-slint-core-macros",
+ "log",
  "lyon_path",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",

@@ -13,6 +13,8 @@ Openbar5000 is an open-source, cross-platform (Windows, macOS, Linux) alternativ
 - Discord Rich Presence ("Listening to \<track\>")
 - A now-playing file for OBS stream overlays, compatible with foobar2000's foo_np_simple
 - A native Rust plugin API (`plugin-api` + `plugin-host`), proven end-to-end with a sample DSP plugin
+- Reopens where it was closed: same screen, position, size and maximized state (or its default place, if the screens have changed since)
+- A crash report window: if Openbar5000 ever crashes, it shows what happened, ready to copy into an issue (see [Crash reports](#crash-reports))
 
 ## Getting Started
 
@@ -105,6 +107,39 @@ work as they are, such as the "nowplaying" OBS browser source from
 
 The file is updated about once a second while a track plays, and shows
 nothing playing when playback stops.
+
+## Crash reports
+
+If Openbar5000 crashes, a window opens with a report of what happened:
+the version and system, the error, and the last lines of its log. To get
+it fixed:
+
+1. Click **Report on GitHub...**. It copies the report and opens a new
+   issue.
+2. Paste the report into the issue, and add what you were doing when it
+   crashed, if you remember.
+
+The report can contain file names from your music library, so look it
+over before posting. **Copy Report** copies it without opening GitHub,
+and **Restart Openbar5000** starts it again.
+
+The window stays out of the way of whatever else is running. It doesn't
+take focus, and while a full-screen game or video is in front, it waits
+until you leave it. It's drawn without the GPU, in case the graphics
+driver was what failed.
+
+Each report is also saved, the newest ten kept, in a `crash-reports`
+folder next to the app's settings:
+
+- **Windows**: `%APPDATA%\Openbar5000\crash-reports`
+- **macOS**: `~/Library/Application Support/Openbar5000/crash-reports`
+- **Linux**: `~/.config/openbar5000/crash-reports`
+
+How it works: a small second copy of Openbar5000 runs alongside it,
+idle, and watches for it to crash. That way the report doesn't depend on
+the crashed program. Setting the `OPENBAR5000_NO_CRASH_REPORTS`
+environment variable turns this off, for running under a debugger or
+profiler.
 
 ## Project layout
 

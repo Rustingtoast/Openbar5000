@@ -99,6 +99,19 @@ mod renderer {
             window_attributes: winit::window::WindowAttributes,
             window_adapter_weak: Weak<crate::winitwindowadapter::WinitWindowAdapter>,
         ) -> Result<Arc<winit::window::Window>, PlatformError>;
+
+        // Openbar5000 patch: a new surface for the window the renderer draws in already, after
+        // `suspend` (see `SharedBackendData::recover_rendering`).
+        fn can_recreate_surface(&self) -> bool {
+            false
+        }
+
+        fn recreate_surface(
+            &self,
+            _winit_window: &Arc<winit::window::Window>,
+        ) -> Result<(), PlatformError> {
+            Err("This renderer can't make its surface anew".into())
+        }
     }
 
     #[cfg(enable_femtovg_renderer)]
@@ -448,6 +461,11 @@ pub(crate) struct SharedBackendData {
     pending_mouse_move: Cell<Option<(Weak<WinitWindowAdapter>, LogicalPoint)>>,
     /// Hidden windows, checked by [`SharedBackendData::warn_about_windows_kept_alive`].
     hidden_winit_windows: RefCell<Vec<std::sync::Weak<winit::window::Window>>>,
+    /// Openbar5000 patch: a [`SharedBackendData::recover_rendering`] is on its way.
+    recovering_rendering: Cell<bool>,
+    /// Openbar5000 patch: how long the next recovery waits -- a second while no frame was drawn
+    /// since the last one.
+    rendering_recovery_delay: Cell<core::time::Duration>,
     #[cfg(not(target_arch = "wasm32"))]
     clipboard: std::cell::RefCell<clipboard::ClipboardPair>,
     not_running_event_loop: RefCell<Option<winit::event_loop::EventLoop<SlintEvent>>>,
@@ -557,6 +575,8 @@ impl SharedBackendData {
             inactive_windows: Default::default(),
             pending_mouse_move: Default::default(),
             hidden_winit_windows: Default::default(),
+            recovering_rendering: Default::default(),
+            rendering_recovery_delay: Default::default(),
             #[cfg(not(target_arch = "wasm32"))]
             clipboard: RefCell::new(clipboard),
             not_running_event_loop: RefCell::new(Some(event_loop)),
@@ -679,6 +699,70 @@ impl SharedBackendData {
     pub(crate) fn flush_pending_mouse_move(&self) {
         if let Some((window, position)) = self.pending_mouse_move.take() {
             dispatch_mouse_move(&window, position);
+        }
+    }
+
+    /// Openbar5000 patch: drawing set up anew when a frame fails, where upstream ends the event
+    /// loop with the error. Once the GPU device is lost -- in a driver reset, say, which a game
+    /// can bring about -- every frame fails.
+    ///
+    /// All windows let go of their surfaces first, and so of the device they share, which would
+    /// otherwise be used again. Shown windows then get new surfaces, on a new device; hidden ones
+    /// are destroyed, to be made anew when shown. Should that fail too -- the GPU still resetting
+    /// -- it's tried again a second later, as it is when frames keep failing right after.
+    pub(crate) fn recover_rendering(self: &Rc<Self>, error: &PlatformError) {
+        if self.recovering_rendering.replace(true) {
+            return;
+        }
+        i_slint_core::debug_log!("Slint winit backend: drawing failed ({error}); setting it up anew");
+        self.schedule_rendering_recovery();
+    }
+
+    /// Openbar5000 patch: a frame was drawn, so a failure next is recovered from right away.
+    pub(crate) fn frame_drawn(&self) {
+        self.rendering_recovery_delay.set(core::time::Duration::ZERO);
+    }
+
+    fn schedule_rendering_recovery(self: &Rc<Self>) {
+        let delay = self.rendering_recovery_delay.replace(core::time::Duration::from_secs(1));
+        let this = Rc::downgrade(self);
+        // Not from within the failed frame.
+        i_slint_core::timers::Timer::single_shot(delay, move || {
+            if let Some(this) = this.upgrade() {
+                this.recover_rendering_now();
+            }
+        });
+    }
+
+    fn recover_rendering_now(self: &Rc<Self>) {
+        let windows: Vec<Rc<WinitWindowAdapter>> = self
+            .active_windows
+            .borrow()
+            .values()
+            .filter_map(Weak::upgrade)
+            .filter(|window| window.renderer().can_recreate_surface())
+            .collect();
+        for window in &windows {
+            let _ = window.renderer().suspend();
+        }
+        let mut result = Ok(());
+        for window in &windows {
+            let recreated = match window.visibility() {
+                winitwindowadapter::WindowVisibility::Hidden => window.suspend(),
+                _ => window.recreate_surface(),
+            };
+            if recreated.is_err() {
+                result = recreated;
+            }
+        }
+        match result {
+            Ok(()) => self.recovering_rendering.set(false),
+            Err(error) => {
+                i_slint_core::debug_log!(
+                    "Slint winit backend: couldn't set drawing up anew ({error}); trying again"
+                );
+                self.schedule_rendering_recovery();
+            }
         }
     }
 

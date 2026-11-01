@@ -59,10 +59,14 @@ notify = "8"
 # Local date, for the holiday logos.
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
-# Slint's winit backend with five changes (see `patches/README.md`): on X11
+# Slint's winit backend with seven changes (see `patches/README.md`): on X11
 # it drew every frame twice; a window icon loaded at run time never showed;
 # on Wayland no window icon showed at all; every window, shown or not, was
-# made at start-up; and in a Flatpak on Wayland there was no clipboard.
-# Remove once Slint ships the fixes.
+# made at start-up; in a Flatpak on Wayland there was no clipboard; on
+# Windows a window given its size came out short by its menu bar; and a
+# frame that failed, as after a GPU driver reset, ended the app. And Slint's
+# Skia renderer with one: once the GPU device was lost, it crashed. Remove
+# once Slint ships the fixes.
 [patch.crates-io]
 i-slint-backend-winit = { path = "patches/i-slint-backend-winit" }
+i-slint-renderer-skia = { path = "patches/i-slint-renderer-skia" }
