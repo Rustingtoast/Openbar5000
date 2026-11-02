@@ -124,7 +124,8 @@ over before posting. **Copy Report** copies it without opening GitHub,
 and **Restart Openbar5000** starts it again.
 
 The window stays out of the way of whatever else is running. It doesn't
-take focus, and while a full-screen game or video is in front, it waits
+take focus: its task bar entry or Dock icon asks for attention instead.
+On Windows, while a full-screen game or video is in front, it waits
 until you leave it. It's drawn without the GPU, in case the graphics
 driver was what failed.
 

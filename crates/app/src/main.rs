@@ -74,7 +74,7 @@ fn main() {
     let _ui_handles = wiring::wire(&window, engine, store.clone());
 
     window.run().expect("UI event loop failed");
-    placement.save(&store);
+    placement.save();
 }
 
 /// The token a launcher (the app menu, the task bar) started the app with,
