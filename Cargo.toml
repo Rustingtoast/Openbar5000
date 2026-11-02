@@ -59,6 +59,40 @@ notify = "8"
 # Local date, for the holiday logos.
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
+# Debug builds decode audio with symphonia optimized: unoptimized, it made
+# a 4-minute MP3's waveform take 1.4 s to show instead of 0.5 s. The app's
+# own code stays unoptimized, to debug.
+[profile.dev.package.symphonia]
+opt-level = 3
+[profile.dev.package.symphonia-bundle-flac]
+opt-level = 3
+[profile.dev.package.symphonia-bundle-mp3]
+opt-level = 3
+[profile.dev.package.symphonia-codec-aac]
+opt-level = 3
+[profile.dev.package.symphonia-codec-adpcm]
+opt-level = 3
+[profile.dev.package.symphonia-codec-alac]
+opt-level = 3
+[profile.dev.package.symphonia-codec-pcm]
+opt-level = 3
+[profile.dev.package.symphonia-codec-vorbis]
+opt-level = 3
+[profile.dev.package.symphonia-common]
+opt-level = 3
+[profile.dev.package.symphonia-core]
+opt-level = 3
+[profile.dev.package.symphonia-format-isomp4]
+opt-level = 3
+[profile.dev.package.symphonia-format-mkv]
+opt-level = 3
+[profile.dev.package.symphonia-format-ogg]
+opt-level = 3
+[profile.dev.package.symphonia-format-riff]
+opt-level = 3
+[profile.dev.package.symphonia-metadata]
+opt-level = 3
+
 # Slint's winit backend with seven changes (see `patches/README.md`): on X11
 # it drew every frame twice; a window icon loaded at run time never showed;
 # on Wayland no window icon showed at all; every window, shown or not, was

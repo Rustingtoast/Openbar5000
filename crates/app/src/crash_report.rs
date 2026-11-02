@@ -251,18 +251,21 @@ mod native {
 
     static PIPE: AtomicI32 = AtomicI32::new(-1);
 
-    /// Each signal with its note.
-    const SIGNALS: [(libc::c_int, &[u8]); 5] = [
+    /// Each signal with its note. SIGTRAP is a trap instruction: on Apple
+    /// Silicon, how a Swift runtime error in one of macOS's own frameworks,
+    /// or a `__builtin_trap`, ends a process (on Intel, SIGILL). A
+    /// debugger's breakpoints never get here: it takes the trap first.
+    const SIGNALS: [(libc::c_int, &[u8]); 6] = [
         (libc::SIGSEGV, b"\n\x1esignal SIGSEGV (segmentation fault)\n"),
         (libc::SIGBUS, b"\n\x1esignal SIGBUS (bus error)\n"),
         (libc::SIGILL, b"\n\x1esignal SIGILL (illegal instruction)\n"),
         (libc::SIGFPE, b"\n\x1esignal SIGFPE (arithmetic error)\n"),
         (libc::SIGABRT, b"\n\x1esignal SIGABRT (abort)\n"),
+        (libc::SIGTRAP, b"\n\x1esignal SIGTRAP (trap)\n"),
     ];
 
     /// What each signal did before.
-    static PREVIOUS: [OnceLock<libc::sigaction>; 5] =
-        [OnceLock::new(), OnceLock::new(), OnceLock::new(), OnceLock::new(), OnceLock::new()];
+    static PREVIOUS: [OnceLock<libc::sigaction>; SIGNALS.len()] = [const { OnceLock::new() }; SIGNALS.len()];
 
     pub fn install(pipe: &std::process::ChildStdin) {
         PIPE.store(pipe.as_raw_fd(), Ordering::Release);
@@ -286,8 +289,10 @@ mod native {
 
     /// Notes the signal, then hands it on to whoever had it: Rust's own
     /// handler for SIGSEGV and SIGBUS, which tells a stack overflow; or the
-    /// default, which ends the process -- once this returns, as a fault
-    /// happens again, and abort() raises its signal again.
+    /// default, raised again to end the process once this returns. (A fault
+    /// would happen again by itself, but a signal sent -- `kill -ABRT` --
+    /// wouldn't, and the app went on, to be reported later as crashed with
+    /// it.)
     extern "C" fn on_signal(signal: libc::c_int, info: *mut libc::siginfo_t, context: *mut libc::c_void) {
         let Some(index) = SIGNALS.iter().position(|(s, _)| *s == signal) else {
             return;
@@ -314,6 +319,8 @@ mod native {
                     let mut default: libc::sigaction = std::mem::zeroed();
                     default.sa_sigaction = libc::SIG_DFL;
                     libc::sigaction(signal, &default, std::ptr::null_mut());
+                    // Blocked while this runs: it arrives as this returns.
+                    libc::raise(signal);
                 }
             }
         }
@@ -551,16 +558,55 @@ fn system_description() -> String {
     format!("Windows {name} (build {}), {}", info.dwBuildNumber, std::env::consts::ARCH)
 }
 
+/// With the build, which tells a beta from a release, the Mac's model, and
+/// Rosetta, when an Intel build runs on Apple Silicon.
 #[cfg(target_os = "macos")]
 fn system_description() -> String {
-    let version = Command::new("sw_vers")
-        .arg("-productVersion")
+    let sw_vers = Command::new("/usr/bin/sw_vers")
         .output()
         .ok()
         .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map(|version| version.trim().to_string())
         .unwrap_or_default();
-    format!("macOS {version}, {}", std::env::consts::ARCH)
+    let field = |name: &str| {
+        sw_vers
+            .lines()
+            .find_map(|line| Some(line.strip_prefix(name)?.trim()))
+            .unwrap_or_default()
+    };
+    let mut description = format!(
+        "macOS {} (build {}), {}",
+        field("ProductVersion:"),
+        field("BuildVersion:"),
+        std::env::consts::ARCH
+    );
+    if sysctl(c"sysctl.proc_translated").is_some_and(|translated| translated[..] == 1i32.to_ne_bytes()) {
+        description.push_str(" under Rosetta");
+    }
+    if let Some(model) = sysctl(c"hw.model") {
+        if let Ok(model) = std::ffi::CStr::from_bytes_until_nul(&model) {
+            let _ = write!(description, ", {}", model.to_string_lossy());
+        }
+    }
+    description
+}
+
+/// A system value by its name: `None` where there's no such value
+/// (`sysctl.proc_translated` on an Intel Mac).
+#[cfg(target_os = "macos")]
+fn sysctl(name: &std::ffi::CStr) -> Option<Vec<u8>> {
+    let mut len = 0;
+    // SAFETY: the length asked for first, then a buffer of it filled.
+    unsafe {
+        if libc::sysctlbyname(name.as_ptr(), std::ptr::null_mut(), &mut len, std::ptr::null_mut(), 0) != 0 {
+            return None;
+        }
+        let mut value = vec![0u8; len];
+        if libc::sysctlbyname(name.as_ptr(), value.as_mut_ptr().cast(), &mut len, std::ptr::null_mut(), 0) != 0 {
+            return None;
+        }
+        value.truncate(len);
+        Some(value)
+    }
 }
 
 /// With how the desktop runs it: X11 or Wayland, which desktop, Flatpak.
@@ -627,13 +673,23 @@ fn show(crash: &str, report: String, saved: Option<PathBuf>) {
     #[cfg(windows)]
     wait_while_full_screen();
 
-    let selected = slint::BackendSelector::new()
+    let selector = slint::BackendSelector::new()
         .renderer_name("software".into())
         // Never taking focus from what's in use: a game, say. Its task bar
-        // entry asks for attention instead (below).
-        .with_winit_window_attributes_hook(|attributes| attributes.with_active(false))
-        .select();
-    if let Err(e) = selected {
+        // entry (or Dock icon) asks for attention instead (below).
+        .with_winit_window_attributes_hook(|attributes| attributes.with_active(false));
+    // Nor by bringing the app to the front as it starts, which winit does
+    // on macOS -- switching away from a full-screen game, to the desktop
+    // the window opens on. Left in the background, it needs no waiting
+    // for the game to be left, as on Windows.
+    #[cfg(target_os = "macos")]
+    let selector = {
+        use slint::winit_030::winit::{event_loop::EventLoop, platform::macos::EventLoopBuilderExtMacOS};
+        let mut event_loop = EventLoop::<slint::winit_030::SlintEvent>::with_user_event();
+        event_loop.with_activate_ignoring_other_apps(false);
+        selector.with_winit_event_loop_builder(event_loop)
+    };
+    if let Err(e) = selector.select() {
         eprintln!("crash report: couldn't set up the window system: {e}");
     }
     #[cfg(all(unix, not(target_os = "macos")))]

@@ -140,6 +140,9 @@ fn peaks_for_slice(
     let mut out = vec![WaveformChannel::new(bucket_count); channels];
     let mut buf = vec![0f32; 4096];
     let mut frame = start;
+    // Frame `f` goes in bucket `f * bucket_count / total_frames`, so the
+    // first frame of bucket `b` is this.
+    let first_frame_of = |bucket: u64| (bucket * total_frames).div_ceil(bucket_count as u64);
     loop {
         if cancel.load(Ordering::Relaxed) {
             return Ok(None);
@@ -148,15 +151,37 @@ fn peaks_for_slice(
         if written == 0 {
             break;
         }
-        for samples in buf[..written].chunks_exact(channels) {
+        // A bucket's frames at a time, rather than working out each frame's
+        // bucket: the per-frame work is what decoding a whole track for its
+        // waveform spends its time on, besides decoding.
+        let mut samples = &buf[..written - written % channels];
+        while !samples.is_empty() {
             if end.is_some_and(|end| frame >= end) {
                 return Ok(Some(out));
             }
             let bucket = ((frame * bucket_count as u64 / total_frames) as usize).min(bucket_count - 1);
-            for (channel, &sample) in out.iter_mut().zip(samples) {
-                channel.add(bucket, sample);
+            // The last bucket takes the rest, should the stream run past its
+            // tagged duration.
+            let mut run = if bucket + 1 < bucket_count {
+                first_frame_of(bucket as u64 + 1) - frame
+            } else {
+                u64::MAX
+            };
+            if let Some(end) = end {
+                run = run.min(end - frame);
             }
-            frame += 1;
+            let run = (run as usize).min(samples.len() / channels);
+            let (now, rest) = samples.split_at(run * channels);
+            for (index, channel) in out.iter_mut().enumerate() {
+                let (mut max, mut min) = (channel.max[bucket], channel.min[bucket]);
+                for &sample in now[index..].iter().step_by(channels) {
+                    max = max.max(sample);
+                    min = min.min(sample);
+                }
+                (channel.max[bucket], channel.min[bucket]) = (max, min);
+            }
+            frame += run as u64;
+            samples = rest;
         }
     }
     Ok(Some(out))
@@ -270,6 +295,60 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(sequential.len(), channels.len());
+    }
+
+    /// `peaks_for_slice` as it was, each frame's bucket worked out on its
+    /// own: the reference it has to match exactly, a bucket's frames at a
+    /// time.
+    fn peaks_frame_by_frame(path: &Path, start: u64, end: Option<u64>, total_frames: u64, bucket_count: usize) -> Vec<WaveformChannel> {
+        let mut decoder = SymphoniaDecoder::new();
+        let info = decoder.open(path).unwrap();
+        let channels = info.channels.max(1) as usize;
+        if start > 0 {
+            decoder.seek(Duration::from_secs_f64(start as f64 / info.sample_rate as f64)).unwrap();
+        }
+        let mut out = vec![WaveformChannel::new(bucket_count); channels];
+        let mut buf = vec![0f32; 4096];
+        let mut frame = start;
+        loop {
+            let written = decoder.next_frame(&mut buf).unwrap();
+            if written == 0 {
+                return out;
+            }
+            for samples in buf[..written].chunks_exact(channels) {
+                if end.is_some_and(|end| frame >= end) {
+                    return out;
+                }
+                let bucket = ((frame * bucket_count as u64 / total_frames) as usize).min(bucket_count - 1);
+                for (channel, &sample) in out.iter_mut().zip(samples) {
+                    channel.add(bucket, sample);
+                }
+                frame += 1;
+            }
+        }
+    }
+
+    #[test]
+    fn peaks_match_bucketing_frame_by_frame() {
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/test_tone.wav");
+        let info = SymphoniaDecoder::new().open(&fixture).unwrap();
+        let total = info.duration_ms * info.sample_rate as u64 / 1000;
+        let never = AtomicBool::new(false);
+        // Buckets that don't divide the frames evenly; more buckets than
+        // frames, so some stay empty. The whole track, and slices of it as
+        // the threads take them.
+        for buckets in [997, total as usize * 3 / 2] {
+            for (start, end) in [(0, None), (0, Some(total / 3)), (total / 3, None)] {
+                assert_eq!(
+                    peaks_for_slice(&fixture, info.sample_rate, start, end, total, buckets, &never)
+                        .unwrap()
+                        .unwrap(),
+                    peaks_frame_by_frame(&fixture, start, end, total, buckets),
+                    "{buckets} buckets, frames {start}..{end:?}"
+                );
+            }
+        }
     }
 
     #[test]

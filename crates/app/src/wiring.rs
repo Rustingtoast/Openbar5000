@@ -2198,7 +2198,6 @@ fn apply_media_action(window: &MainWindow, clock: &PlaybackClock, action: MediaA
 /// the task bar instead. winit only makes that request when asked for the
 /// user's attention (its `focus_window` does nothing there).
 fn raise(window: &MainWindow) {
-    use slint::winit_030::winit::window::UserAttentionType;
     use slint::winit_030::WinitWindowAccessor;
     let _ = window.show();
     window.window().with_winit_window(|winit| {
@@ -2210,6 +2209,7 @@ fn raise(window: &MainWindow) {
         #[cfg(all(unix, not(target_os = "macos")))]
         {
             use slint::winit_030::winit::platform::wayland::WindowExtWayland;
+            use slint::winit_030::winit::window::UserAttentionType;
             if winit.xdg_toplevel().is_some() {
                 winit.request_user_attention(Some(UserAttentionType::Informational));
             }
