@@ -10,17 +10,18 @@
 #   https://github.com/Rustingtoast/Openbar5000/releases/latest/download/<file>
 # always points at the newest release (the README links to those).
 #
-# Pushing a tag "v<version>" (the version in Cargo.toml) builds and
-# publishes a release. Running it by hand (Actions > Release > Run
+# Publishing a release on GitHub (Releases > Draft a new release, with a new
+# tag "v<version>" -- the version in Cargo.toml) builds the installers and
+# attaches them to that release. Running it by hand (Actions > Release > Run
 # workflow), or a pull request that changes the packaging, only builds: the
 # installers are attached to the run as artifacts, to try out before
-# tagging. See compile/README.md.
+# releasing. See compile/README.md.
 
 name: Release
 
 on:
-  push:
-    tags: ["v*"]
+  release:
+    types: [published]
   workflow_dispatch:
   pull_request:
     paths:
@@ -43,13 +44,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - id: version
-        name: Tag, Cargo.toml and metainfo agree
+        name: Release tag, Cargo.toml and metainfo agree
         shell: bash
+        env:
+          TAG: ${{ github.event.release.tag_name }}
         run: |
           version="$(grep -m1 '^version' Cargo.toml | sed -E 's/version = "(.*)"/\1/')"
           echo "Cargo.toml version: $version"
-          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "v$version" ]]; then
-            echo "::error::Tag $GITHUB_REF_NAME doesn't match Cargo.toml's version $version (expected v$version)."
+          # "v0.8.0" or "0.8.0" both name version 0.8.0.
+          if [[ "$GITHUB_EVENT_NAME" == "release" && "${TAG#v}" != "$version" ]]; then
+            echo "::error::The release's tag $TAG doesn't match Cargo.toml's version $version. Delete the release and its tag, and create it again with the tag v$version (or change Cargo.toml first)."
             exit 1
           fi
           # AppStream writes a pre-release after a "~" (0.8.0~beta).
@@ -140,8 +144,8 @@ jobs:
           if-no-files-found: error
 
   publish:
-    name: Publish release
-    if: github.ref_type == 'tag'
+    name: Attach to the release
+    if: github.event_name == 'release'
     needs: [version, windows, macos, flatpak]
     runs-on: ubuntu-latest
     permissions:
@@ -151,17 +155,13 @@ jobs:
         with:
           path: installers
           merge-multiple: true
-      - name: Create the release
+      - name: Upload the installers
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.version.outputs.version }}
+          TAG: ${{ github.event.release.tag_name }}
         run: |
           ls -l installers
-          # Published as a full release, not a pre-release, even for a
-          # "-beta" version: releases/latest (and the README's download
-          # links) skips pre-releases.
-          gh release create "$GITHUB_REF_NAME" installers/* \
+          # --clobber: a re-run replaces files an earlier attempt uploaded.
+          gh release upload "$TAG" installers/* \
               --repo "$GITHUB_REPOSITORY" \
-              --title "Openbar5000 $VERSION" \
-              --generate-notes \
-              --latest
+              --clobber

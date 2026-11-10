@@ -39,22 +39,32 @@ always gets the newest one; the main README links to those.
 
 To release a version:
 
-1. Set `version` in the root `Cargo.toml` (e.g. `0.9.0-beta`).
+1. Set `version` in the root `Cargo.toml` (e.g. `0.9.0`), and run
+   `cargo update --workspace` so `Cargo.lock` matches (the Flatpak builds
+   with `--locked`).
 2. Add a `<release>` line for it to
-   `flatpak/io.github.rustingtoast.Openbar5000.metainfo.xml`, with a `~`
-   instead of the `-` (`0.9.0~beta`).
-3. Commit that to `main`, then tag it and push the tag:
-   ```bash
-   git tag v0.9.0-beta
-   git push origin v0.9.0-beta
-   ```
+   `flatpak/io.github.rustingtoast.Openbar5000.metainfo.xml`. A pre-release
+   takes a `~` instead of the `-` (`0.9.0-beta` is `0.9.0~beta`).
+3. Merge that into `main`.
+4. On GitHub, go to **Releases > Draft a new release**. Under **Choose a
+   tag**, type `v0.9.0` and pick **Create new tag on publish** (target:
+   `main`). Add a title and notes (**Generate release notes** lists the
+   merged pull requests), then **Publish release**.
 
-The workflow stops before building anything if the tag isn't `v` plus the
-`Cargo.toml` version, or if the metainfo has no entry for it. When every
-build has passed, it creates the release with notes generated from the merged
-pull requests. Releases are published as full releases even for a `-beta`
-version: GitHub's "latest release" (and so the download links) skips
-pre-releases.
+Publishing starts the workflow, which builds the installers and attaches
+them to the release about 20 to 30 minutes later (watch it under
+**Actions > Release**). Until then the release has no installers, and the
+README's download links don't work yet.
+
+The workflow stops before building anything if the tag isn't the
+`Cargo.toml` version (with or without the `v`), or if the metainfo has no
+entry for it: delete the release and its tag, fix it, and publish again. If
+a build fails for another reason, fix it and use **Re-run failed jobs** on
+that run.
+
+Leave **Set as a pre-release** unticked, even for a `-beta` version: GitHub's
+"latest release" skips pre-releases, so the README's download links would
+keep pointing at the previous one.
 
 To try the installers without releasing, run the workflow by hand
 (**Actions > Release > Run workflow**): it builds everything and attaches the
