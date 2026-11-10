@@ -16,7 +16,36 @@ Openbar5000 is an open-source, cross-platform (Windows, macOS, Linux) alternativ
 - Reopens where it was closed: same screen, position, size and maximized state (or its default place, if the screens have changed since)
 - A crash report window: if Openbar5000 ever crashes, it shows what happened, ready to copy into an issue (see [Crash reports](#crash-reports))
 
+## Install
+
+Download the installer for your system from the
+[latest release](https://github.com/Rustingtoast/Openbar5000/releases/latest):
+
+| System | Download |
+|---|---|
+| Windows (64-bit) | [Openbar5000-Windows-x64.msi](https://github.com/Rustingtoast/Openbar5000/releases/latest/download/Openbar5000-Windows-x64.msi) |
+| macOS (Intel and Apple Silicon) | [Openbar5000-macOS-universal.dmg](https://github.com/Rustingtoast/Openbar5000/releases/latest/download/Openbar5000-macOS-universal.dmg) |
+| Linux (Flatpak, x86_64) | [Openbar5000-Linux-x86_64.flatpak](https://github.com/Rustingtoast/Openbar5000/releases/latest/download/Openbar5000-Linux-x86_64.flatpak) |
+| Linux (Flatpak, ARM64) | [Openbar5000-Linux-aarch64.flatpak](https://github.com/Rustingtoast/Openbar5000/releases/latest/download/Openbar5000-Linux-aarch64.flatpak) |
+
+- **Windows**: open the `.msi` and follow the installer. The installer isn't
+  signed yet, so Windows may say it "protected your PC": click **More info**,
+  then **Run anyway**. To update, install a newer `.msi` over the old one.
+- **macOS**: open the `.dmg` and drag Openbar5000 onto Applications. The app
+  isn't notarized by Apple yet, so the first time it's blocked: go to
+  **System Settings > Privacy & Security** and click **Open Anyway**.
+- **Linux**: install with your software center by opening the file, or run:
+  ```bash
+  flatpak install --user Openbar5000-Linux-x86_64.flatpak
+  ```
+  Flatpak gets the runtime it needs from [Flathub](https://flathub.org/setup).
+  Openbar5000 is then in your app menu, or run
+  `flatpak run io.github.rustingtoast.Openbar5000`.
+
 ## Getting Started
+
+Building from source, to work on Openbar5000. To just use it, see
+[Install](#install).
 
 ### Prerequisites
 
@@ -58,7 +87,7 @@ For a quick local release build:
 cargo build --release -p app
 ```
 
-For a packaged build placed under `dist/<platform>/`, use the scripts in [`compile/`](compile/) — see [`compile/README.md`](compile/README.md) for details and platform notes. On Debian/Ubuntu, the Linux script also produces an installable `.deb` package; on macOS, a proper `.app` bundle; on Windows, an MSI installer.
+For a packaged build placed under `dist/<platform>/`, use the scripts in [`compile/`](compile/) — see [`compile/README.md`](compile/README.md) for details and platform notes: an MSI installer on Windows, an `.app` bundle on a disk image on macOS, and a Flatpak on Linux. The same scripts make the release downloads, on GitHub Actions (see [Publishing a release](compile/README.md#publishing-a-release)).
 
 ## Discord Rich Presence
 
@@ -134,7 +163,8 @@ folder next to the app's settings:
 
 - **Windows**: `%APPDATA%\Openbar5000\crash-reports`
 - **macOS**: `~/Library/Application Support/Openbar5000/crash-reports`
-- **Linux**: `~/.config/openbar5000/crash-reports`
+- **Linux**: `~/.var/app/io.github.rustingtoast.Openbar5000/config/openbar5000/crash-reports`
+  (`~/.config/openbar5000/crash-reports` when run outside Flatpak)
 
 How it works: a small second copy of Openbar5000 runs alongside it,
 idle, and watches for it to crash. That way the report doesn't depend on

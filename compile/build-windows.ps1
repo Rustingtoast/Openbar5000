@@ -40,11 +40,14 @@ if (-not (Get-Command wix -ErrorAction SilentlyContinue)) {
 }
 
 # The UI extension (WixUI dialogs) isn't installed by default -- add it if
-# missing rather than failing the build over a one-time setup step.
+# missing rather than failing the build over a one-time setup step. It has
+# to be the same version as wix itself ("7.0.0+abc123" -> 7.0.0), not
+# whatever is newest.
+$WixVersion = ((& wix --version) -split '\+', 2)[0].Trim()
 $extensions = & wix extension list --global 2>$null
-if (-not ($extensions -match "WixToolset\.UI\.wixext")) {
-    Write-Host "==> Installing WiX UI extension..."
-    & wix extension add WixToolset.UI.wixext --global
+if (-not ($extensions -match "WixToolset\.UI\.wixext[\s/]+$([regex]::Escape($WixVersion))")) {
+    Write-Host "==> Installing WiX UI extension $WixVersion..."
+    & wix extension add "WixToolset.UI.wixext/$WixVersion" --global
     if ($LASTEXITCODE -ne 0) {
         Write-Error "Failed to install the WiX UI extension (exit code $LASTEXITCODE)."
         exit 1
