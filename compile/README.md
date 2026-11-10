@@ -7,18 +7,64 @@ and copies the resulting binary to a predictable location — nothing magic.
 | Platform | Script | Output |
 |---|---|---|
 | macOS | `./compile/build-macos.sh` | `dist/macos/openbar5000` + `dist/macos/Openbar5000.app` + `dist/macos/Openbar5000-<version>-<arch>.dmg` |
-| Linux | `./compile/build-linux.sh` | `dist/linux/openbar5000` + `dist/linux/openbar5000_<version>_<arch>.deb` |
-| Linux (any distro) | `./compile/build-flatpak.sh` | `dist/flatpak/Openbar5000-<version>-<arch>.flatpak` |
+| Linux (Flatpak) | `./compile/build-flatpak.sh` | `dist/flatpak/Openbar5000-<version>-<arch>.flatpak` |
 | Windows | `.\compile\build-windows.ps1` | `dist\windows\openbar5000.exe` + `dist\windows\Openbar5000-Setup-<version>.msi` |
+
+Linux is shipped only as a Flatpak, which runs on every distribution.
 
 ## Important: these build natively, not cross-platform
 
 Because Openbar5000 links against platform-native audio (CoreAudio/ALSA/WASAPI
 via `cpal`) and GUI backends (via Slint/winit), **each script must be run on
 its own target OS** — there's no single machine that cross-compiles all
-three. Run the macOS script on a Mac, the Linux script on Linux, and the
-Windows script on Windows (or use a CI matrix with one job per OS, which is
-the standard way to produce all three from one trigger).
+three. Run the macOS script on a Mac, the Flatpak script on Linux, and the
+Windows script on Windows. The release workflow below does exactly that,
+with one GitHub Actions machine per OS.
+
+## Publishing a release
+
+`.github/workflows/release.yml` runs all the scripts on GitHub's machines and
+publishes what they make on a GitHub Release, so people install Openbar5000
+by downloading one file:
+
+| Platform | Release file |
+|---|---|
+| Windows | `Openbar5000-Windows-x64.msi` |
+| macOS (Intel and Apple Silicon) | `Openbar5000-macOS-universal.dmg` |
+| Linux | `Openbar5000-Linux-x86_64.flatpak`, `Openbar5000-Linux-aarch64.flatpak` |
+
+The names carry no version, so
+`https://github.com/Rustingtoast/Openbar5000/releases/latest/download/<file>`
+always gets the newest one; the main README links to those.
+
+To release a version:
+
+1. Set `version` in the root `Cargo.toml` (e.g. `0.9.0-beta`).
+2. Add a `<release>` line for it to
+   `flatpak/io.github.rustingtoast.Openbar5000.metainfo.xml`, with a `~`
+   instead of the `-` (`0.9.0~beta`).
+3. Commit that to `main`, then tag it and push the tag:
+   ```bash
+   git tag v0.9.0-beta
+   git push origin v0.9.0-beta
+   ```
+
+The workflow stops before building anything if the tag isn't `v` plus the
+`Cargo.toml` version, or if the metainfo has no entry for it. When every
+build has passed, it creates the release with notes generated from the merged
+pull requests. Releases are published as full releases even for a `-beta`
+version: GitHub's "latest release" (and so the download links) skips
+pre-releases.
+
+To try the installers without releasing, run the workflow by hand
+(**Actions > Release > Run workflow**): it builds everything and attaches the
+files to the run as artifacts, without creating a release. It also runs
+this way on every pull request that changes `compile/` or the workflow, so
+packaging that no longer builds shows up before a release does.
+
+On the Windows machine the workflow installs WiX 7 and accepts its
+[Open Source Maintenance Fee EULA](https://docs.firegiant.com/wix/osmf/)
+(`wix eula accept wix7`); WiX 7 won't run otherwise.
 
 ## macOS: universal binaries
 
@@ -63,31 +109,11 @@ the other: dragging the app onto Applications installs it.
   render `dmg-background.tiff` again with the commands in its header comment
   (they need `rsvg-convert`, from Homebrew's `librsvg`).
 
-## Linux: .deb packaging
-
-On Debian/Ubuntu-based systems (where `dpkg-deb` is available), `build-linux.sh`
-additionally packages the binary into `dist/linux/openbar5000_<version>_<arch>.deb`,
-with a `.desktop` entry (so it shows up in application launchers), the app
-icon installed into the standard `hicolor` icon theme paths (both the
-scalable SVG and a 256px PNG fallback), and a `Depends:` line listing the
-runtime shared libraries it needs (ALSA, fontconfig, X11/libGL). Install it
-with:
-
-```bash
-sudo dpkg -i dist/linux/openbar5000_*.deb
-sudo apt-get install -f   # only needed if dpkg reports missing dependencies
-```
-
-On non-Debian distros (Fedora, Arch, etc.) `dpkg-deb` won't be present, so
-this step is skipped automatically and only the raw binary is produced —
-that's expected, not an error.
-
 ## Linux: Flatpak (any distribution)
 
 `build-flatpak.sh` packages Openbar5000 as a Flatpak, which installs and runs
 the same way on every distribution with Flatpak (Fedora, Arch, openSUSE,
-Debian/Ubuntu, Mint, ...). It sits next to `build-linux.sh` -- the raw
-binary and `.deb` are still built by that script as before.
+Debian/Ubuntu, Mint, ...).
 
 ```bash
 ./compile/build-flatpak.sh            # dist/flatpak/Openbar5000-<version>-<arch>.flatpak
@@ -119,8 +145,9 @@ access to the Music folder (lyrics are saved into files) and read-only
 access to the rest of home and to external drives (`/media`, `/run/media`),
 MPRIS for media keys, and Discord's IPC socket for Rich Presence. Files
 chosen in the Open dialogs work from anywhere, through the desktop portal.
-Settings live in `~/.var/app/io.github.rustingtoast.Openbar5000/config/`,
-separate from a `.deb` install's `~/.config/openbar5000`.
+Settings live in `~/.var/app/io.github.rustingtoast.Openbar5000/config/openbar5000/`,
+separate from `~/.config/openbar5000`, which a build run outside Flatpak
+(`cargo run`) uses.
 
 The bundle is built for the build machine's architecture (`x86_64` on a
 normal PC, `aarch64` on ARM).
@@ -143,8 +170,8 @@ privacy statement in `compile\installer-terms.txt`, then the repository's
 separate paragraphs, `# ` starts a heading and `- ` a bullet point. If what
 the app sends over the network changes, update its privacy section.
 
-Windows doesn't ship a packager the way Debian ships `dpkg-deb`, so this
-step requires installing the WiX CLI first, as a global .NET tool (the .NET
+Windows doesn't come with an MSI packager, so this step requires installing
+the WiX CLI first, as a global .NET tool (the .NET
 SDK is the only prerequisite -- [dotnet.microsoft.com/download](https://dotnet.microsoft.com/download)):
 
 ```powershell
@@ -152,7 +179,7 @@ dotnet tool install --global wix
 ```
 
 `build-windows.ps1` installs the required `WixToolset.UI.wixext` extension
-itself on first run if it's missing. If `wix` isn't found at all, MSI
+itself on first run if it's missing, in the same version as `wix`. If `wix` isn't found at all, MSI
 packaging is skipped with a warning pointing at the install command above --
 the raw `.exe` is still produced either way.
 

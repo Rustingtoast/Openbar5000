@@ -1,0 +1,167 @@
+# Builds the installers for every platform and publishes them on a GitHub
+# Release, so nobody needs Rust, MSVC or WiX to install Openbar5000.
+#
+#   Windows: Openbar5000-Windows-x64.msi
+#   macOS:   Openbar5000-macOS-universal.dmg      (Intel and Apple Silicon)
+#   Linux:   Openbar5000-Linux-x86_64.flatpak
+#            Openbar5000-Linux-aarch64.flatpak
+#
+# The file names carry no version, so
+#   https://github.com/Rustingtoast/Openbar5000/releases/latest/download/<file>
+# always points at the newest release (the README links to those).
+#
+# Pushing a tag "v<version>" (the version in Cargo.toml) builds and
+# publishes a release. Running it by hand (Actions > Release > Run
+# workflow), or a pull request that changes the packaging, only builds: the
+# installers are attached to the run as artifacts, to try out before
+# tagging. See compile/README.md.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "compile/**"
+      - ".github/workflows/release.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Check version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        name: Tag, Cargo.toml and metainfo agree
+        shell: bash
+        run: |
+          version="$(grep -m1 '^version' Cargo.toml | sed -E 's/version = "(.*)"/\1/')"
+          echo "Cargo.toml version: $version"
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match Cargo.toml's version $version (expected v$version)."
+            exit 1
+          fi
+          # AppStream writes a pre-release after a "~" (0.8.0~beta).
+          appstream="$(echo "$version" | sed 's/-/~/')"
+          if ! grep -q "<release version=\"$appstream\"" compile/flatpak/io.github.rustingtoast.Openbar5000.metainfo.xml; then
+            echo "::error::compile/flatpak/io.github.rustingtoast.Openbar5000.metainfo.xml has no <release version=\"$appstream\"> entry."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  windows:
+    name: Windows (MSI)
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust
+        run: rustup update stable --no-self-update
+      - name: WiX
+        run: |
+          dotnet tool install --global wix --version "7.*"
+          # WiX 7 won't run until the Open Source Maintenance Fee EULA is
+          # accepted: https://docs.firegiant.com/wix/osmf/
+          wix eula accept wix7
+      - name: Build
+        run: .\compile\build-windows.ps1
+      - name: Rename
+        run: Move-Item "dist\windows\Openbar5000-Setup-${{ needs.version.outputs.version }}.msi" "dist\windows\Openbar5000-Windows-x64.msi"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/windows/Openbar5000-Windows-x64.msi
+          if-no-files-found: error
+
+  macos:
+    name: macOS (DMG)
+    needs: version
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust
+        run: rustup update stable --no-self-update
+      - name: Build
+        run: ./compile/build-macos.sh --universal
+      - name: Rename
+        run: mv "dist/macos/Openbar5000-${{ needs.version.outputs.version }}-universal.dmg" dist/macos/Openbar5000-macOS-universal.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/macos/Openbar5000-macOS-universal.dmg
+          if-no-files-found: error
+
+  flatpak:
+    name: Linux (Flatpak, ${{ matrix.arch }})
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: |
+          sudo apt-get update
+          # flatpak and its builder; the dev headers are for the check
+          # build that tells build-flatpak.sh which Skia library to fetch.
+          sudo apt-get install -y flatpak flatpak-builder \
+              build-essential pkg-config libasound2-dev libxkbcommon-dev \
+              libxcb1-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+              libgl1-mesa-dev libfontconfig1-dev
+          # Ubuntu 24.04 keeps unprivileged user namespaces from programs
+          # without an AppArmor profile, and the build sandbox needs them.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          rustup update stable --no-self-update
+      - name: Build
+        run: ./compile/build-flatpak.sh
+      - name: Rename
+        run: mv "dist/flatpak/Openbar5000-${{ needs.version.outputs.version }}-${{ matrix.arch }}.flatpak" "dist/flatpak/Openbar5000-Linux-${{ matrix.arch }}.flatpak"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flatpak-${{ matrix.arch }}
+          path: dist/flatpak/Openbar5000-Linux-${{ matrix.arch }}.flatpak
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    if: github.ref_type == 'tag'
+    needs: [version, windows, macos, flatpak]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: installers
+          merge-multiple: true
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          ls -l installers
+          # Published as a full release, not a pre-release, even for a
+          # "-beta" version: releases/latest (and the README's download
+          # links) skips pre-releases.
+          gh release create "$GITHUB_REF_NAME" installers/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Openbar5000 $VERSION" \
+              --generate-notes \
+              --latest

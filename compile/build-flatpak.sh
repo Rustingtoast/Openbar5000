@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Builds Openbar5000 as a Flatpak, which runs on any Linux distribution with
 # Flatpak installed (Fedora, Arch, openSUSE, Debian/Ubuntu, Mint, ...).
-# This is an addition to build-linux.sh (raw binary + .deb), not a
-# replacement for it.
+# It's the only way Openbar5000 is packaged for Linux.
 #
 # Usage:
 #   ./compile/build-flatpak.sh            # build the .flatpak bundle
@@ -118,6 +117,11 @@ curl -fsSL -o "$SKIA_DIR/skia-binaries-$SKIA_KEY.tar.gz" \
 echo "    skia-binaries-$SKIA_KEY ($SKIA_TAG)"
 
 echo "==> Building the Flatpak ($VERSION, $ARCH)..."
+# CI machines may lack the FUSE mount flatpak-builder protects its cache
+# with; the cache is thrown away after each CI build anyway.
+if [[ "${CI:-}" == "true" ]]; then
+    BUILDER+=(--disable-rofiles-fuse)
+fi
 "${BUILDER[@]}" \
     --user \
     --force-clean \
