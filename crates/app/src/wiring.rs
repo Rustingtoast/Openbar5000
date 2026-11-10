@@ -47,7 +47,7 @@ const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// `version` as the title bar and About show it: a pre-release named the
 /// way it's said, so "0.7.1-alpha" reads "0.7.1 Alpha".
-fn display_version(version: &str) -> String {
+pub(crate) fn display_version(version: &str) -> String {
     match version.split_once('-') {
         Some((release, stage)) => {
             let mut stage = stage.chars();
@@ -2432,7 +2432,17 @@ fn report_renderer(window: &MainWindow, settings_window: &SettingsWindow, frames
         if matches!(state, slint::RenderingState::AfterRendering) {
             drawn.drawn();
         }
-        if !matches!(state, slint::RenderingState::RenderingSetup) || reported.replace(true) {
+        if !matches!(state, slint::RenderingState::RenderingSetup) {
+            return;
+        }
+        // At every setup: one after a lost device may come with a new one.
+        if let slint::GraphicsAPI::WGPU30 { device, .. } = api {
+            survive_gpu_errors(device);
+        }
+        if reported.replace(true) {
+            // Only after drawing failed, as when the GPU device is lost (see
+            // `patches/README.md`).
+            tracing::info!("renderer: set up again");
             return;
         }
         let label = match api {
@@ -2495,6 +2505,21 @@ fn report_renderer(window: &MainWindow, settings_window: &SettingsWindow, frames
             settings_window.set_renderer_info(software_label.into());
         }
     });
+}
+
+/// wgpu's answer to an error nothing asked to catch is a panic: running out
+/// of video memory -- which a game can take all of -- ended the app. Logged
+/// instead, with the next frame trying again; repeats only at the 1st, 2nd,
+/// 4th, 8th, ... so a frame failing at 60 fps doesn't flood the log. (A lost
+/// device is the renderer's to handle, and log: see `patches/README.md`.)
+fn survive_gpu_errors(device: &slint::wgpu_30::wgpu::Device) {
+    let errors = Arc::new(AtomicU64::new(0));
+    device.on_uncaptured_error(Arc::new(move |error| {
+        let count = errors.fetch_add(1, Ordering::Relaxed) + 1;
+        if count.is_power_of_two() {
+            tracing::error!("GPU error (#{count}): {error}");
+        }
+    }));
 }
 
 /// The closed outline of one channel's waveform as SVG path commands, in a
