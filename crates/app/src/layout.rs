@@ -18,6 +18,9 @@ pub const TAB_STRIP_HEIGHT: f32 = 22.0;
 const DEFAULT_ALBUM_ART_SIZE: f32 = 64.0;
 /// Thickness of a divider's grab area, centered on the boundary.
 pub const DIVIDER_THICKNESS: f32 = 6.0;
+/// Saved with a layout: one saved by an older build is brought up to date
+/// as it's loaded (see `Layout::upgrade`).
+const LAYOUT_VERSION: u32 = 1;
 
 /// Every panel type the window knows how to draw. This is the panel
 /// registry: a new panel is a new variant here (with its id, label and
@@ -268,6 +271,10 @@ pub struct Placement {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Layout {
     pub root: Node,
+    /// The [`LAYOUT_VERSION`] it's up to date with: 0 when saved by a build
+    /// from before there were versions.
+    #[serde(default)]
+    pub version: u32,
 }
 
 impl Layout {
@@ -372,6 +379,7 @@ impl Layout {
                     panel(PanelKind::StatusBar),
                 ],
             },
+            version: LAYOUT_VERSION,
         }
     }
 
@@ -380,9 +388,22 @@ impl Layout {
     }
 
     /// `None` if `json` isn't a valid saved layout (e.g. from a newer
-    /// build); callers fall back to the default.
+    /// build); callers fall back to the default. One saved by an older
+    /// build is brought up to date.
     pub fn from_json(json: &str) -> Option<Self> {
-        serde_json::from_str(json).ok()
+        let mut layout: Self = serde_json::from_str(json).ok()?;
+        layout.upgrade();
+        Some(layout)
+    }
+
+    /// Rearranges what's still arranged as an older build's default was,
+    /// the way the default has changed since. Once only: arranged so again
+    /// on purpose, it stays.
+    fn upgrade(&mut self) {
+        if self.version < 1 {
+            upgrade_seek_row(&mut self.root);
+        }
+        self.version = self.version.max(LAYOUT_VERSION);
     }
 
     #[cfg(test)]
@@ -745,6 +766,68 @@ impl Layout {
     }
 }
 
+/// Version 1 (issue #10's default): the seek bar row -- elapsed time,
+/// slider, remaining time and controls, across the window -- over the
+/// visualizations with the album art beside them. The slider ran past the
+/// waveform, which the album art leaves narrower. It becomes a seek slider
+/// at the top of the visualizations' column, one width with the waveform,
+/// and the playback options above the album art.
+fn upgrade_seek_row(node: &mut Node) {
+    match node {
+        Node::Panel(_) => {}
+        Node::Tabs { tabs, .. } => tabs.iter_mut().for_each(upgrade_seek_row),
+        Node::Split { axis, children } => {
+            if *axis == Axis::Vertical {
+                if let Some(index) = children.windows(2).position(|pair| is_old_seek_row(&pair[0], &pair[1])) {
+                    children.remove(index);
+                    put_seek_slider_in(&mut children[index]);
+                }
+            }
+            for child in children.iter_mut() {
+                upgrade_seek_row(&mut child.node);
+            }
+        }
+    }
+}
+
+/// The seek bar, and below it a row of two with the album art at the right.
+fn is_old_seek_row(seek: &Child, row: &Child) -> bool {
+    seek.node == Node::Panel(PanelKind::SeekBar)
+        && matches!(&row.node, Node::Split { axis: Axis::Horizontal, children }
+            if children.len() == 2 && children[1].node == Node::Panel(PanelKind::AlbumArt))
+}
+
+/// The row below the old seek bar row (see `is_old_seek_row`), given a seek
+/// slider over its left column and the playback options over the album
+/// art; taller by the slider, so the rest keep their sizes.
+fn put_seek_slider_in(row: &mut Child) {
+    let Node::Split { children, .. } = &mut row.node else {
+        return;
+    };
+    let panel = |kind: PanelKind| Child {
+        size: kind.default_size(Axis::Vertical),
+        node: Node::Panel(kind),
+    };
+    let rest = |node: Node| Child { size: Size::Weight(1.0), node };
+    match &mut children[0].node {
+        Node::Split { axis: Axis::Vertical, children: column } => column.insert(0, panel(PanelKind::SeekSlider)),
+        left => {
+            let below = std::mem::replace(left, Node::Panel(PanelKind::Empty));
+            *left = Node::Split {
+                axis: Axis::Vertical,
+                children: vec![panel(PanelKind::SeekSlider), rest(below)],
+            };
+        }
+    }
+    children[1].node = Node::Split {
+        axis: Axis::Vertical,
+        children: vec![panel(PanelKind::PlaybackOptions), rest(Node::Panel(PanelKind::AlbumArt))],
+    };
+    if let Size::Fixed(height) = &mut row.size {
+        *height += PanelKind::SeekSlider.natural_height().unwrap_or_default();
+    }
+}
+
 fn find_path(node: &Node, path: &mut Path, pred: &dyn Fn(&Node) -> bool) -> Option<Path> {
     if pred(node) {
         return Some(path.clone());
@@ -993,6 +1076,42 @@ mod tests {
                     panel(PanelKind::StatusBar),
                 ],
             },
+            version: LAYOUT_VERSION,
+        }
+    }
+
+    /// The default before issue #10's, as an older build saved it: the seek
+    /// bar row across the window, over the visualizations with the album
+    /// art beside them.
+    fn old_default() -> Layout {
+        let panel = |kind: PanelKind| Child {
+            size: kind.default_size(Axis::Vertical),
+            node: Node::Panel(kind),
+        };
+        let visualizations = Node::Split {
+            axis: Axis::Vertical,
+            children: vec![panel(PanelKind::Waveform), panel(PanelKind::Spectrum)],
+        };
+        Layout {
+            root: Node::Split {
+                axis: Axis::Vertical,
+                children: vec![
+                    Child { size: Size::Weight(1.0), node: Node::Panel(PanelKind::Playlist) },
+                    panel(PanelKind::SeekBar),
+                    Child {
+                        size: Size::Fixed(230.0),
+                        node: Node::Split {
+                            axis: Axis::Horizontal,
+                            children: vec![
+                                Child { size: Size::Weight(1.0), node: visualizations },
+                                Child { size: Size::Fixed(230.0), node: Node::Panel(PanelKind::AlbumArt) },
+                            ],
+                        },
+                    },
+                    panel(PanelKind::StatusBar),
+                ],
+            },
+            version: 0,
         }
     }
 
@@ -1121,6 +1240,7 @@ mod tests {
 
         let mut single = Layout {
             root: Node::Panel(PanelKind::Playlist),
+            version: LAYOUT_VERSION,
         };
         single.remove(&[]);
         assert_eq!(single.root, Node::Panel(PanelKind::Empty));
@@ -1192,7 +1312,8 @@ mod tests {
         layout.shift(&[0], false);
         layout.shift(&[4], true);
         assert_eq!(kinds_in_order(&layout)[0], PanelKind::Playlist);
-        assert_eq!(Layout { root: Node::Panel(PanelKind::Playlist) }.sibling_moves(&[]), SiblingMoves::default());
+        let single = Layout { root: Node::Panel(PanelKind::Playlist), version: LAYOUT_VERSION };
+        assert_eq!(single.sibling_moves(&[]), SiblingMoves::default());
     }
 
     #[test]
@@ -1265,6 +1386,41 @@ mod tests {
             drop_preview(&rect, Drop::Beside(Side::Right)),
             Rect { x: 300.0, y: 0.0, width: 200.0, height: 200.0 }
         );
+    }
+
+    #[test]
+    fn an_old_default_seek_bar_row_becomes_a_slider_over_the_waveform() {
+        // Saved before layouts had versions, as on a Mac upgraded from 0.7:
+        // the seek bar ran past the waveform, the album art beside that.
+        let saved = old_default().to_json().replace(",\"version\":0", "");
+        let upgraded = Layout::from_json(&saved).unwrap();
+        assert_eq!(upgraded.version, LAYOUT_VERSION);
+        let placed = upgraded.place(1400.0, 700.0);
+        assert_eq!(
+            slot_kinds(&placed),
+            [
+                PanelKind::Playlist,
+                PanelKind::SeekSlider,
+                PanelKind::Waveform,
+                PanelKind::Spectrum,
+                PanelKind::PlaybackOptions,
+                PanelKind::AlbumArt,
+                PanelKind::StatusBar
+            ]
+        );
+        let rect = |kind| placed.slots.iter().find(|s| s.kind == kind).unwrap().rect;
+        let (slider, waveform) = (rect(PanelKind::SeekSlider), rect(PanelKind::Waveform));
+        assert_eq!((slider.x, slider.width), (waveform.x, waveform.width));
+        assert_eq!(slider.y + slider.height, waveform.y);
+        // The visualizations and the album art keep their sizes.
+        assert_eq!((waveform.height, rect(PanelKind::Spectrum).height), (80.0, 150.0));
+        let (options, art) = (rect(PanelKind::PlaybackOptions), rect(PanelKind::AlbumArt));
+        assert_eq!((options.y, options.y + options.height), (slider.y, art.y));
+        assert_eq!((art.width, art.height), (230.0, 230.0));
+
+        // Only once: arranged so again on purpose, it stays.
+        let chosen = Layout { version: LAYOUT_VERSION, ..old_default() };
+        assert_eq!(Layout::from_json(&chosen.to_json()), Some(chosen));
     }
 
     #[test]

@@ -181,8 +181,9 @@ fn screens(event_loop: &ActiveEventLoop) -> Vec<Screen> {
 }
 
 /// The main window's placement: restored as the event loop starts, followed
-/// while it runs, saved with [`Self::save`].
+/// while it runs, saved as it ends.
 pub struct WindowPlacement {
+    store: Rc<Store>,
     window: OnceCell<slint::Weak<MainWindow>>,
     /// As saved last time, until restored (or found not to fit).
     saved: Cell<Option<Placement>>,
@@ -193,12 +194,13 @@ pub struct WindowPlacement {
 }
 
 impl WindowPlacement {
-    pub fn load(store: &Store) -> Rc<Self> {
+    pub fn load(store: &Rc<Store>) -> Rc<Self> {
         let saved = store
             .get_setting(SETTING)
             .and_then(|json| serde_json::from_str::<Placement>(&json).ok())
             .filter(|saved| saved.width > 0.0 && saved.height > 0.0 && saved.scale > 0.0);
         Rc::new(Self {
+            store: store.clone(),
             window: OnceCell::new(),
             saved: Cell::new(saved),
             current: Cell::new(None),
@@ -217,9 +219,9 @@ impl WindowPlacement {
         let _ = self.window.set(window.as_weak());
     }
 
-    pub fn save(&self, store: &Store) {
+    pub fn save(&self) {
         if let Some(json) = self.current.get().and_then(|current| serde_json::to_string(&current).ok()) {
-            store.set_settings(&[(SETTING, json)]);
+            self.store.set_settings(&[(SETTING, json)]);
         }
     }
 
@@ -322,6 +324,14 @@ impl CustomApplicationHandler for Handler {
         }
         EventResult::Propagate
     }
+
+    /// On macOS, quitting from the app menu (Cmd+Q), the Dock or by logging
+    /// out ends here: AppKit ends the process right after, never returning
+    /// to `main` to save it there.
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) -> EventResult {
+        self.0.save();
+        EventResult::Propagate
+    }
 }
 
 #[cfg(test)]
@@ -390,11 +400,11 @@ mod tests {
 
     #[test]
     fn placements_round_trip_through_the_store() {
-        let store = Store::open_in_memory().unwrap();
+        let store = Rc::new(Store::open_in_memory().unwrap());
         assert!(WindowPlacement::load(&store).saved.get().is_none());
         let placement = WindowPlacement::load(&store);
         placement.current.set(Some(Placement { maximized: true, ..placed(rect(10, 20, 900, 650), 1.25) }));
-        placement.save(&store);
+        placement.save();
         assert_eq!(WindowPlacement::load(&store).saved.get(), placement.current.get());
         store.set_settings(&[(SETTING, "not json".to_string())]);
         assert!(WindowPlacement::load(&store).saved.get().is_none());
