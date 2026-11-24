@@ -58,6 +58,18 @@ pub enum EngineCommand {
     LoadFolder(std::path::PathBuf),
     /// Jump to a specific index in the current playlist and play it.
     PlayIndex(usize),
+    /// Jumps to a random track (the Random button, issue #38), picked from
+    /// `among` -- the playlist indices the playlist view shows, since its
+    /// search can hide some -- or from the whole playlist when `None`.
+    ///
+    /// Never the track playing or paused, unless it's the only choice, so
+    /// the song always changes; after a stop, any track can come up. In
+    /// shuffle mode the pick comes from the tracks the shuffle hasn't
+    /// played yet, and the shuffle carries on from it. Like Next, a paused
+    /// track change stays paused; from a stop it starts playing, since
+    /// playing a song is what the button is for. Does nothing when there's
+    /// nothing to pick.
+    PlayRandom { among: Option<Vec<usize>> },
     /// Removes a single track from the playlist by index.
     RemoveIndex(usize),
     /// Removes several tracks at once (indices into the current playlist).

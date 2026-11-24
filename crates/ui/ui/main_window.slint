@@ -192,6 +192,7 @@ export component MainWindow inherits Window {
     callback stop-clicked();
     callback next-clicked();
     callback previous-clicked();
+    callback random-clicked();
     callback seek-requested(float);
     callback volume-changed(float);
     callback shuffle-clicked();
@@ -348,6 +349,7 @@ export component MainWindow inherits Window {
             MenuSeparator {}
             MenuItem { title: "Previous"; activated => { root.previous-clicked(); } }
             MenuItem { title: "Next"; activated => { root.next-clicked(); } }
+            MenuItem { title: "Random"; activated => { root.random-clicked(); } }
             MenuSeparator {}
             Menu {
                 title: "Equalizer";
@@ -500,6 +502,7 @@ export component MainWindow inherits Window {
                 stop-clicked => { root.stop-clicked(); }
                 next-clicked => { root.next-clicked(); }
                 previous-clicked => { root.previous-clicked(); }
+                random-clicked => { root.random-clicked(); }
                 open-files-clicked => { root.open-files-clicked(); }
                 open-folder-clicked => { root.open-folder-clicked(); }
             }

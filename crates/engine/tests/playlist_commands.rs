@@ -3,7 +3,7 @@
 //! the mutation (added alongside the "Open Folder"/"Properties" UI refinement,
 //! which depends on this event always describing the playlist accurately).
 
-use engine::{EngineCommand, EngineEvent, PlaybackEngine};
+use engine::{EngineCommand, EngineEvent, PlaybackEngine, PlaybackMode, PlaybackState};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -175,4 +175,203 @@ fn play_library_reports_the_throwaway_playlist_id_and_plays_the_picked_track() {
     assert_eq!(id, engine::TEMP_PLAYLIST_ID);
 
     assert_eq!(next_track_changed(&engine), 1);
+}
+
+/// Every event until one matches `done` (included), failing the test if
+/// none does within a few seconds.
+fn events_until(engine: &PlaybackEngine, done: impl Fn(&EngineEvent) -> bool) -> Vec<EngineEvent> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut events = Vec::new();
+    while Instant::now() < deadline {
+        match engine.try_recv_event() {
+            Some(event) => {
+                let finished = done(&event);
+                events.push(event);
+                if finished {
+                    return events;
+                }
+            }
+            None => std::thread::sleep(Duration::from_millis(10)),
+        }
+    }
+    panic!("timed out; got {events:?}");
+}
+
+/// Every event arriving within `wait`.
+fn events_for(engine: &PlaybackEngine, wait: Duration) -> Vec<EngineEvent> {
+    std::thread::sleep(wait);
+    std::iter::from_fn(|| engine.try_recv_event()).collect()
+}
+
+fn is_state(event: &EngineEvent, state: PlaybackState) -> bool {
+    matches!(event, EngineEvent::PlaybackStateChanged(s) if *s == state)
+}
+
+/// A muted engine holding `count` copies of the fixture.
+fn engine_with_tracks(count: usize) -> PlaybackEngine {
+    let engine = PlaybackEngine::spawn();
+    engine.send(EngineCommand::SetVolume(0.0));
+    engine.send(EngineCommand::LoadPlaylist(vec![fixture(); count]));
+    next_playlist_update(&engine);
+    engine
+}
+
+const RANDOM: EngineCommand = EngineCommand::PlayRandom { among: None };
+
+#[test]
+fn play_random_starts_another_track_from_the_playlist() {
+    let engine = PlaybackEngine::spawn();
+    engine.send(EngineCommand::SetVolume(0.0));
+
+    // Nothing to pick from: nothing happens.
+    engine.send(RANDOM);
+    let reacted = events_for(&engine, Duration::from_millis(200)).iter().any(|event| {
+        matches!(event, EngineEvent::TrackChanged { .. } | EngineEvent::PlaybackStateChanged(_))
+    });
+    assert!(!reacted, "Random on an empty playlist must do nothing");
+
+    engine.send(EngineCommand::LoadPlaylist(vec![fixture(); 3]));
+    next_playlist_update(&engine);
+
+    // From a stop, it plays.
+    engine.send(RANDOM);
+    let events = events_until(&engine, |e| is_state(e, PlaybackState::Playing));
+    let mut current = events
+        .iter()
+        .find_map(|e| match e {
+            EngineEvent::TrackChanged { index, .. } => Some(*index),
+            _ => None,
+        })
+        .expect("Random from a stop loads a track");
+    assert!(current < 3);
+
+    // Once one plays, Random always moves to a different one.
+    for _ in 0..10 {
+        engine.send(RANDOM);
+        let next = next_track_changed(&engine);
+        assert!(next < 3);
+        assert_ne!(next, current, "Random replayed the track that was playing");
+        current = next;
+    }
+}
+
+#[test]
+fn play_random_only_picks_among_the_tracks_given() {
+    let engine = engine_with_tracks(5);
+    engine.send(EngineCommand::PlayIndex(0));
+    assert_eq!(next_track_changed(&engine), 0);
+
+    // Track 0 plays but isn't among them (a search hides it): any of them.
+    // Then, never the one playing: they alternate. 9 is stale, ignored.
+    let among = || EngineCommand::PlayRandom { among: Some(vec![1, 3, 9]) };
+    engine.send(among());
+    let mut current = next_track_changed(&engine);
+    assert!(current == 1 || current == 3);
+    for _ in 0..6 {
+        engine.send(among());
+        let next = next_track_changed(&engine);
+        assert_eq!(next, 4 - current);
+        current = next;
+    }
+
+    // Nothing to pick from: nothing happens.
+    engine.send(EngineCommand::PlayRandom { among: Some(vec![]) });
+    let reacted = events_for(&engine, Duration::from_millis(200))
+        .iter()
+        .any(|e| matches!(e, EngineEvent::TrackChanged { .. }));
+    assert!(!reacted, "Random with nothing showing must do nothing");
+}
+
+#[test]
+fn play_random_while_paused_changes_the_track_but_stays_paused() {
+    let engine = engine_with_tracks(3);
+    engine.send(EngineCommand::PlayIndex(0));
+    assert_eq!(next_track_changed(&engine), 0);
+    engine.send(EngineCommand::Pause);
+    events_until(&engine, |e| is_state(e, PlaybackState::Paused));
+
+    engine.send(RANDOM);
+    assert_ne!(next_track_changed(&engine), 0);
+    let started = events_for(&engine, Duration::from_millis(300))
+        .iter()
+        .any(|e| is_state(e, PlaybackState::Playing));
+    assert!(!started, "Random started a paused player, unlike Next");
+}
+
+#[test]
+fn play_random_after_a_stop_can_pick_the_last_track() {
+    let engine = engine_with_tracks(2);
+    let mut last = None;
+    let mut picked_last = false;
+    // Two tracks: from a stop each comes up half the time, so the last
+    // one turns up within 30 tries but for a 1 in 2^30 chance.
+    for _ in 0..30 {
+        engine.send(EngineCommand::Stop);
+        engine.send(RANDOM);
+        let pick = next_track_changed(&engine);
+        picked_last |= Some(pick) == last;
+        last = Some(pick);
+    }
+    assert!(picked_last, "after a stop, Random never picked the track stopped on");
+}
+
+#[test]
+fn play_random_in_shuffle_mode_carries_the_shuffle_on() {
+    let engine = engine_with_tracks(4);
+    engine.send(EngineCommand::SetPlaybackMode(PlaybackMode::Shuffle));
+    engine.send(EngineCommand::PlayIndex(2));
+    assert_eq!(next_track_changed(&engine), 2);
+
+    // Random never brings back a track this cycle already played: the
+    // starting track and three Randoms are all four.
+    let mut heard = vec![2];
+    for _ in 0..3 {
+        engine.send(RANDOM);
+        heard.push(next_track_changed(&engine));
+    }
+    let mut sorted = heard.clone();
+    sorted.sort_unstable();
+    assert_eq!(sorted, vec![0, 1, 2, 3], "a track came back within the cycle: {heard:?}");
+
+    // And Previous still goes back through them.
+    engine.send(EngineCommand::Previous);
+    assert_eq!(next_track_changed(&engine), heard[2]);
+}
+
+#[test]
+fn a_track_that_cant_be_opened_stops_playback_instead_of_pretending_to_play() {
+    let missing = std::env::temp_dir().join(format!("openbar5000-missing-{}.wav", std::process::id()));
+    let engine = PlaybackEngine::spawn();
+    engine.send(EngineCommand::SetVolume(0.0));
+    engine.send(EngineCommand::LoadPlaylist(vec![fixture(), missing, fixture()]));
+    next_playlist_update(&engine);
+    engine.send(EngineCommand::PlayIndex(0));
+    assert_eq!(next_track_changed(&engine), 0);
+
+    engine.send(EngineCommand::PlayIndex(1));
+    let events = events_until(&engine, |e| is_state(e, PlaybackState::Stopped));
+    assert!(events.iter().any(|e| matches!(e, EngineEvent::Error(_))), "{events:?}");
+    let later = events_for(&engine, Duration::from_millis(300));
+    assert!(
+        !later.iter().any(|e| is_state(e, PlaybackState::Playing)),
+        "reported Playing with no track open: {later:?}"
+    );
+}
+
+#[test]
+fn next_skips_a_track_that_cant_be_opened() {
+    let missing = std::env::temp_dir().join(format!("openbar5000-missing-next-{}.wav", std::process::id()));
+    let engine = PlaybackEngine::spawn();
+    engine.send(EngineCommand::SetVolume(0.0));
+    engine.send(EngineCommand::LoadPlaylist(vec![fixture(), missing, fixture()]));
+    next_playlist_update(&engine);
+    engine.send(EngineCommand::PlayIndex(0));
+    assert_eq!(next_track_changed(&engine), 0);
+
+    engine.send(EngineCommand::Next);
+    let events = events_until(&engine, |e| matches!(e, EngineEvent::TrackChanged { .. }));
+    assert!(events.iter().any(|e| matches!(e, EngineEvent::Error(_))), "{events:?}");
+    assert!(matches!(events.last(), Some(EngineEvent::TrackChanged { index: 2, .. })));
+    let events = events_until(&engine, |e| matches!(e, EngineEvent::PlaybackStateChanged(_)));
+    assert!(is_state(events.last().unwrap(), PlaybackState::Playing), "{events:?}");
 }

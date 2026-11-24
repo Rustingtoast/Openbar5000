@@ -6,7 +6,7 @@ use crate::metadata::load_metadata_parallel;
 use crate::output::CpalSink;
 use crate::pipeline::Pipeline;
 use crate::playlist::{Playlist, Track};
-use crate::shuffle::ShuffleOrder;
+use crate::shuffle::{random_track, ShuffleOrder};
 use crate::{EngineCommand, EngineEvent, PlaybackMode};
 use crossbeam_channel::{Receiver, Sender};
 use plugin_api::OutputSink;
@@ -314,9 +314,10 @@ fn handle_command(
                         .unwrap_or(0),
                     PlaybackMode::Normal | PlaybackMode::RepeatAll | PlaybackMode::RepeatOne => 0,
                 };
-                load_track(state, start_index, event_tx);
-            }
-            if state.playlist.current().is_some() {
+                if load_track(state, start_index, event_tx) {
+                    set_playback_state(state, PlaybackState::Playing, event_tx);
+                }
+            } else if state.playlist.current().is_some() {
                 set_playback_state(state, PlaybackState::Playing, event_tx);
             }
         }
@@ -373,8 +374,7 @@ fn handle_command(
             };
             if let Some(index) = index {
                 let was_playing = state.playback_state == PlaybackState::Playing;
-                load_track(state, index, event_tx);
-                if was_playing {
+                if load_track(state, index, event_tx) && was_playing {
                     set_playback_state(state, PlaybackState::Playing, event_tx);
                 }
             }
@@ -398,6 +398,7 @@ fn handle_command(
             }
         }
         EngineCommand::PlayIndex(index) => play_index(state, index, event_tx),
+        EngineCommand::PlayRandom { among } => play_random(state, among, event_tx),
         EngineCommand::RemoveIndex(index) => {
             if remove_index(state, index) {
                 set_playback_state(state, PlaybackState::Stopped, event_tx);
@@ -526,11 +527,50 @@ fn replace_tracks(state: &mut EngineState, paths: Vec<std::path::PathBuf>, event
 
 fn play_index(state: &mut EngineState, index: usize, event_tx: &Sender<EngineEvent>) {
     drop_queued_audio(state, false);
-    load_track(state, index, event_tx);
-    set_playback_state(state, PlaybackState::Playing, event_tx);
-    // Re-anchor the shuffle cycle on the track the user just picked by
-    // hand, rather than leaving it mid-way through the old one.
-    rebuild_shuffle_order(state, Some(index));
+    if load_track(state, index, event_tx) {
+        set_playback_state(state, PlaybackState::Playing, event_tx);
+        // Re-anchor the shuffle cycle on the track the user just picked by
+        // hand, rather than leaving it mid-way through the old one.
+        rebuild_shuffle_order(state, Some(index));
+    }
+}
+
+/// See [`EngineCommand::PlayRandom`].
+fn play_random(state: &mut EngineState, among: Option<Vec<usize>>, event_tx: &Sender<EngineEvent>) {
+    let len = state.playlist.len();
+    let mut allowed = vec![among.is_none(); len];
+    for index in among.into_iter().flatten() {
+        // Out of range: picked from a playlist that has since shrunk.
+        if let Some(slot) = allowed.get_mut(index) {
+            *slot = true;
+        }
+    }
+    let allowed = |index: usize| allowed.get(index).copied().unwrap_or(false);
+
+    let index = match (state.playback_mode, state.shuffle.as_mut()) {
+        // Anything loaded has been heard in this shuffle cycle, even if
+        // stopped since -- the cycle plays everything else first.
+        (PlaybackMode::Shuffle, Some(shuffle)) => {
+            shuffle.jump_to_random(allowed, state.playlist.current_index().is_some())
+        }
+        _ => {
+            // After a stop nothing is playing: the last track can come up.
+            let playing = state
+                .playlist
+                .current_index()
+                .filter(|_| state.playback_state != PlaybackState::Stopped);
+            let candidates: Vec<usize> = (0..len).filter(|&i| allowed(i)).collect();
+            random_track(&candidates, playing)
+        }
+    };
+    let Some(index) = index else {
+        return;
+    };
+    let play = state.playback_state != PlaybackState::Paused;
+    drop_queued_audio(state, false);
+    if load_track(state, index, event_tx) && play {
+        set_playback_state(state, PlaybackState::Playing, event_tx);
+    }
 }
 
 /// Takes `index` out of the playlist and the queue; `true` if it was the
@@ -635,10 +675,13 @@ fn send_playlist_update(state: &EngineState, event_tx: &Sender<EngineEvent>) {
     });
 }
 
-fn load_track(state: &mut EngineState, index: usize, event_tx: &Sender<EngineEvent>) {
+/// Makes `index` the current track and opens it. `false` if it can't be
+/// opened: playback is then stopped, and callers mustn't set it playing --
+/// the previous track's decoder would still be the one heard.
+fn load_track(state: &mut EngineState, index: usize, event_tx: &Sender<EngineEvent>) -> bool {
     let Some(track) = state.playlist.set_current_index(index).cloned() else {
         set_playback_state(state, PlaybackState::Stopped, event_tx);
-        return;
+        return false;
     };
 
     let decoder = Box::new(SymphoniaDecoder::new());
@@ -654,10 +697,12 @@ fn load_track(state: &mut EngineState, index: usize, event_tx: &Sender<EngineEve
                 index,
                 track: Box::new(track),
             });
+            true
         }
         Err(e) => {
             let _ = event_tx.send(EngineEvent::Error(e.to_string()));
             set_playback_state(state, PlaybackState::Stopped, event_tx);
+            false
         }
     }
 }
@@ -707,28 +752,35 @@ fn on_track_finished(state: &mut EngineState, event_tx: &Sender<EngineEvent>) {
     // it explicitly.
     if state.playback_mode == PlaybackMode::RepeatOne && state.queue.is_empty() {
         if let Some(index) = state.playlist.current_index() {
-            load_track(state, index, event_tx);
-            set_playback_state(state, PlaybackState::Playing, event_tx);
+            if load_track(state, index, event_tx) {
+                set_playback_state(state, PlaybackState::Playing, event_tx);
+            }
             return;
         }
     }
     advance_to_next_track(state, event_tx);
 }
 
+/// Goes on to the next track (the queue's, else the playback mode's),
+/// skipping any that can't be opened -- each reports its error, and is
+/// tried at most once, so a playlist of broken files ends in a stop.
 fn advance_to_next_track(state: &mut EngineState, event_tx: &Sender<EngineEvent>) {
-    let next_index = match state.queue.pop_front() {
-        Some(queued) => Some(queued),
-        None => mode_next_index(state),
-    };
-    match next_index {
-        Some(next_index) => {
-            let was_playing = state.playback_state == PlaybackState::Playing;
-            load_track(state, next_index, event_tx);
+    let was_playing = state.playback_state == PlaybackState::Playing;
+    for _ in 0..state.playlist.len().max(1) {
+        let next_index = match state.queue.pop_front() {
+            Some(queued) => Some(queued),
+            None => mode_next_index(state),
+        };
+        let Some(next_index) = next_index else {
+            set_playback_state(state, PlaybackState::Stopped, event_tx);
+            return;
+        };
+        if load_track(state, next_index, event_tx) {
             if was_playing {
                 set_playback_state(state, PlaybackState::Playing, event_tx);
             }
+            return;
         }
-        None => set_playback_state(state, PlaybackState::Stopped, event_tx),
     }
 }
 
