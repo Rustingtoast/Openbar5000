@@ -338,40 +338,55 @@ fn play_random_in_shuffle_mode_carries_the_shuffle_on() {
     assert_eq!(next_track_changed(&engine), heard[2]);
 }
 
-#[test]
-fn a_track_that_cant_be_opened_stops_playback_instead_of_pretending_to_play() {
-    let missing = std::env::temp_dir().join(format!("openbar5000-missing-{}.wav", std::process::id()));
+/// A muted engine playing track 0 of [fixture, missing file, fixture].
+fn engine_with_a_missing_track(name: &str) -> PlaybackEngine {
+    let missing = std::env::temp_dir().join(format!("openbar5000-{name}-{}.wav", std::process::id()));
     let engine = PlaybackEngine::spawn();
     engine.send(EngineCommand::SetVolume(0.0));
     engine.send(EngineCommand::LoadPlaylist(vec![fixture(), missing, fixture()]));
     next_playlist_update(&engine);
     engine.send(EngineCommand::PlayIndex(0));
     assert_eq!(next_track_changed(&engine), 0);
+    events_until(&engine, |e| is_state(e, PlaybackState::Playing));
+    engine
+}
 
+#[test]
+fn a_track_that_cant_be_opened_leaves_the_one_playing_alone() {
+    let engine = engine_with_a_missing_track("missing-pick");
     engine.send(EngineCommand::PlayIndex(1));
-    let events = events_until(&engine, |e| is_state(e, PlaybackState::Stopped));
-    assert!(events.iter().any(|e| matches!(e, EngineEvent::Error(_))), "{events:?}");
+    let events = events_until(&engine, |e| matches!(e, EngineEvent::Error(_)));
     let later = events_for(&engine, Duration::from_millis(300));
-    assert!(
-        !later.iter().any(|e| is_state(e, PlaybackState::Playing)),
-        "reported Playing with no track open: {later:?}"
-    );
+    let changed = events.iter().chain(&later).any(|e| {
+        matches!(e, EngineEvent::TrackChanged { .. } | EngineEvent::PlaybackStateChanged(_))
+    });
+    assert!(!changed, "a failed pick changed playback: {events:?} {later:?}");
 }
 
 #[test]
 fn next_skips_a_track_that_cant_be_opened() {
-    let missing = std::env::temp_dir().join(format!("openbar5000-missing-next-{}.wav", std::process::id()));
-    let engine = PlaybackEngine::spawn();
-    engine.send(EngineCommand::SetVolume(0.0));
-    engine.send(EngineCommand::LoadPlaylist(vec![fixture(), missing, fixture()]));
-    next_playlist_update(&engine);
-    engine.send(EngineCommand::PlayIndex(0));
-    assert_eq!(next_track_changed(&engine), 0);
-
+    let engine = engine_with_a_missing_track("missing-next");
     engine.send(EngineCommand::Next);
-    let events = events_until(&engine, |e| matches!(e, EngineEvent::TrackChanged { .. }));
-    assert!(events.iter().any(|e| matches!(e, EngineEvent::Error(_))), "{events:?}");
-    assert!(matches!(events.last(), Some(EngineEvent::TrackChanged { index: 2, .. })));
-    let events = events_until(&engine, |e| matches!(e, EngineEvent::PlaybackStateChanged(_)));
-    assert!(is_state(events.last().unwrap(), PlaybackState::Playing), "{events:?}");
+    // The track change, then the error for the skipped file (so the
+    // status bar ends on it), and no stop in between.
+    let events = events_until(&engine, |e| matches!(e, EngineEvent::Error(_)));
+    assert!(
+        matches!(events.as_slice(), [EngineEvent::TrackChanged { index: 2, .. }, EngineEvent::Error(_)]),
+        "{events:?}"
+    );
+}
+
+#[test]
+fn next_skipping_a_track_while_paused_stays_paused() {
+    let engine = engine_with_a_missing_track("missing-paused");
+    engine.send(EngineCommand::Pause);
+    events_until(&engine, |e| is_state(e, PlaybackState::Paused));
+    engine.send(EngineCommand::Next);
+    let events = events_until(&engine, |e| matches!(e, EngineEvent::Error(_)));
+    assert!(matches!(events.first(), Some(EngineEvent::TrackChanged { index: 2, .. })), "{events:?}");
+    let later = events_for(&engine, Duration::from_millis(300));
+    assert!(
+        !events.iter().chain(&later).any(|e| matches!(e, EngineEvent::PlaybackStateChanged(_))),
+        "skipping while paused changed the state: {events:?} {later:?}"
+    );
 }

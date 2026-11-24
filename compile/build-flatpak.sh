@@ -99,15 +99,26 @@ CONFIG
 # sandbox: let a check build on this machine work the name out, fetch that
 # archive, and hand it to the sandboxed build as a file (see the manifest's
 # SKIA_BINARIES_URL).
+#
+# The name is in what Skia's build script prints, which `cargo -vv` shows
+# as "[skia-bindings <version>] ...". Not read from the file cargo keeps it
+# in: where that is changed in Rust 1.100, and isn't a stable interface. The
+# check build starts afresh, so the build script runs and prints it.
 echo "==> Fetching Skia's prebuilt library..."
 SKIA_DIR="$DIST_DIR/skia"
 SKIA_PROBE="$DIST_DIR/skia-probe"
-rm -rf "$SKIA_DIR"
+SKIA_PROBE_LOG="$DIST_DIR/skia-probe.log"
+rm -rf "$SKIA_DIR" "$SKIA_PROBE"
 mkdir -p "$SKIA_DIR"
-(cd "$REPO_ROOT" && CARGO_TARGET_DIR="$SKIA_PROBE" cargo check --release --locked --quiet -p app)
-SKIA_WANTED="$(grep -h "TRYING TO DOWNLOAD AND INSTALL SKIA BINARIES:" "$SKIA_PROBE"/release/build/skia-bindings-*/output | tail -n1 | sed 's/.*BINARIES: //')"
+if ! (cd "$REPO_ROOT" && CARGO_TARGET_DIR="$SKIA_PROBE" CARGO_BUILD_BUILD_DIR="$SKIA_PROBE" \
+        cargo check --release --locked -vv -p app) >"$SKIA_PROBE_LOG" 2>&1; then
+    tail -n 40 "$SKIA_PROBE_LOG" >&2
+    echo "error: the check build failed (full log: $SKIA_PROBE_LOG)." >&2
+    exit 1
+fi
+SKIA_WANTED="$(sed -n 's/^\[skia-bindings [^]]*\] TRYING TO DOWNLOAD AND INSTALL SKIA BINARIES: //p' "$SKIA_PROBE_LOG" | tail -n1)"
 if [[ -z "$SKIA_WANTED" ]]; then
-    echo "error: couldn't tell which Skia binaries the build needs (see $SKIA_PROBE)." >&2
+    echo "error: couldn't tell which Skia binaries the build needs (see $SKIA_PROBE_LOG)." >&2
     exit 1
 fi
 SKIA_TAG="${SKIA_WANTED%%/*}"

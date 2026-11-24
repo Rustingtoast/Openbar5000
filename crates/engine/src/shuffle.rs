@@ -63,18 +63,25 @@ impl ShuffleOrder {
     /// else still plays once before any repeat, and `retreat` goes back to
     /// the track before. `heard_current` says whether the cycle's current
     /// track has been played (rather than just waiting to start); if it
-    /// hasn't, it can be picked too.
+    /// hasn't, it can be picked too. `playing` is never picked, unless it's
+    /// the only track allowed: it can be another than the cycle's current
+    /// one, played from the queue.
     ///
     /// Once every allowed track has played this cycle, a new cycle starts
-    /// with one of them -- not the one just heard, unless it's the only
-    /// one. `None`, changing nothing, when `allowed` accepts no track.
-    pub fn jump_to_random(&mut self, allowed: impl Fn(usize) -> bool, heard_current: bool) -> Option<usize> {
+    /// with one of them. `None`, changing nothing, when `allowed` accepts
+    /// no track.
+    pub fn jump_to_random(
+        &mut self,
+        allowed: impl Fn(usize) -> bool,
+        heard_current: bool,
+        playing: Option<usize>,
+    ) -> Option<usize> {
         if !self.order.iter().any(|&i| allowed(i)) {
             return None;
         }
         let next = if heard_current { self.position + 1 } else { self.position };
         let unplayed: Vec<usize> = (next..self.order.len())
-            .filter(|&p| allowed(self.order[p]))
+            .filter(|&p| allowed(self.order[p]) && Some(self.order[p]) != playing)
             .collect();
         if let Some(&pick) = unplayed.choose(&mut rand::rng()) {
             self.order.swap(next, pick);
@@ -82,7 +89,6 @@ impl ShuffleOrder {
             return self.current();
         }
 
-        let just_played = self.current().filter(|_| heard_current);
         self.order.shuffle(&mut rand::rng());
         let allowed_positions: Vec<usize> = (0..self.order.len())
             .filter(|&p| allowed(self.order[p]))
@@ -90,7 +96,7 @@ impl ShuffleOrder {
         let others: Vec<usize> = allowed_positions
             .iter()
             .copied()
-            .filter(|&p| Some(self.order[p]) != just_played)
+            .filter(|&p| Some(self.order[p]) != playing)
             .collect();
         let pick = others
             .choose(&mut rand::rng())
@@ -240,8 +246,8 @@ mod tests {
         let mut heard = vec![shuffle.current().unwrap()];
         heard.push(shuffle.advance().unwrap());
         // Random twice, then let the cycle run out: every track exactly once.
-        heard.push(shuffle.jump_to_random(|_| true, true).unwrap());
-        heard.push(shuffle.jump_to_random(|_| true, true).unwrap());
+        heard.push(shuffle.jump_to_random(|_| true, true, shuffle.current()).unwrap());
+        heard.push(shuffle.jump_to_random(|_| true, true, shuffle.current()).unwrap());
         for _ in 0..LEN - 4 {
             heard.push(shuffle.advance().unwrap());
         }
@@ -253,7 +259,7 @@ mod tests {
     fn retreat_after_jump_to_random_goes_back_to_the_track_before() {
         let mut shuffle = ShuffleOrder::new(6, Some(0));
         let before = shuffle.advance();
-        let jumped = shuffle.jump_to_random(|_| true, true);
+        let jumped = shuffle.jump_to_random(|_| true, true, shuffle.current());
         assert_ne!(jumped, before);
         assert_eq!(shuffle.retreat(), before);
     }
@@ -264,7 +270,7 @@ mod tests {
             let mut shuffle = ShuffleOrder::new(10, Some(1));
             for _ in 0..8 {
                 // Across cycles too: 5 even tracks, 8 jumps.
-                let pick = shuffle.jump_to_random(|i| i % 2 == 0, true).unwrap();
+                let pick = shuffle.jump_to_random(|i| i % 2 == 0, true, shuffle.current()).unwrap();
                 assert_eq!(pick % 2, 0);
             }
         }
@@ -275,12 +281,12 @@ mod tests {
         for _ in 0..200 {
             let mut shuffle = ShuffleOrder::new(6, Some(0));
             let allowed = |i: usize| i == 2 || i == 3;
-            let first = shuffle.jump_to_random(allowed, true).unwrap();
-            let second = shuffle.jump_to_random(allowed, true).unwrap();
+            let first = shuffle.jump_to_random(allowed, true, shuffle.current()).unwrap();
+            let second = shuffle.jump_to_random(allowed, true, shuffle.current()).unwrap();
             assert_eq!(HashSet::from([first, second]), HashSet::from([2, 3]));
             // Both played: a new cycle, which doesn't start on the track
             // just heard.
-            assert_eq!(shuffle.jump_to_random(allowed, true), Some(first));
+            assert_eq!(shuffle.jump_to_random(allowed, true, shuffle.current()), Some(first));
             assert_eq!(shuffle.retreat(), None, "a new cycle starts at its beginning");
         }
     }
@@ -289,17 +295,32 @@ mod tests {
     fn jump_to_random_can_pick_a_cycle_start_not_yet_heard() {
         let mut shuffle = ShuffleOrder::new(4, None);
         let start = shuffle.current().unwrap();
-        assert_eq!(shuffle.jump_to_random(|i| i == start, false), Some(start));
+        assert_eq!(shuffle.jump_to_random(|i| i == start, false, None), Some(start));
         // Heard: it's this cycle's only allowed track, so a new cycle
         // replays it.
-        assert_eq!(shuffle.jump_to_random(|i| i == start, true), Some(start));
+        assert_eq!(shuffle.jump_to_random(|i| i == start, true, Some(start)), Some(start));
+    }
+
+    #[test]
+    fn jump_to_random_never_picks_a_queued_track_that_is_playing() {
+        for _ in 0..200 {
+            let mut shuffle = ShuffleOrder::new(6, Some(0));
+            // Track 4 plays from the queue: the cycle is still on track 0.
+            let pick = shuffle.jump_to_random(|_| true, true, Some(4)).unwrap();
+            assert!(pick != 4 && pick != 0, "picked {pick}");
+            // Every allowed track played or playing: a new cycle, still not 4.
+            let mut shuffle = ShuffleOrder::new(6, Some(0));
+            let pick = shuffle.jump_to_random(|i| i == 0 || i == 4 || i == 5, true, Some(4));
+            assert_eq!(pick, Some(5));
+            assert_eq!(shuffle.jump_to_random(|i| i == 0 || i == 4, true, Some(4)), Some(0));
+        }
     }
 
     #[test]
     fn jump_to_random_with_nothing_allowed_changes_nothing() {
         let mut shuffle = ShuffleOrder::new(5, Some(3));
         let next = shuffle.clone_order();
-        assert_eq!(shuffle.jump_to_random(|_| false, true), None);
+        assert_eq!(shuffle.jump_to_random(|_| false, true, Some(3)), None);
         assert_eq!(shuffle.clone_order(), next);
         assert_eq!(shuffle.current(), Some(3));
     }
