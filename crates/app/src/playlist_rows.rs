@@ -364,6 +364,63 @@ pub fn vinyl_record(tracks: &[Track], index: usize, smart: bool) -> Option<Vinyl
     })
 }
 
+/// Right-click > Share Album: the album playlist track `index` is on (as
+/// smart grouping gathers it, when that's on) as text to paste anywhere --
+/// "Artist – Album (year)", then its songs in order, by disc when there's
+/// more than one, with each song's own artist where it isn't the album's.
+pub fn album_share_text(tracks: &[Track], index: usize, smart: bool) -> Option<String> {
+    let record = vinyl_record(tracks, index, smart)?;
+    let songs: Vec<&Track> = record.indices.iter().filter_map(|&i| tracks.get(i)).collect();
+    let first = songs.first()?;
+    let artist = group_artist_of(&songs);
+    let artist = if artist.trim().is_empty() { "Unknown Artist".to_string() } else { artist };
+    let album = match first.metadata.album.trim() {
+        // No album tag: named by its folder, as its group's header is.
+        "" => Path::new(&album_folder(&first.path))
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Unknown Album".to_string()),
+        album => album.to_string(),
+    };
+    let year: String = first.metadata.date.trim().chars().take(4).collect();
+    let mut text = format!("{artist} \u{2013} {album}");
+    if year.len() == 4 && year.chars().all(|c| c.is_ascii_digit()) {
+        text.push_str(&format!(" ({year})"));
+    }
+    text.push('\n');
+
+    let discs: HashSet<u32> = songs.iter().map(|t| t.metadata.disc_number.unwrap_or(1)).collect();
+    let mut disc = None;
+    let mut on_disc = 0;
+    for song in &songs {
+        let m = &song.metadata;
+        let this_disc = m.disc_number.unwrap_or(1);
+        if disc != Some(this_disc) {
+            disc = Some(this_disc);
+            on_disc = 0;
+            if discs.len() > 1 {
+                text.push_str(&format!("\nDisc {this_disc}\n"));
+            } else {
+                text.push('\n');
+            }
+        }
+        on_disc += 1;
+        let number = m.track_number.unwrap_or(on_disc);
+        let title = if m.title.trim().is_empty() {
+            song.path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
+        } else {
+            m.title.trim().to_string()
+        };
+        text.push_str(&format!("{number}. {title}"));
+        let own = primary_artist(m.artist.trim());
+        if !own.is_empty() && !own.eq_ignore_ascii_case(primary_artist(&artist)) {
+            text.push_str(&format!(" \u{2013} {}", m.artist.trim()));
+        }
+        text.push('\n');
+    }
+    Some(text)
+}
+
 fn style_keys_of<'a>(tracks: impl Iterator<Item = &'a Track>) -> Vec<String> {
     let mut keys: Vec<String> = tracks.map(vinyl_style_key).collect();
     keys.sort();
@@ -437,6 +494,10 @@ pub fn smart_order(tracks: &[Track], grouping: PlaylistGrouping) -> Option<Vec<u
 /// carry (the shorter one on a tie), or "Various Artists" if they name
 /// different people.
 fn group_artist(group: &[Track]) -> String {
+    group_artist_of(&group.iter().collect::<Vec<_>>())
+}
+
+fn group_artist_of(group: &[&Track]) -> String {
     let first = owner_key(&group[0].metadata);
     if group.iter().any(|t| owner_key(&t.metadata) != first) {
         return "Various Artists".to_string();
@@ -1294,5 +1355,33 @@ mod tests {
         );
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].group_title, "a");
+    }
+
+    #[test]
+    fn share_album_lists_the_album_smart_grouping_gathers() {
+        let mut t = vec![
+            tagged("/m/abgt/2.flac", "Above & Beyond feat. Zoë Johnston", "", "common  ground", None, 2),
+            tagged("/m/other/1.flac", "Someone Else", "", "Elsewhere", None, 1),
+            tagged("/m/abgt/1.flac", "Above & Beyond", "", "Common Ground", None, 1),
+        ];
+        t[2].metadata.date = "2018-01-26".into();
+        let smart = album_share_text(&t, 0, true).unwrap();
+        assert_eq!(smart, "Above & Beyond \u{2013} Common Ground (2018)\n\n1. t1\n2. t2\n");
+        // Exactly as tagged, the second song is an album of its own.
+        let strict = album_share_text(&t, 0, false).unwrap();
+        assert_eq!(strict, "Above & Beyond \u{2013} common  ground\n\n2. t2\n");
+    }
+
+    #[test]
+    fn share_album_splits_discs_and_credits_guests() {
+        let t = vec![
+            tagged("/m/st/2-1.flac", "Composer B", "Soundtrack Band", "Film", Some(2), 1),
+            tagged("/m/st/1-1.flac", "Soundtrack Band", "Soundtrack Band", "Film", Some(1), 1),
+        ];
+        let text = album_share_text(&t, 0, false).unwrap();
+        assert_eq!(
+            text,
+            "Soundtrack Band \u{2013} Film\n\nDisc 1\n1. t1\n\nDisc 2\n1. t1 \u{2013} Composer B\n"
+        );
     }
 }

@@ -1,0 +1,276 @@
+import { Button, LineEdit, Palette, SpinBox } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+/// A colour picker (see `app::color_picker`): a square of saturation and
+/// brightness for the hue picked on the bar beside it, the colour new and
+/// as it was, and its hex code and red, green and blue to type in. Stays
+/// on top of the window it was opened from; Esc or Cancel closes it
+/// without picking.
+export component ColorPickerWindow inherits Window {
+    title: root.subject;
+    icon: Theme.logo;
+    always-on-top: true;
+    width: 440px;
+    height: 296px;
+    background: Theme.bg-raised;
+
+    in property <bool> theme-is-dark: true;
+    init => {
+        Palette.color-scheme = root.theme-is-dark ? ColorScheme.dark : ColorScheme.light;
+    }
+    changed theme-is-dark => {
+        Palette.color-scheme = root.theme-is-dark ? ColorScheme.dark : ColorScheme.light;
+    }
+
+    /// What the colour is for, as the title: "Vinyl colour".
+    in property <string> subject: "Pick a color";
+    /// The colour it opened with, shown under the new one.
+    in-out property <color> original: #000000;
+    /// The colour being picked, by hue (0 to 360), saturation and value
+    /// (0 to 1).
+    in-out property <float> hue: 0;
+    in-out property <float> sat: 0;
+    in-out property <float> val: 0;
+    out property <color> picked: hsv(root.hue, root.sat, root.val);
+    in-out property <string> hex;
+    in-out property <int> red;
+    in-out property <int> green;
+    in-out property <int> blue;
+    /// Typed into the hex field: the app reads it (see `take-color`).
+    callback hex-edited(string);
+    callback accepted(color);
+    callback cancelled();
+
+    /// Shows `color` as the one being picked: its hex code too unless
+    /// that's being typed.
+    public function take-color(color: color) {
+        let hsv = color.to-hsv();
+        // A grey has no hue of its own: keep the one there was.
+        if hsv.saturation > 0 && hsv.value > 0 {
+            root.hue = hsv.hue;
+        }
+        root.sat = hsv.saturation;
+        root.val = hsv.value;
+    }
+    /// Opened for `color`: takes it, and the keys.
+    public function open-with(color: color) {
+        root.original = color;
+        root.take-color(color);
+        root.hex = root.hex-of(color);
+        keys.focus();
+    }
+
+    property <[string]> digits: ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"];
+    pure function hex2(n: int) -> string {
+        return root.digits[Math.floor(n / 16)] + root.digits[Math.mod(n, 16)];
+    }
+    pure function hex-of(color: color) -> string {
+        return "#" + root.hex2(color.red) + root.hex2(color.green) + root.hex2(color.blue);
+    }
+    changed picked => {
+        root.red = root.picked.red;
+        root.green = root.picked.green;
+        root.blue = root.picked.blue;
+        if !hex-field.has-focus {
+            root.hex = root.hex-of(root.picked);
+        }
+    }
+
+    keys := FocusScope {
+        capture-key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.cancelled();
+                return accept;
+            }
+            reject
+        }
+        key-pressed(event) => {
+            if event.text == Key.Return {
+                root.accepted(root.picked);
+                return accept;
+            }
+            reject
+        }
+
+        VerticalLayout {
+            padding: 14px;
+            spacing: 14px;
+            alignment: start;
+
+            HorizontalLayout {
+                spacing: 12px;
+
+                // Saturation left to right, brightness bottom to top.
+                Rectangle {
+                    width: 220px;
+                    height: 220px;
+                    border-radius: 4px;
+                    clip: true;
+                    background: hsv(root.hue, 1, 1);
+                    Rectangle { background: @linear-gradient(90deg, #ffffff 0%, #ffffff00 100%); }
+                    Rectangle { background: @linear-gradient(180deg, #00000000 0%, #000000 100%); }
+                    Rectangle {
+                        x: root.sat * parent.width - self.width / 2;
+                        y: (1 - root.val) * parent.height - self.height / 2;
+                        width: 14px;
+                        height: 14px;
+                        border-radius: self.width / 2;
+                        border-width: 2px;
+                        border-color: root.val > 0.55 && root.sat < 0.45 ? #000000 : #ffffff;
+                        background: root.picked;
+                    }
+                    square := TouchArea {
+                        mouse-cursor: crosshair;
+                        pointer-event(event) => {
+                            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                                root.pick-in-square(self.mouse-x, self.mouse-y, self.width, self.height);
+                            }
+                        }
+                        moved => {
+                            if self.pressed {
+                                root.pick-in-square(self.mouse-x, self.mouse-y, self.width, self.height);
+                            }
+                        }
+                    }
+                }
+
+                // The hue, red at the top round to red at the bottom.
+                Rectangle {
+                    width: 22px;
+                    height: 220px;
+                    border-radius: 4px;
+                    background: @linear-gradient(180deg, #ff0000 0%, #ffff00 16.67%, #00ff00 33.33%, #00ffff 50%, #0000ff 66.67%, #ff00ff 83.33%, #ff0000 100%);
+                    Rectangle {
+                        x: -3px;
+                        y: root.hue / 360 * parent.height - self.height / 2;
+                        width: parent.width + 6px;
+                        height: 6px;
+                        border-radius: 3px;
+                        border-width: 2px;
+                        border-color: #ffffff;
+                        drop-shadow-blur: 2px;
+                        drop-shadow-color: #00000080;
+                    }
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        pointer-event(event) => {
+                            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                                keys.focus();
+                                root.hue = Math.clamp(self.mouse-y / self.height, 0, 1) * 360;
+                            }
+                        }
+                        moved => {
+                            if self.pressed {
+                                root.hue = Math.clamp(self.mouse-y / self.height, 0, 1) * 360;
+                            }
+                        }
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 8px;
+                    alignment: start;
+
+                    // New over as it was.
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Rectangle {
+                            width: 64px;
+                            height: 64px;
+                            border-radius: 4px;
+                            border-width: 1px;
+                            border-color: Theme.text-muted.transparentize(0.5);
+                            clip: true;
+                            VerticalLayout {
+                                Rectangle { background: root.picked; }
+                                Rectangle {
+                                    background: root.original;
+                                    TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.take-color(root.original);
+                                            root.hex = root.hex-of(root.original);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: space-around;
+                            Text { text: "New"; color: Theme.text-primary; }
+                            Text { text: "Current"; color: Theme.text-muted; }
+                        }
+                    }
+
+                    GridLayout {
+                        spacing: 6px;
+                        Row {
+                            Text { text: "Hex"; vertical-alignment: center; color: Theme.text-primary; }
+                            hex-field := LineEdit {
+                                width: 110px;
+                                text <=> root.hex;
+                                placeholder-text: "#rrggbb";
+                                edited(text) => { root.hex-edited(text); }
+                                accepted => { root.accepted(root.picked); }
+                            }
+                        }
+                        Row {
+                            Text { text: "R"; vertical-alignment: center; color: Theme.text-primary; }
+                            SpinBox {
+                                width: 110px;
+                                minimum: 0;
+                                maximum: 255;
+                                value <=> root.red;
+                                edited(value) => { root.take-rgb(); }
+                            }
+                        }
+                        Row {
+                            Text { text: "G"; vertical-alignment: center; color: Theme.text-primary; }
+                            SpinBox {
+                                width: 110px;
+                                minimum: 0;
+                                maximum: 255;
+                                value <=> root.green;
+                                edited(value) => { root.take-rgb(); }
+                            }
+                        }
+                        Row {
+                            Text { text: "B"; vertical-alignment: center; color: Theme.text-primary; }
+                            SpinBox {
+                                width: 110px;
+                                minimum: 0;
+                                maximum: 255;
+                                value <=> root.blue;
+                                edited(value) => { root.take-rgb(); }
+                            }
+                        }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: end;
+                Button {
+                    text: "Cancel";
+                    clicked => { root.cancelled(); }
+                }
+                Button {
+                    text: "OK";
+                    primary: true;
+                    clicked => { root.accepted(root.picked); }
+                }
+            }
+        }
+    }
+
+    function pick-in-square(x: length, y: length, w: length, h: length) {
+        // Off the hex field, so its code follows again.
+        keys.focus();
+        root.sat = Math.clamp(x / w, 0, 1);
+        root.val = 1 - Math.clamp(y / h, 0, 1);
+    }
+    function take-rgb() {
+        root.take-color(rgb(root.red, root.green, root.blue));
+    }
+}

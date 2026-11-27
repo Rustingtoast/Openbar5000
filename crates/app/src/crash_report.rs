@@ -304,8 +304,15 @@ mod native {
             if pipe >= 0 {
                 libc::write(pipe, note.as_ptr().cast(), note.len());
             }
+            // Sent by a program (`kill -SEGV`), not a fault: Rust's handler
+            // would put the default back and return, the app carrying on --
+            // and its next real crash going unseen. Ended as the default
+            // would end it instead.
+            let sent = !info.is_null() && (*info).si_code <= 0;
             match PREVIOUS[index].get() {
-                Some(previous) if previous.sa_sigaction != libc::SIG_DFL && previous.sa_sigaction != libc::SIG_IGN => {
+                Some(previous)
+                    if !sent && previous.sa_sigaction != libc::SIG_DFL && previous.sa_sigaction != libc::SIG_IGN =>
+                {
                     if previous.sa_flags & libc::SA_SIGINFO != 0 {
                         let handler: extern "C" fn(libc::c_int, *mut libc::siginfo_t, *mut libc::c_void) =
                             std::mem::transmute(previous.sa_sigaction);

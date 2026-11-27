@@ -198,6 +198,26 @@ even on WiX's canonical examples). On Windows 11 with WiX 7, the MSI builds,
 passes `wix msi validate`, and its dialogs (welcome, license, install folder,
 ready to install) were walked through.
 
+## App icons and logos
+
+Every icon to choose from in Preferences > Appearance > Icon, with its
+holiday and monthly pride-flag versions, is drawn by
+`compile/logos/generate.py` (Python 3, standard library only):
+
+```sh
+python3 compile/logos/generate.py
+```
+
+It writes `crates/app/logos/<icon>/<version>.svg` and the table the app
+embeds, `crates/app/src/logo_files.rs`. The original music box
+(`crates/app/logos/music-box/`) is kept as it is, not redrawn.
+
+The shipped app icon is the default one's regular version
+(`crates/app/logos/nouveau-planet/regular.svg`), copied to
+`crates/ui/ui/assets/icons/app-icon.svg`; the PNG, `.ico` and `.icns` in
+`compile/assets/` are rendered from it (rsvg-convert, then Pillow for the
+`.ico` and `.icns`).
+
 ## Prerequisites
 
 All platforms need a Rust toolchain (via [rustup](https://rustup.rs)). See

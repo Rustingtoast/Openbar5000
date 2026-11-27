@@ -41,6 +41,43 @@ pub fn place_popup(placement: Placement, clip_region: &Option<LogicalRect>) -> L
     }
 }
 
+/// Like [`place_popup`], for a popup opened beside the popup `parent` (a
+/// sub-menu at its right edge): where it doesn't fit on that side, it opens
+/// on the other, beside the parent rather than pushed back over it.
+pub fn place_popup_beside(
+    placement: Placement,
+    clip_region: &Option<LogicalRect>,
+    parent: Option<LogicalRect>,
+) -> LogicalRect {
+    let Placement::Fixed(mut rect) = placement;
+    if let (Some(clip), Some(parent)) = (clip_region, parent) {
+        let opens_right = rect.origin.x >= parent.origin.x + parent.size.width / 2 as crate::Coord;
+        let past_right = rect.origin.x + rect.size.width > clip.origin.x + clip.size.width;
+        let on_left = parent.origin.x - rect.size.width;
+        if opens_right && past_right && on_left >= clip.origin.x {
+            rect.origin.x = on_left;
+        }
+    }
+    place_popup(Placement::Fixed(rect), clip_region)
+}
+
+#[test]
+fn test_place_popup_beside_flips_to_the_left() {
+    let clip = Some(r(0, 0, 800, 600));
+    let parent = Some(r(500, 100, 200, 300));
+    // Room on the right: unchanged.
+    let fits = r(700, 150, 80, 100);
+    assert_eq!(place_popup_beside(Placement::Fixed(fits), &clip, parent), fits);
+    // No room: on the left, beside the parent.
+    let wide = r(700, 150, 200, 100);
+    assert_eq!(place_popup_beside(Placement::Fixed(wide), &clip, parent), r(300, 150, 200, 100));
+    // No room on either side: clamped as before.
+    let huge = r(700, 150, 600, 100);
+    assert_eq!(place_popup_beside(Placement::Fixed(huge), &clip, parent), r(200, 150, 600, 100));
+    // Not a sub-menu: as before.
+    assert_eq!(place_popup_beside(Placement::Fixed(wide), &clip, None), r(600, 150, 200, 100));
+}
+
 #[cfg(test)]
 fn r(x: i32, y: i32, w: i32, h: i32) -> LogicalRect {
     LogicalRect::new(LogicalPoint::new(x as f32, y as f32), LogicalSize::new(w as f32, h as f32))

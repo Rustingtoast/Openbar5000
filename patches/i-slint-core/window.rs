@@ -515,6 +515,29 @@ pub enum PopupWindowLocation {
     ChildWindow(LogicalPoint),
 }
 
+/// Where the popup that `item` is in is drawn, when it's drawn inside the
+/// window (a sub-menu's parent menu), for placing a popup opened from it
+/// beside it. (Patched, see the app's `patches/README.md`.)
+fn child_popup_rect(active_popups: &[PopupWindow], item: &ItemRc) -> Option<LogicalRect> {
+    let mut item_tree = item.item_tree().clone();
+    let root = loop {
+        if ItemRc::new_root(item_tree.clone()).downcast::<crate::items::WindowItem>().is_some() {
+            break item_tree;
+        }
+        let mut parent = crate::item_tree::ItemWeak::default();
+        ItemTreeRc::borrow_pin(&item_tree).as_ref().parent_node(&mut parent);
+        match parent.upgrade() {
+            None => break item_tree,
+            Some(parent) => item_tree = parent.item_tree().clone(),
+        }
+    };
+    let popup = active_popups.iter().find(|p| ItemTreeRc::ptr_eq(&p.component, &root))?;
+    let PopupWindowLocation::ChildWindow(origin) = popup.location else { return None };
+    let component = ItemTreeRc::borrow_pin(&popup.component);
+    let window_item = ItemRef::downcast_pin::<crate::items::WindowItem>(component.as_ref().get_item_ref(0))?;
+    Some(LogicalRect::new(origin, crate::lengths::LogicalSize::new(window_item.width().0, window_item.height().0)))
+}
+
 /// This structure defines a graphical element that is designed to pop up from the surrounding
 /// UI content, for example to show a context menu.
 pub struct PopupWindow {
@@ -1723,15 +1746,18 @@ impl WindowInner {
     /// Re-evaluates the position tracker for the popup with the given ID, re-subscribing to its
     /// property dependencies so subsequent changes continue to trigger notifications.
     fn update_popup_properties(&self, popup_id: NonZeroU32) {
-        let offset = {
+        let (offset, parent_popup) = {
             let active_popups = self.active_popups.borrow();
             let Some(popup) = active_popups.iter().find(|p| p.popup_id == popup_id) else { return };
             if let Some(parent) = popup.parent_item.clone().upgrade() {
-                parent.map_to_native_window(
-                    parent.geometry().origin + (popup.position_access)().to_euclid().to_vector(),
+                (
+                    parent.map_to_native_window(
+                        parent.geometry().origin + (popup.position_access)().to_euclid().to_vector(),
+                    ),
+                    child_popup_rect(&active_popups, &parent),
                 )
             } else {
-                LogicalPoint::zero()
+                (LogicalPoint::zero(), None)
             }
         };
         let mut active_popups = self.active_popups.borrow_mut();
@@ -1786,12 +1812,13 @@ impl WindowInner {
                                 .to_euclid(),
                         ));
 
-                        let new_region_clipped = popup::place_popup(
+                        let new_region_clipped = popup::place_popup_beside(
                             popup::Placement::Fixed(LogicalRect::new(
                                 offset,
                                 crate::lengths::LogicalSize::new(width, height),
                             )),
                             &clip_region,
+                            parent_popup,
                         );
 
                         (old_popup_region, new_region_clipped)
@@ -2133,9 +2160,11 @@ impl WindowInner {
                     LogicalPoint::new(0.0 as crate::Coord, 0.0 as crate::Coord),
                     self.window_adapter().size().to_logical(self.scale_factor()).to_euclid(),
                 ));
-                let rect = popup::place_popup(
+                let parent_popup = child_popup_rect(&self.active_popups.borrow(), parent_item);
+                let rect = popup::place_popup_beside(
                     popup::Placement::Fixed(LogicalRect::new(position, size)),
                     &clip_region,
+                    parent_popup,
                 );
                 self.window_adapter().request_redraw();
                 (

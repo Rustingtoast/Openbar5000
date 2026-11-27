@@ -9,18 +9,29 @@ component ColorRow inherits HorizontalLayout {
     callback edited(string);
     /// Back to the colour of the theme this one started from.
     callback reset();
+    /// The swatch clicked: the colour picker.
+    callback pick();
 
     spacing: 8px;
     height: 26px;
 
     Text { text: root.label; width: 140px; vertical-alignment: center; color: Theme.text-primary; font-size: 12px; }
+    // Click for the colour picker.
     Rectangle {
         width: 20px;
         height: 20px;
+        y: (parent.height - self.height) / 2;
         border-radius: 3px;
         background: root.swatch;
-        border-width: 1px;
-        border-color: Theme.text-muted;
+        border-width: swatch-touch.has-hover ? 2px : 1px;
+        border-color: swatch-touch.has-hover ? Theme.text-primary : Theme.text-muted;
+        accessible-role: button;
+        accessible-label: "Pick the " + root.label + " color";
+        accessible-action-default => { root.pick(); }
+        swatch-touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.pick(); }
+        }
     }
     LineEdit {
         text <=> root.field-value;
@@ -37,6 +48,8 @@ component ColorRow inherits HorizontalLayout {
 export component ThemeEditorWindow inherits Window {
     title: "New Theme";
     icon: Theme.logo;
+    // Opened from Preferences, which stays on top: so must this.
+    always-on-top: true;
     preferred-width: 470px;
     preferred-height: 520px;
     background: Theme.bg-raised;
@@ -73,6 +86,8 @@ export component ThemeEditorWindow inherits Window {
     callback name-edited(string);
     callback field-edited(string, string);
     callback field-reset(string);
+    /// A swatch clicked: the colour picker, for that colour.
+    callback field-pick(string);
     callback save-clicked();
     callback cancel-clicked();
 
@@ -88,19 +103,19 @@ export component ThemeEditorWindow inherits Window {
 
         Rectangle { height: 6px; }
 
-        ColorRow { label: "Background"; swatch: root.swatch-bg-base; field-value <=> root.value-bg-base; edited(v) => { root.field-edited("bg_base", v); } reset => { root.field-reset("bg_base"); } }
-        ColorRow { label: "Panel background"; swatch: root.swatch-bg-raised; field-value <=> root.value-bg-raised; edited(v) => { root.field-edited("bg_raised", v); } reset => { root.field-reset("bg_raised"); } }
-        ColorRow { label: "Sunken background"; swatch: root.swatch-bg-sunken; field-value <=> root.value-bg-sunken; edited(v) => { root.field-edited("bg_sunken", v); } reset => { root.field-reset("bg_sunken"); } }
-        ColorRow { label: "Text"; swatch: root.swatch-text-primary; field-value <=> root.value-text-primary; edited(v) => { root.field-edited("text_primary", v); } reset => { root.field-reset("text_primary"); } }
-        ColorRow { label: "Muted text"; swatch: root.swatch-text-muted; field-value <=> root.value-text-muted; edited(v) => { root.field-edited("text_muted", v); } reset => { root.field-reset("text_muted"); } }
-        ColorRow { label: "Accent"; swatch: root.swatch-accent; field-value <=> root.value-accent; edited(v) => { root.field-edited("accent", v); } reset => { root.field-reset("accent"); } }
-        ColorRow { label: "Accent text"; swatch: root.swatch-accent-text; field-value <=> root.value-accent-text; edited(v) => { root.field-edited("accent_text", v); } reset => { root.field-reset("accent_text"); } }
-        ColorRow { label: "Waveform (unplayed)"; swatch: root.swatch-waveform-unplayed; field-value <=> root.value-waveform-unplayed; edited(v) => { root.field-edited("waveform_unplayed", v); } reset => { root.field-reset("waveform_unplayed"); } }
-        ColorRow { label: "Spectrum bar"; swatch: root.swatch-spectrum-bar; field-value <=> root.value-spectrum-bar; edited(v) => { root.field-edited("spectrum_bar", v); } reset => { root.field-reset("spectrum_bar"); } }
+        ColorRow { label: "Background"; swatch: root.swatch-bg-base; field-value <=> root.value-bg-base; edited(v) => { root.field-edited("bg_base", v); } reset => { root.field-reset("bg_base"); } pick => { root.field-pick("bg_base"); } }
+        ColorRow { label: "Panel background"; swatch: root.swatch-bg-raised; field-value <=> root.value-bg-raised; edited(v) => { root.field-edited("bg_raised", v); } reset => { root.field-reset("bg_raised"); } pick => { root.field-pick("bg_raised"); } }
+        ColorRow { label: "Sunken background"; swatch: root.swatch-bg-sunken; field-value <=> root.value-bg-sunken; edited(v) => { root.field-edited("bg_sunken", v); } reset => { root.field-reset("bg_sunken"); } pick => { root.field-pick("bg_sunken"); } }
+        ColorRow { label: "Text"; swatch: root.swatch-text-primary; field-value <=> root.value-text-primary; edited(v) => { root.field-edited("text_primary", v); } reset => { root.field-reset("text_primary"); } pick => { root.field-pick("text_primary"); } }
+        ColorRow { label: "Muted text"; swatch: root.swatch-text-muted; field-value <=> root.value-text-muted; edited(v) => { root.field-edited("text_muted", v); } reset => { root.field-reset("text_muted"); } pick => { root.field-pick("text_muted"); } }
+        ColorRow { label: "Accent"; swatch: root.swatch-accent; field-value <=> root.value-accent; edited(v) => { root.field-edited("accent", v); } reset => { root.field-reset("accent"); } pick => { root.field-pick("accent"); } }
+        ColorRow { label: "Accent text"; swatch: root.swatch-accent-text; field-value <=> root.value-accent-text; edited(v) => { root.field-edited("accent_text", v); } reset => { root.field-reset("accent_text"); } pick => { root.field-pick("accent_text"); } }
+        ColorRow { label: "Waveform (unplayed)"; swatch: root.swatch-waveform-unplayed; field-value <=> root.value-waveform-unplayed; edited(v) => { root.field-edited("waveform_unplayed", v); } reset => { root.field-reset("waveform_unplayed"); } pick => { root.field-pick("waveform_unplayed"); } }
+        ColorRow { label: "Spectrum bar"; swatch: root.swatch-spectrum-bar; field-value <=> root.value-spectrum-bar; edited(v) => { root.field-edited("spectrum_bar", v); } reset => { root.field-reset("spectrum_bar"); } pick => { root.field-pick("spectrum_bar"); } }
 
         Rectangle { vertical-stretch: 1; }
 
-        Text { text: "Colors are hex, e.g. #c97a26"; color: Theme.text-muted; font-size: 10px; }
+        Text { text: "Click a swatch or type a hex code."; color: Theme.text-muted; font-size: 10px; }
 
         HorizontalLayout {
             alignment: end;

@@ -1,0 +1,31 @@
+import { Theme } from "theme.slint";
+
+/// Any colour: a rainbow chip that opens the colour picker -- ringed
+/// when the colour is none of the swatches.
+export component PickerChip inherits Rectangle {
+    in property <bool> chosen;
+    callback clicked();
+
+    width: 26px;
+    height: 26px;
+    border-radius: self.width / 2;
+    background: @conic-gradient(#ff0000 0deg, #ffff00 60deg, #00ff00 120deg, #00ffff 180deg, #0000ff 240deg, #ff00ff 300deg, #ff0000 360deg);
+    accessible-role: button;
+    accessible-label: "Pick a color";
+    accessible-checked: root.chosen;
+    accessible-action-default => { root.clicked(); }
+    // Softened to the middle, as a colour wheel is.
+    Rectangle {
+        border-radius: self.width / 2;
+        background: @radial-gradient(circle, #ffffffd0 0%, #ffffff00 60%);
+    }
+    Rectangle {
+        border-radius: self.width / 2;
+        border-width: root.chosen ? 3px : 1px;
+        border-color: root.chosen ? Theme.accent : touch.has-hover ? Theme.text-primary : Theme.text-muted.transparentize(0.5);
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}

@@ -82,9 +82,70 @@ component TabPage inherits ScrollView {
     }
 }
 
+/// An icon to choose (Preferences > Appearance > Icon).
+export struct LogoOption {
+    id: string,
+    name: string,
+    image: image,
+}
+
+/// The icons, four across: each its picture over its name, ringed when
+/// chosen.
+component LogoGrid inherits Rectangle {
+    in property <[LogoOption]> options;
+    in property <string> chosen;
+    callback picked(string);
+
+    property <int> columns: 4;
+    property <length> cell-height: 104px;
+    height: Math.ceil(root.options.length / root.columns) * root.cell-height;
+    for option[i] in root.options: Rectangle {
+        x: Math.mod(i, root.columns) * (root.width / root.columns);
+        y: Math.floor(i / root.columns) * root.cell-height;
+        width: root.width / root.columns - 8px;
+        height: root.cell-height - 8px;
+        border-radius: 8px;
+        background: option.id == root.chosen ? Theme.accent.transparentize(0.75) : cell-touch.has-hover ? Theme.text-muted.transparentize(0.85) : transparent;
+        border-width: option.id == root.chosen ? 2px : 0px;
+        border-color: Theme.accent;
+        accessible-role: button;
+        accessible-label: option.name;
+        accessible-checked: option.id == root.chosen;
+        accessible-action-default => { root.picked(option.id); }
+        VerticalLayout {
+            padding: 6px;
+            spacing: 4px;
+            alignment: start;
+            HorizontalLayout {
+                alignment: center;
+                Image {
+                    source: option.image;
+                    width: 60px;
+                    height: 60px;
+                }
+            }
+            Text {
+                text: option.name;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+                font-size: 11px;
+                color: Theme.text-primary;
+            }
+        }
+        cell-touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.picked(option.id); }
+        }
+    }
+}
+
 export component SettingsWindow inherits Window {
     title: "Preferences";
     icon: Theme.logo;
+    // A dialog, not a window to keep open: it stays over the player
+    // until closed. (File dialogs it opens are attached to it, so they
+    // open over it -- see `platform::file_dialog_over`.)
+    always-on-top: true;
     // Never narrower than the content needs -- above all the tab titles,
     // whose width depends on the font: a fixed width let a wide font push
     // the tabs, and every page with them, past the window's right edge.
@@ -129,6 +190,16 @@ export component SettingsWindow inherits Window {
     in property <bool> holiday-special-mode: false;
     /// "Christmas", "Bisexual flag", ... or "" on ordinary days.
     in property <string> logo-occasion;
+    /// The icons to choose from, the one chosen, and a version pinned
+    /// ("" when following the calendar) -- see `app::holiday`.
+    in property <[LogoOption]> logo-icons;
+    in property <string> logo-icon;
+    in property <string> logo-icon-name;
+    in property <string> logo-pinned;
+    in-out property <bool> logo-icons-open;
+    callback logo-icon-chosen(string);
+    callback logo-preview-clicked();
+    callback logo-follow-calendar-clicked();
     callback holiday-logos-toggled(bool);
     callback holiday-special-mode-toggled(bool);
     callback playlist-smart-grouping-toggled(bool);
@@ -211,6 +282,7 @@ export component SettingsWindow inherits Window {
     in-out property <string> eq-vfd-color-hex;
     callback eq-vfd-color-chosen(color);
     callback eq-vfd-color-edited(string);
+    callback eq-vfd-pick-clicked();
     callback eq-vintage-toggled(bool);
     in property <[string]> eq-preset-names;
     in property <int> eq-preset-index;
@@ -266,13 +338,13 @@ export component SettingsWindow inherits Window {
                                 Rectangle { horizontal-stretch: 1; }
                             }
                         }
-                        HintText { text: "Album view groups songs under album headers with cover art; list view shows every song as a plain row with artist and album columns."; }
+                        HintText { text: "Album view groups songs under album headers; list view shows one row per song."; }
                         CheckBox {
                             text: "Smart grouping";
                             checked: root.playlist-smart-grouping;
                             toggled => { root.playlist-smart-grouping-toggled(self.checked); }
                         }
-                        HintText { text: "Keeps an album together even when its files are tagged inconsistently: \u{201c}feat.\u{201d} credits and small differences in the album name are ignored, files without an album tag group by folder, and an album's tracks are moved next to each other in track order when they're added."; }
+                        HintText { text: "Keeps albums together despite messy tags, like \u{201c}feat.\u{201d} credits or small name differences, and puts their tracks in order. Untagged files group by folder."; }
 
                         Rectangle { height: 8px; }
                         SectionHeading { text: "Logo"; }
@@ -292,7 +364,7 @@ export component SettingsWindow inherits Window {
                                     toggled => { root.holiday-logos-toggled(self.checked); }
                                 }
                                 CheckBox {
-                                    text: "Special holiday mode (a different pride flag each month)";
+                                    text: "Pride flags (a different flag each month)";
                                     checked: root.holiday-special-mode;
                                     toggled => { root.holiday-special-mode-toggled(self.checked); }
                                 }
@@ -301,11 +373,68 @@ export component SettingsWindow inherits Window {
                                 }
                             }
                         }
-                        HintText { text: "International Workers' Day (1 May), Pride Month (June, always shown), Christmas (24\u{2013}26 December and 6 January), New Year (31 December\u{2013}1 January) and Chinese New Year (15 January\u{2013}15 February). The launcher and Dock icons keep the regular logo."; }
+                        // Which icon: opens to a grid of them.
+                        HorizontalLayout {
+                            spacing: 8px;
+                            icon-header := Rectangle {
+                                horizontal-stretch: 1;
+                                height: 30px;
+                                border-radius: 6px;
+                                background: icon-touch.has-hover ? Theme.text-muted.transparentize(0.85) : transparent;
+                                accessible-role: button;
+                                accessible-label: "Icon: " + root.logo-icon-name;
+                                accessible-expanded: root.logo-icons-open;
+                                accessible-action-default => { root.logo-icons-open = !root.logo-icons-open; }
+                                HorizontalLayout {
+                                    padding-left: 4px;
+                                    spacing: 6px;
+                                    Text {
+                                        text: "\u{203a}";
+                                        font-size: 16px;
+                                        transform-rotation: root.logo-icons-open ? 90deg : 0deg;
+                                        animate transform-rotation { duration: 120ms; }
+                                        color: icon-touch.has-hover ? Theme.text-primary : Theme.text-muted;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: "Icon: " + root.logo-icon-name;
+                                        vertical-alignment: center;
+                                        color: Theme.text-primary;
+                                    }
+                                    Rectangle { horizontal-stretch: 1; }
+                                }
+                                icon-touch := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.logo-icons-open = !root.logo-icons-open; }
+                                }
+                            }
+                            Button {
+                                text: "Preview\u{2026}";
+                                clicked => { root.logo-preview-clicked(); }
+                            }
+                        }
+                        if root.logo-icons-open: LogoGrid {
+                            options: root.logo-icons;
+                            chosen: root.logo-icon;
+                            picked(id) => { root.logo-icon-chosen(id); }
+                        }
+                        if root.logo-pinned != "": HorizontalLayout {
+                            spacing: 8px;
+                            UnitText {
+                                text: "Always shown: " + root.logo-pinned;
+                                vertical-alignment: center;
+                            }
+                            Button {
+                                text: "Follow the calendar";
+                                clicked => { root.logo-follow-calendar-clicked(); }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                        HintText { text: "Holidays: Workers' Day, Christmas, New Year and Chinese New Year; on those days the holiday's logo replaces the pride flag. The rainbow shows all of June."; }
 
                         Rectangle { height: 8px; }
                         SectionHeading { text: "Theme"; }
-                        HintText { text: "Pick a built-in theme or create your own. Changes apply immediately."; }
+                        HintText { text: "Pick a theme or create your own."; }
 
                         Rectangle {
                             vertical-stretch: 1;
@@ -350,11 +479,11 @@ export component SettingsWindow inherits Window {
                         alignment: start;
 
                         SectionHeading { text: "Panels"; }
-                        HintText { text: "Add, remove, move and resize the waveform seekbar, spectrum analyzer and other panels with View > Edit Layout. Panels that aren't in the layout cost no CPU."; }
+                        HintText { text: "Arrange panels with View > Edit Layout. Panels not in the layout use no CPU."; }
 
                         Rectangle { height: 8px; }
                         SectionHeading { text: "Performance"; }
-                        HintText { text: "How often the waveform, seekbar, spectrum and vinyl redraw while playing. Higher is smoother on fast displays but costs more CPU; lower helps on slower machines or integrated graphics. The vinyl turns at 33\u{2153} RPM at any frame rate."; }
+                        HintText { text: "How often the waveform, spectrum and vinyl redraw. Higher is smoother; lower saves CPU."; }
                         GridLayout {
                             spacing: 8px;
                             Row {
@@ -423,7 +552,7 @@ export component SettingsWindow inherits Window {
                             }
                             Row {
                                 Rectangle {}
-                                UnitText { text: "Spectrum also covers the waveform and seekbar. Changing these makes the preset Custom."; colspan: 2; wrap: word-wrap; }
+                                UnitText { text: "Spectrum also sets the waveform and seekbar. Changing these makes the preset Custom."; colspan: 2; wrap: word-wrap; }
                             }
                         }
                     }
@@ -575,6 +704,7 @@ export component SettingsWindow inherits Window {
                         vfd-color-hex <=> root.eq-vfd-color-hex;
                         vfd-color-chosen(c) => { root.eq-vfd-color-chosen(c); }
                         vfd-color-edited(text) => { root.eq-vfd-color-edited(text); }
+                        vfd-pick-clicked => { root.eq-vfd-pick-clicked(); }
                         vintage-toggled(on) => { root.eq-vintage-toggled(on); }
                         preset-names: root.eq-preset-names;
                         preset-index: root.eq-preset-index;
@@ -598,7 +728,7 @@ export component SettingsWindow inherits Window {
                         spacing: 8px;
 
                         SectionHeading { text: "Music folders"; }
-                        HintText { text: "Everything in these folders shows up in the LIB panel. They're watched, so added, changed and removed files are picked up automatically."; }
+                        HintText { text: "Shown in the LIB panel and kept up to date automatically."; }
                         Rectangle {
                             vertical-stretch: 1;
                             min-height: 120px;
@@ -660,7 +790,7 @@ export component SettingsWindow inherits Window {
                         alignment: start;
 
                         SectionHeading { text: "Audio device"; }
-                        HintText { text: "\u{201c}System default\u{201d} plays wherever your system sends sound, and follows it when that changes, e.g. when headphones are plugged in. A device you pick is used whenever it's connected; while it isn't, the system default stands in."; }
+                        HintText { text: "\u{201c}System default\u{201d} follows your system's output. A chosen device is used whenever it's connected."; }
                         GridLayout {
                             spacing: 8px;
                             Row {
@@ -692,7 +822,7 @@ export component SettingsWindow inherits Window {
 
                         SectionHeading { text: "Discord Rich Presence"; }
                         HintText {
-                            text: "Shows the track you're listening to on your Discord profile. Requires your own Discord Application client ID -- see the README for the one-time setup.";
+                            text: "Shows what you're playing on your Discord profile. Needs a Discord application client ID (see the README).";
                         }
                         CheckBox {
                             text: "Enable Discord Rich Presence";
@@ -719,7 +849,7 @@ export component SettingsWindow inherits Window {
                         Rectangle { height: 8px; }
                         SectionHeading { text: "Now playing file (OBS)"; }
                         HintText {
-                            text: "Keeps what's playing -- artist, album, title, time, and the track's folder for its folder.jpg -- in a JSON file for a stream overlay to show. It's the format of foobar2000's foo_np_simple, so an overlay made for it, like the OBS \u{201c}nowplaying\u{201d} browser source, works as it is: choose the nowplaying.json in the overlay's folder.";
+                            text: "Writes the current track to a JSON file for stream overlays such as OBS. Choose the overlay's nowplaying.json.";
                         }
                         CheckBox {
                             text: "Write the now playing file";
@@ -745,7 +875,7 @@ export component SettingsWindow inherits Window {
                         Rectangle { height: 8px; }
                         SectionHeading { text: "Artist information"; }
                         HintText {
-                            text: "While the BIO tab is open, the playing artist is looked up online from the track's artist and title -- MusicBrainz identifies the artist (type, country, active years, genres). Nothing is sent while the tab is closed, and results are kept, so each artist is looked up once.";
+                            text: "Looks up the playing artist on MusicBrainz while the BIO tab is open. Each artist is fetched once.";
                         }
                         CheckBox {
                             text: "Include biography and photo from Wikipedia";

@@ -1,0 +1,198 @@
+import { Button, Palette, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+/// One version of an icon: "christmas", "Christmas", and its picture.
+export struct LogoVersion {
+    key: string,
+    label: string,
+    image: image,
+}
+
+/// A version to click: its picture over its name, ringed when chosen.
+component VersionCell inherits Rectangle {
+    in property <LogoVersion> version;
+    in property <bool> chosen;
+    /// Shown always (pinned).
+    in property <bool> pinned;
+    callback clicked();
+
+    border-radius: 8px;
+    background: root.chosen ? Theme.accent.transparentize(0.75) : touch.has-hover ? Theme.text-muted.transparentize(0.85) : transparent;
+    border-width: root.chosen ? 2px : 0px;
+    border-color: Theme.accent;
+    accessible-role: button;
+    accessible-label: root.version.label;
+    accessible-action-default => { root.clicked(); }
+
+    VerticalLayout {
+        padding: 6px;
+        spacing: 4px;
+        alignment: start;
+        HorizontalLayout {
+            alignment: center;
+            Image {
+                source: root.version.image;
+                width: 64px;
+                height: 64px;
+            }
+        }
+        Text {
+            text: root.pinned ? root.version.label + " (always)" : root.version.label;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+            font-size: 11px;
+            color: Theme.text-primary;
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+/// A grid of versions, four across.
+component VersionGrid inherits Rectangle {
+    in property <[LogoVersion]> versions;
+    in property <string> chosen;
+    in property <string> pinned;
+    callback picked(LogoVersion);
+
+    property <int> columns: 4;
+    property <length> cell-height: 104px;
+    height: Math.ceil(root.versions.length / root.columns) * root.cell-height;
+    for version[i] in root.versions: VersionCell {
+        x: Math.mod(i, root.columns) * (root.width / root.columns);
+        y: Math.floor(i / root.columns) * root.cell-height;
+        width: root.width / root.columns - 6px;
+        height: root.cell-height - 6px;
+        version: version;
+        chosen: version.key == root.chosen;
+        pinned: version.key == root.pinned;
+        clicked => { root.picked(version); }
+    }
+}
+
+/// Preferences > Appearance > Icon > Preview: the icon chosen big, and
+/// every version of it -- the holidays' and each month's pride flag's. One
+/// of them can be kept for good ("Use only this version"). Stays on top;
+/// Esc closes it.
+export component LogoPreviewWindow inherits Window {
+    title: "Icon preview \u{2014} " + root.icon-name;
+    icon: Theme.logo;
+    always-on-top: true;
+    preferred-width: 740px;
+    preferred-height: 560px;
+    min-width: 640px;
+    min-height: 420px;
+    background: Theme.bg-raised;
+
+    in property <bool> theme-is-dark: true;
+    init => {
+        Palette.color-scheme = root.theme-is-dark ? ColorScheme.dark : ColorScheme.light;
+    }
+    changed theme-is-dark => {
+        Palette.color-scheme = root.theme-is-dark ? ColorScheme.dark : ColorScheme.light;
+    }
+
+    in property <string> icon-name;
+    /// Regular first, then the holidays.
+    in property <[LogoVersion]> holidays;
+    in property <[LogoVersion]> flags;
+    /// The version shown always, or "" to follow the calendar.
+    in property <string> pinned;
+    /// The version shown big.
+    in-out property <LogoVersion> chosen;
+    callback use-version(string);
+    callback follow-calendar();
+    callback close-clicked();
+
+    keys := FocusScope {
+        capture-key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.close-clicked();
+                return accept;
+            }
+            reject
+        }
+
+        HorizontalLayout {
+            padding: 16px;
+            spacing: 16px;
+
+            // The chosen version, big.
+            VerticalLayout {
+                width: 240px;
+                spacing: 10px;
+                alignment: start;
+                Rectangle {
+                    height: 224px;
+                    border-radius: 12px;
+                    background: Theme.bg-sunken;
+                    Image {
+                        source: root.chosen.image;
+                        width: 200px;
+                        height: 200px;
+                    }
+                }
+                Text {
+                    text: root.chosen.label;
+                    font-size: 15px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                    color: Theme.text-primary;
+                }
+                Text {
+                    text: root.pinned == "" ? "Follows the calendar: holidays and, if on, pride flags." : "Always shown: " + root.pinned-label;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                    font-size: 11px;
+                    color: Theme.text-muted;
+                }
+                Button {
+                    text: "Use only this version";
+                    enabled: root.chosen.key != root.pinned;
+                    clicked => { root.use-version(root.chosen.key); }
+                }
+                Button {
+                    text: "Follow the calendar";
+                    enabled: root.pinned != "";
+                    clicked => { root.follow-calendar(); }
+                }
+                Rectangle { height: 4px; }
+                Button {
+                    text: "Close";
+                    clicked => { root.close-clicked(); }
+                }
+            }
+
+            ScrollView {
+                VerticalLayout {
+                    spacing: 6px;
+                    alignment: start;
+                    Text { text: "Regular and holidays"; font-weight: 700; color: Theme.text-primary; }
+                    VersionGrid {
+                        versions: root.holidays;
+                        chosen: root.chosen.key;
+                        pinned: root.pinned;
+                        picked(version) => { root.chosen = version; keys.focus(); }
+                    }
+                    Rectangle { height: 6px; }
+                    Text { text: "Pride flags, one a month"; font-weight: 700; color: Theme.text-primary; }
+                    VersionGrid {
+                        versions: root.flags;
+                        chosen: root.chosen.key;
+                        pinned: root.pinned;
+                        picked(version) => { root.chosen = version; keys.focus(); }
+                    }
+                }
+            }
+        }
+    }
+
+    /// `pinned`'s name, for the line under the big picture.
+    in property <string> pinned-label;
+
+    public function focus-keys() {
+        keys.focus();
+    }
+}

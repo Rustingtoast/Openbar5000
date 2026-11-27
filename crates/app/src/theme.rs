@@ -1,8 +1,8 @@
 use crate::store::Store;
 use slint::ComponentHandle;
 use ui::{
-    AboutWindow, LyricsEditorWindow, PlaylistManagerWindow, MainWindow, PropertiesWindow, SettingsWindow, Theme,
-    ThemeEditorWindow,
+    AboutWindow, ColorPickerWindow, LogoPreviewWindow, LyricsEditorWindow, PlaylistManagerWindow, MainWindow, PropertiesWindow,
+    SettingsWindow, Theme, ThemeEditorWindow,
 };
 
 /// The semantic color tokens every window reads via the `Theme` Slint
@@ -481,9 +481,13 @@ pub struct ThemedWindows {
     theme_editor: slint::Weak<ThemeEditorWindow>,
     lyrics_editor: slint::Weak<LyricsEditorWindow>,
     playlist_manager: slint::Weak<PlaylistManagerWindow>,
+    color_picker: slint::Weak<ColorPickerWindow>,
+    logo_preview: slint::Weak<LogoPreviewWindow>,
 }
 
 impl ThemedWindows {
+    // One per window the app has.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         main: &MainWindow,
         properties: &PropertiesWindow,
@@ -492,6 +496,8 @@ impl ThemedWindows {
         theme_editor: &ThemeEditorWindow,
         lyrics_editor: &LyricsEditorWindow,
         playlist_manager: &PlaylistManagerWindow,
+        color_picker: &ColorPickerWindow,
+        logo_preview: &LogoPreviewWindow,
     ) -> Self {
         Self {
             main: main.as_weak(),
@@ -501,6 +507,8 @@ impl ThemedWindows {
             theme_editor: theme_editor.as_weak(),
             lyrics_editor: lyrics_editor.as_weak(),
             playlist_manager: playlist_manager.as_weak(),
+            color_picker: color_picker.as_weak(),
+            logo_preview: logo_preview.as_weak(),
         }
     }
 
@@ -514,7 +522,7 @@ impl ThemedWindows {
                 }
             )*};
         }
-        apply_to!(main, properties, about, settings, theme_editor, lyrics_editor, playlist_manager);
+        apply_to!(main, properties, about, settings, theme_editor, lyrics_editor, playlist_manager, color_picker, logo_preview);
     }
 
     /// Shows `logo` in every window (title bar, now-playing bar, About).
@@ -526,7 +534,7 @@ impl ThemedWindows {
                 }
             )*};
         }
-        apply_to!(main, properties, about, settings, theme_editor, lyrics_editor, playlist_manager);
+        apply_to!(main, properties, about, settings, theme_editor, lyrics_editor, playlist_manager, color_picker, logo_preview);
     }
 }
 

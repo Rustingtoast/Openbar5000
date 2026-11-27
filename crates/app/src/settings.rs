@@ -26,9 +26,14 @@ pub struct Settings {
     pub playlist_smart_grouping: bool,
     /// Holiday logos (issue #23); Pride Month shows regardless.
     pub holiday_logos: bool,
-    /// Special holiday mode: a different pride flag behind the logo each
+    /// Pride flags mode: a different pride flag behind the logo each
     /// month.
     pub holiday_special_mode: bool,
+    /// The icon chosen in Preferences > Appearance (`logo_files::ICONS`).
+    pub logo_icon: String,
+    /// A version of it to show always ("christmas", "flag-02"), whatever
+    /// the date; empty to follow the calendar.
+    pub logo_pinned: String,
     /// The playlist shown (issue #33; see `playlists`).
     pub active_playlist: i64,
     /// The Sorting menu's kept sort order.
@@ -95,6 +100,8 @@ impl Default for Settings {
             active_playlist: crate::store::DEFAULT_PLAYLIST_ID,
             holiday_logos: true,
             holiday_special_mode: false,
+            logo_icon: crate::logo_files::ICONS[0].id.to_string(),
+            logo_pinned: String::new(),
             playlist_smart_grouping: false,
             visualization_fps: 60,
             discord_presence_enabled: false,
@@ -336,6 +343,12 @@ impl Settings {
         if let Some(v) = get("holiday_special_mode") {
             settings.holiday_special_mode = v == "true";
         }
+        if let Some(v) = get("logo_icon") {
+            settings.logo_icon = v;
+        }
+        if let Some(v) = get("logo_pinned") {
+            settings.logo_pinned = v;
+        }
         if let Some(v) = get("playlist_smart_grouping") {
             settings.playlist_smart_grouping = v == "true";
         }
@@ -469,6 +482,8 @@ impl Settings {
             ("holiday_logos", self.holiday_logos.to_string()),
             ("active_playlist", self.active_playlist.to_string()),
             ("holiday_special_mode", self.holiday_special_mode.to_string()),
+            ("logo_icon", self.logo_icon.clone()),
+            ("logo_pinned", self.logo_pinned.clone()),
             (
                 "playlist_view",
                 if self.playlist_list_view { "list" } else { "album" }.to_string(),

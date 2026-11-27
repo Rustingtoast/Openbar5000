@@ -24,12 +24,15 @@ pub enum Design {
     Split,
     /// The cover art printed across the whole record.
     Picture,
+    /// An image of one's own (`VinylStyle::texture`) wrapped round the
+    /// record, under its grooves.
+    Texture,
 }
 
 impl Design {
     /// In the Properties window's order.
-    pub const ALL: [Design; 6] =
-        [Self::Classic, Self::Translucent, Self::Marbled, Self::Splatter, Self::Split, Self::Picture];
+    pub const ALL: [Design; 7] =
+        [Self::Classic, Self::Translucent, Self::Marbled, Self::Splatter, Self::Split, Self::Picture, Self::Texture];
 
     /// Shared with Slint (`VinylDisc.design`) and stored.
     pub fn id(self) -> &'static str {
@@ -40,6 +43,7 @@ impl Design {
             Self::Splatter => "splatter",
             Self::Split => "split",
             Self::Picture => "picture",
+            Self::Texture => "texture",
         }
     }
 
@@ -51,6 +55,7 @@ impl Design {
             Self::Splatter => "Splatter",
             Self::Split => "Split",
             Self::Picture => "Picture disc",
+            Self::Texture => "Texture (own image)",
         }
     }
 
@@ -84,11 +89,28 @@ pub struct VinylStyle {
     /// The cover art printed on the label (when there's one); off, the
     /// label is plain, in its colour.
     pub label_art: bool,
+    /// How see-through the translucent design is: 0 (barely) to 1 (all
+    /// but clear glass) -- and the texture, fading to tinted glass.
+    pub clarity: f32,
+    /// The texture design's image: a file in `texture_dir` (see
+    /// `import_texture`).
+    pub texture: Option<String>,
+    /// The label see-through, and how much: its colour fading from 0
+    /// (none) to 1 (clear, the platter showing).
+    pub label_clear: Option<f32>,
 }
 
 impl Default for VinylStyle {
     fn default() -> Self {
-        Self { color: default_color(), design: Design::Classic, label: Label::Accent, label_art: true }
+        Self {
+            color: default_color(),
+            design: Design::Classic,
+            label: Label::Accent,
+            label_art: true,
+            clarity: DEFAULT_CLARITY,
+            texture: None,
+            label_clear: None,
+        }
     }
 }
 
@@ -100,10 +122,17 @@ pub enum Label {
     #[default]
     Accent,
     Color(slint::Color),
-    /// The vinyl itself, its colour and design going on to the middle.
+    /// The vinyl's colour (not its design).
     Match,
-    /// Clear: the platter shows through.
-    Clear,
+}
+
+/// The translucent design's clarity unless one's picked, and the label's
+/// when it's first made see-through.
+pub const DEFAULT_CLARITY: f32 = 0.5;
+
+/// A stored clarity, kept from 0 to 1.
+fn clarity_from_stored(stored: f64) -> f32 {
+    (stored as f32).clamp(0.0, 1.0)
 }
 
 impl Label {
@@ -113,7 +142,6 @@ impl Label {
             Self::Accent => "accent",
             Self::Color(_) => "color",
             Self::Match => "match",
-            Self::Clear => "clear",
         }
     }
 
@@ -124,14 +152,12 @@ impl Label {
         }
     }
 
-    /// As the `label` column keeps it: NULL, "#rrggbb", "match" or
-    /// "clear".
+    /// As the `label` column keeps it: NULL, "#rrggbb" or "match".
     fn to_stored(self) -> Option<String> {
         match self {
             Self::Accent => None,
             Self::Color(color) => Some(color_to_hex(color)),
             Self::Match => Some("match".into()),
-            Self::Clear => Some("clear".into()),
         }
     }
 
@@ -139,7 +165,6 @@ impl Label {
         match stored {
             None => Self::Accent,
             Some("match") => Self::Match,
-            Some("clear") => Self::Clear,
             Some(hex) => parse_hex_color(hex).map_or(Self::Accent, Self::Color),
         }
     }
@@ -151,6 +176,67 @@ pub fn default_color() -> slint::Color {
 }
 
 impl VinylStyle {
+    /// How see-through the label is, for Slint (`VinylDisc.label-clarity`):
+    /// 0 when it isn't.
+    pub fn label_clarity(&self) -> f32 {
+        self.label_clear.unwrap_or(0.0)
+    }
+
+    /// How see-through the vinyl is: its clarity when that's its design's,
+    /// else none.
+    pub fn vinyl_clarity(&self) -> Option<f32> {
+        match self.design {
+            Design::Translucent => Some(self.clarity),
+            Design::Texture if self.texture.is_some() && self.clarity > 0.0 => Some(self.clarity),
+            _ => None,
+        }
+    }
+
+    /// Makes a change to the vinyl, the label matching it keeping up: as
+    /// see-through as the vinyl while it was (when it was, or nothing), so
+    /// a label left alone follows -- one given its own stays.
+    pub fn edit_vinyl(&mut self, change: impl FnOnce(&mut Self)) {
+        let followed = self.label == Label::Match && self.label_clear == self.vinyl_clarity();
+        change(self);
+        if followed {
+            self.label_clear = self.vinyl_clarity();
+        }
+    }
+
+    /// A label that isn't the vinyl's (any more): the see-through it had
+    /// from the vinyl goes with that, one of its own stays.
+    pub fn set_label(&mut self, label: Label) {
+        if self.label == Label::Match
+            && label != Label::Match
+            && self.label_clear.is_some()
+            && self.label_clear == self.vinyl_clarity()
+        {
+            self.label_clear = None;
+        }
+        self.label = label;
+    }
+
+    /// "Match the vinyl" ticked: the vinyl's colour, and as see-through as
+    /// it is (when it is), until changed here.
+    pub fn match_vinyl(&mut self) {
+        self.label = Label::Match;
+        if let Some(clarity) = self.vinyl_clarity() {
+            self.label_clear = Some(clarity);
+        }
+    }
+
+    /// The texture's image, for Slint (`VinylDisc.texture`): none unless
+    /// it's the design, or when its file is gone (the record then plain).
+    pub fn texture_image(&self) -> slint::Image {
+        match (&self.texture, self.design) {
+            // Just a file name: nothing from outside the folder.
+            (Some(name), Design::Texture) if Path::new(name).file_name() == Some(name.as_ref()) => {
+                slint::Image::load_from_path(&texture_dir().join(name)).unwrap_or_default()
+            }
+            _ => slint::Image::default(),
+        }
+    }
+
     pub fn hex(&self) -> String {
         color_to_hex(self.color)
     }
@@ -174,6 +260,9 @@ impl VinylStyle {
             design: Design::from_id(&stored.design).unwrap_or_default(),
             label: Label::from_stored(stored.label.as_deref()),
             label_art: stored.label_art,
+            clarity: stored.clarity.map_or(DEFAULT_CLARITY, clarity_from_stored),
+            label_clear: stored.label_clarity.map(clarity_from_stored),
+            texture: stored.texture,
         })
     }
 
@@ -185,9 +274,57 @@ impl VinylStyle {
                 design: self.design.id().to_string(),
                 label: self.label.to_stored(),
                 label_art: self.label_art,
+                clarity: Some(f64::from(self.clarity)),
+                label_clarity: self.label_clear.map(f64::from),
+                texture: self.texture.clone(),
             },
         );
     }
+}
+
+/// The textures' side of a texture, in pixels: plenty for a record a few
+/// hundred pixels wide, small to keep and quick to load.
+const TEXTURE_SIZE: u32 = 1024;
+
+/// Where imported textures are kept: a copy of each, so the record keeps
+/// it when the original is moved or deleted.
+pub fn texture_dir() -> std::path::PathBuf {
+    crate::settings::config_dir().join("vinyl-textures")
+}
+
+/// Copies the image at `source` in as a texture: the middle square of it,
+/// scaled to `TEXTURE_SIZE`, as a PNG named after its pixels (the same
+/// image imported twice is kept once). Its name, for `VinylStyle::texture`.
+pub fn import_texture(source: &Path) -> Result<String, String> {
+    let data = std::fs::read(source).map_err(|e| format!("Couldn\u{2019}t read the image: {e}"))?;
+    let decoded = image::load_from_memory(&data).map_err(|_| {
+        "That file isn\u{2019}t a picture Openbar5000 can read (JPEG or PNG).".to_string()
+    })?;
+    let size = TEXTURE_SIZE
+        .min(decoded.width())
+        .min(decoded.height())
+        .max(1);
+    // RGBA: a PNG's see-through parts stay see-through.
+    let square = decoded
+        .resize_to_fill(size, size, image::imageops::FilterType::Triangle)
+        .into_rgba8();
+    let name = format!("{:016x}.png", fnv1a(square.as_raw()));
+    let dir = texture_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Couldn\u{2019}t keep the texture: {e}"))?;
+    let path = dir.join(&name);
+    if !path.exists() {
+        square
+            .save(&path)
+            .map_err(|e| format!("Couldn\u{2019}t keep the texture: {e}"))?;
+    }
+    Ok(name)
+}
+
+/// A stable hash (unlike `DefaultHasher`, the same in every build).
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    })
 }
 
 /// Where an album's look is stored; `album` is a
@@ -256,6 +393,7 @@ mod tests {
             design: Design::Marbled,
             label: Label::Color(parse_hex_color("#e9e6df").unwrap()),
             label_art: false,
+            ..VinylStyle::default()
         };
         save(&store, &[(song.0.clone(), record.clone())], &red_marble, true);
         // The whole record has it.
@@ -263,8 +401,9 @@ mod tests {
 
         let blue_split = VinylStyle {
             color: parse_hex_color("#2556b8").unwrap(),
-            design: Design::Split,
-            label: Label::Clear,
+            design: Design::Translucent,
+            clarity: 0.8,
+            label_clear: Some(1.0),
             ..VinylStyle::default()
         };
         save(&store, &[(song.0.clone(), record.clone())], &blue_split, false);
@@ -282,6 +421,66 @@ mod tests {
         save(&store, &[(song.0.clone(), record)], &red_marble, true);
         assert_eq!(style_for(&store, &song.0, song.1), (red_marble.clone(), true));
         assert_eq!(style_for(&store, &other.0, other.1), (red_marble, true));
+    }
+
+    #[test]
+    fn a_clear_label_from_before_is_the_accent_fully_clear() {
+        let store = Store::open_in_memory().unwrap();
+        store.set_vinyl_style(
+            "album\u{1f}a",
+            &StoredVinylStyle {
+                color: "#161616".into(),
+                design: "classic".into(),
+                label: Some("clear".into()),
+                label_art: true,
+                clarity: None,
+                label_clarity: None,
+                texture: None,
+            },
+        );
+        // As migration v7 rewrites it; an unknown label reads as the accent.
+        let look = album_look(&store, "a");
+        assert_eq!((look.label, look.clarity), (Label::Accent, DEFAULT_CLARITY));
+        let clear = VinylStyle {
+            label_clear: Some(0.7),
+            ..VinylStyle::default()
+        };
+        assert_eq!(clear.label_clarity(), 0.7);
+    }
+
+    #[test]
+    fn a_matching_label_follows_the_vinyl_until_given_its_own_clarity() {
+        let mut style = VinylStyle {
+            design: Design::Translucent,
+            clarity: 0.4,
+            ..VinylStyle::default()
+        };
+        style.match_vinyl();
+        assert_eq!(style.label_clear, Some(0.4));
+        style.edit_vinyl(|s| s.clarity = 0.7);
+        assert_eq!(style.label_clear, Some(0.7));
+        // Back to solid vinyl: the label too.
+        style.edit_vinyl(|s| s.design = Design::Classic);
+        assert_eq!(style.label_clear, None);
+        style.edit_vinyl(|s| s.design = Design::Translucent);
+        assert_eq!(style.label_clear, Some(0.7));
+        // Another colour: the vinyl's see-through goes too.
+        style.set_label(Label::Accent);
+        assert_eq!(style.label_clear, None);
+        style.match_vinyl();
+        assert_eq!(style.label_clear, Some(0.7));
+        // Its own: kept.
+        style.label_clear = Some(0.2);
+        style.edit_vinyl(|s| s.clarity = 0.9);
+        assert_eq!(style.label_clear, Some(0.2));
+        // Not matching: never touched.
+        let mut own = VinylStyle {
+            design: Design::Translucent,
+            clarity: 0.4,
+            ..VinylStyle::default()
+        };
+        own.edit_vinyl(|s| s.clarity = 0.8);
+        assert_eq!(own.label_clear, None);
     }
 
     #[test]

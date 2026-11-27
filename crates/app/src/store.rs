@@ -103,6 +103,17 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE vinyl_styles ADD COLUMN label TEXT;
     ALTER TABLE vinyl_styles ADD COLUMN label_art INTEGER NOT NULL DEFAULT 1;
     "#,
+    // v7: how see-through the record is (issue #40): `clarity`, 0 to 1, of
+    // the translucent and texture designs (NULL: the default), and
+    // `label_clarity` of the label (NULL: opaque); and the texture design's
+    // image, a file in `vinyl_style::texture_dir`. The "clear" label becomes
+    // the accent, fully clear -- as it looked.
+    r#"
+    ALTER TABLE vinyl_styles ADD COLUMN clarity REAL;
+    ALTER TABLE vinyl_styles ADD COLUMN texture TEXT;
+    ALTER TABLE vinyl_styles ADD COLUMN label_clarity REAL;
+    UPDATE vinyl_styles SET label = NULL, label_clarity = 1.0 WHERE label = 'clear';
+    "#,
 ];
 
 /// The playlist every database starts with (migration v1).
@@ -366,7 +377,7 @@ impl Store {
     pub fn vinyl_style(&self, key: &str) -> Option<StoredVinylStyle> {
         self.conn
             .query_row(
-                "SELECT color, design, label, label_art FROM vinyl_styles WHERE key = ?1",
+                "SELECT color, design, label, label_art, clarity, label_clarity, texture FROM vinyl_styles WHERE key = ?1",
                 params![key],
                 |row| {
                     Ok(StoredVinylStyle {
@@ -374,6 +385,9 @@ impl Store {
                         design: row.get(1)?,
                         label: row.get(2)?,
                         label_art: row.get(3)?,
+                        clarity: row.get(4)?,
+                        label_clarity: row.get(5)?,
+                        texture: row.get(6)?,
                     })
                 },
             )
@@ -383,10 +397,22 @@ impl Store {
 
     pub fn set_vinyl_style(&self, key: &str, style: &StoredVinylStyle) {
         if let Err(e) = self.conn.execute(
-            "INSERT INTO vinyl_styles (key, color, design, label, label_art) VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO vinyl_styles (key, color, design, label, label_art, clarity, label_clarity, texture)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(key) DO UPDATE SET color = excluded.color, design = excluded.design,
-                 label = excluded.label, label_art = excluded.label_art",
-            params![key, style.color, style.design, style.label, style.label_art],
+                 label = excluded.label, label_art = excluded.label_art,
+                 clarity = excluded.clarity, label_clarity = excluded.label_clarity,
+                 texture = excluded.texture",
+            params![
+                key,
+                style.color,
+                style.design,
+                style.label,
+                style.label_art,
+                style.clarity,
+                style.label_clarity,
+                style.texture
+            ],
         ) {
             tracing::warn!("failed to save a vinyl style: {e}");
         }
@@ -513,6 +539,13 @@ pub struct StoredVinylStyle {
     /// `None`: the theme's accent.
     pub label: Option<String>,
     pub label_art: bool,
+    /// How see-through a translucent record is, 0 to 1; `None`: the
+    /// default.
+    pub clarity: Option<f64>,
+    /// How see-through the label is, 0 to 1; `None`: not at all.
+    pub label_clarity: Option<f64>,
+    /// The texture design's image file, in `vinyl_style::texture_dir`.
+    pub texture: Option<String>,
 }
 
 /// A playlist as the Playlist Manager lists it.
@@ -684,6 +717,37 @@ mod tests {
         // Closed first: Windows won't delete a file that's open.
         drop(store);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn v7_makes_a_clear_label_the_accent_fully_clear() {
+        let conn = Connection::open_in_memory().unwrap();
+        for migration in &MIGRATIONS[..6] {
+            conn.execute_batch(migration).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 6).unwrap();
+        conn.execute(
+            "INSERT INTO vinyl_styles (key, color, design, label, label_art) VALUES
+             ('a', '#161616', 'classic', 'clear', 1), ('b', '#161616', 'classic', 'match', 1)",
+            [],
+        )
+        .unwrap();
+        let store = Store::from_connection(conn).unwrap();
+        let clear = store.vinyl_style("a").unwrap();
+        assert_eq!(
+            (
+                clear.label,
+                clear.label_clarity,
+                clear.clarity,
+                clear.texture
+            ),
+            (None, Some(1.0), None, None)
+        );
+        let matched = store.vinyl_style("b").unwrap();
+        assert_eq!(
+            (matched.label.as_deref(), matched.label_clarity),
+            (Some("match"), None)
+        );
     }
 
     #[test]

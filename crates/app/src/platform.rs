@@ -14,6 +14,13 @@ pub fn desktop_id() -> String {
         .unwrap_or_else(|| "openbar5000".to_string())
 }
 
+/// A file dialog attached to `window`, so it opens over it -- even over a
+/// window kept on top, as Preferences and Properties are, which an
+/// unattached one would open behind.
+pub fn file_dialog_over(window: &slint::Window) -> rfd::FileDialog {
+    rfd::FileDialog::new().set_parent(&window.window_handle())
+}
+
 /// Opens `url` in the default browser.
 pub fn open_url(url: &str) {
     if !(url.starts_with("https://") || url.starts_with("http://")) {

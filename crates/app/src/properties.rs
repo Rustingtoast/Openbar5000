@@ -6,6 +6,7 @@
 //! tags. The Vinyl tab picks the look of the song's record on the VNL panel
 //! (see `crate::vinyl_style`), saved with the rest.
 
+use crate::color_picker::ColorPicker;
 use crate::store::Store;
 use crate::theme::parse_hex_color;
 use crate::vinyl_style::{self, Design, Label, VinylStyle, PRESETS};
@@ -95,6 +96,11 @@ pub struct PropertiesEditor {
     /// kept for the new name too once the tags are written, or the record
     /// would lose it.
     renamed_look: RefCell<Option<VinylStyle>>,
+    /// For the vinyl's and label's "any colour" chip.
+    color_picker: Rc<ColorPicker>,
+    /// The texture image being read in the background, counted so one
+    /// read for tracks no longer open is dropped.
+    texture_request: std::cell::Cell<i32>,
 }
 
 /// A track open in the window, for its record's look: its file, its own
@@ -127,7 +133,12 @@ pub struct PropertiesTrack {
 }
 
 impl PropertiesEditor {
-    pub fn wire(window: &PropertiesWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -> Rc<Self> {
+    pub fn wire(
+        window: &PropertiesWindow,
+        engine: Rc<PlaybackEngine>,
+        store: Rc<Store>,
+        color_picker: Rc<ColorPicker>,
+    ) -> Rc<Self> {
         let editor = Rc::new(Self {
             window: window.clone_strong(),
             engine,
@@ -146,6 +157,8 @@ impl PropertiesEditor {
             vinyl_saved: RefCell::new(None),
             vinyl_album: RefCell::new(String::new()),
             renamed_look: RefCell::new(None),
+            color_picker,
+            texture_request: std::cell::Cell::new(0),
         });
         window.set_artwork(ModelRc::from(editor.artwork_model.clone()));
 
@@ -201,19 +214,77 @@ impl PropertiesEditor {
         let weak = Rc::downgrade(&editor);
         window.on_vinyl_label_reset(move || {
             if let Some(editor) = weak.upgrade() {
-                editor.edit_vinyl(|style| style.label = Label::Accent);
+                editor.edit_vinyl(|style| style.set_label(Label::Accent));
             }
         });
         let weak = Rc::downgrade(&editor);
         window.on_vinyl_label_match_toggled(move |on| {
             if let Some(editor) = weak.upgrade() {
-                editor.edit_vinyl(|style| style.label = if on { Label::Match } else { Label::Accent });
+                editor.edit_vinyl(|style| {
+                    if on {
+                        style.match_vinyl();
+                    } else {
+                        style.set_label(Label::Accent);
+                    }
+                });
             }
         });
         let weak = Rc::downgrade(&editor);
-        window.on_vinyl_label_clear_chosen(move || {
+        window.on_vinyl_label_clear_toggled(move |on| {
             if let Some(editor) = weak.upgrade() {
-                editor.edit_vinyl(|style| style.label = Label::Clear);
+                let slider = editor.window.get_vinyl_label_clarity();
+                editor.edit_vinyl(|style| {
+                    // Matching see-through vinyl: as see-through as that.
+                    let clarity = match style.label {
+                        Label::Match => style.vinyl_clarity().unwrap_or(slider),
+                        _ => slider,
+                    };
+                    style.label_clear = on.then_some(clarity);
+                });
+            }
+        });
+        let weak = Rc::downgrade(&editor);
+        window.on_vinyl_label_clarity_changed(move |clarity| {
+            if let Some(editor) = weak.upgrade() {
+                editor.edit_vinyl(|style| style.label_clear = Some(clarity));
+            }
+        });
+        let weak = Rc::downgrade(&editor);
+        window.on_vinyl_clarity_changed(move |clarity| {
+            if let Some(editor) = weak.upgrade() {
+                editor.edit_vinyl(|style| style.edit_vinyl(|vinyl| vinyl.clarity = clarity));
+            }
+        });
+        let weak = Rc::downgrade(&editor);
+        window.on_vinyl_texture_choose_clicked(move || {
+            if let Some(editor) = weak.upgrade() {
+                editor.choose_texture();
+            }
+        });
+        let weak = Rc::downgrade(&editor);
+        window.on_vinyl_texture_imported(move |request, name, error| {
+            if let Some(editor) = weak.upgrade() {
+                editor.texture_imported(request, &name, &error);
+            }
+        });
+        // Closed by its title bar's button: the colour picker with it.
+        let weak = Rc::downgrade(&editor);
+        window.window().on_close_requested(move || {
+            if let Some(editor) = weak.upgrade() {
+                editor.color_picker.close();
+            }
+            slint::CloseRequestResponse::HideWindow
+        });
+        let weak = Rc::downgrade(&editor);
+        window.on_vinyl_pick_clicked(move || {
+            if let Some(editor) = weak.upgrade() {
+                editor.pick_vinyl_color(Part::Vinyl);
+            }
+        });
+        let weak = Rc::downgrade(&editor);
+        window.on_vinyl_label_pick_clicked(move || {
+            if let Some(editor) = weak.upgrade() {
+                editor.pick_vinyl_color(Part::Label);
             }
         });
         let weak = Rc::downgrade(&editor);
@@ -226,7 +297,7 @@ impl PropertiesEditor {
         window.on_vinyl_design_chosen(move |index| {
             if let Some(editor) = weak.upgrade() {
                 if let Some(&design) = usize::try_from(index).ok().and_then(|i| Design::ALL.get(i)) {
-                    editor.edit_vinyl(|style| style.design = design);
+                    editor.vinyl_design_chosen(design);
                 }
             }
         });
@@ -264,7 +335,7 @@ impl PropertiesEditor {
         let weak = Rc::downgrade(&editor);
         window.on_cancel_clicked(move || {
             if let Some(editor) = weak.upgrade() {
-                let _ = editor.window.hide();
+                editor.hide();
             }
         });
         editor
@@ -289,6 +360,11 @@ impl PropertiesEditor {
 
     /// Opens the window for `tracks`, on its first tab.
     pub fn open(&self, tracks: Vec<PropertiesTrack>) {
+        // A colour being picked, or a texture being read, was for the
+        // tracks open before.
+        self.color_picker.close();
+        self.texture_request
+            .set(self.texture_request.get().wrapping_add(1));
         self.window.set_current_tab(0);
         let Some(first) = tracks.first() else { return };
         let (first, first_title) = (first.path.clone(), first.title.clone());
@@ -461,9 +537,123 @@ impl PropertiesEditor {
             None => self.window.set_vinyl_label_hex(SharedString::new()),
         }
         self.window.set_vinyl_label_art(style.label_art);
+        self.window.set_vinyl_clarity(style.clarity);
+        self.window.set_vinyl_texture(style.texture_image());
+        self.window.set_vinyl_has_texture(style.texture.is_some());
+        let custom = |color: slint::Color| {
+            !PRESETS
+                .iter()
+                .any(|(_, hex)| parse_hex_color(hex) == Some(color))
+        };
+        self.window.set_vinyl_color_custom(custom(style.color));
+        self.window
+            .set_vinyl_label_custom(style.label.color().is_some_and(custom));
+        self.window
+            .set_vinyl_label_clear(style.label_clear.is_some());
+        // Off, the slider keeps where it was, for when it's on again.
+        if let Some(clarity) = style.label_clear {
+            self.window.set_vinyl_label_clarity(clarity);
+        }
     }
 
     /// Changes the look being chosen, and shows it.
+    /// A design picked: each see-through one starting from its own
+    /// default -- a texture solid, translucent half clear -- and a texture
+    /// without an image asking for one.
+    fn vinyl_design_chosen(&self, design: Design) {
+        let before = self.vinyl.borrow().0.design;
+        if design == before {
+            return;
+        }
+        self.edit_vinyl(|style| {
+            style.edit_vinyl(|vinyl| {
+                vinyl.design = design;
+                match design {
+                    Design::Texture => vinyl.clarity = 0.0,
+                    Design::Translucent => vinyl.clarity = vinyl_style::DEFAULT_CLARITY,
+                    _ => {}
+                }
+            })
+        });
+        if design == Design::Texture && self.vinyl.borrow().0.texture.is_none() {
+            self.choose_texture();
+        }
+    }
+
+    /// "Choose Image…": an image of one's own for the texture design.
+    fn choose_texture(&self) {
+        let Some(file) = crate::platform::file_dialog_over(self.window.window())
+            .set_title("Choose an image for the record")
+            .add_filter("Images", &["jpg", "jpeg", "png"])
+            .pick_file()
+        else {
+            return;
+        };
+        // Read in the background: a big photo takes a while to decode.
+        let request = self.texture_request.get().wrapping_add(1);
+        self.texture_request.set(request);
+        self.window.set_status("Reading the image\u{2026}".into());
+        let window = self.window.as_weak();
+        std::thread::spawn(move || {
+            let (name, error) = match vinyl_style::import_texture(&file) {
+                Ok(name) => (name, String::new()),
+                Err(e) => (String::new(), e),
+            };
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(window) = window.upgrade() {
+                    window.invoke_vinyl_texture_imported(request, name.into(), error.into());
+                }
+            });
+        });
+    }
+
+    /// The image `choose_texture` read: the record's texture, if it's for
+    /// the tracks still open.
+    fn texture_imported(&self, request: i32, name: &str, error: &str) {
+        if request != self.texture_request.get() {
+            return;
+        }
+        if !error.is_empty() {
+            self.window.set_status(error.into());
+            return;
+        }
+        self.window.set_status(SharedString::new());
+        let name = name.to_string();
+        self.edit_vinyl(|style| {
+            style.edit_vinyl(|vinyl| {
+                vinyl.design = Design::Texture;
+                vinyl.texture = Some(name);
+            })
+        });
+    }
+
+    fn hide(&self) {
+        self.color_picker.close();
+        let _ = self.window.hide();
+    }
+
+    /// The rainbow chip: the colour picker, on the vinyl's colour or the
+    /// label's (the accent, unless it has its own).
+    fn pick_vinyl_color(self: &Rc<Self>, part: Part) {
+        let style = self.vinyl.borrow().0.clone();
+        let (subject, color) = match part {
+            Part::Vinyl => ("Vinyl color", style.color),
+            Part::Label => (
+                "Label color",
+                style
+                    .label
+                    .color()
+                    .unwrap_or_else(|| self.window.global::<ui::Theme>().get_accent()),
+            ),
+        };
+        let weak = Rc::downgrade(self);
+        self.color_picker.open(subject, color, move |color| {
+            if let Some(editor) = weak.upgrade() {
+                editor.vinyl_color_edited(part, &crate::theme::color_to_hex(color), true);
+            }
+        });
+    }
+
     fn edit_vinyl(&self, change: impl FnOnce(&mut VinylStyle)) {
         change(&mut self.vinyl.borrow_mut().0);
         self.show_vinyl();
@@ -500,7 +690,7 @@ impl PropertiesEditor {
         }
         self.edit_vinyl(|style| match part {
             Part::Vinyl => style.color = color,
-            Part::Label => style.label = Label::Color(color),
+            Part::Label => style.set_label(Label::Color(color)),
         });
     }
 
@@ -554,7 +744,7 @@ impl PropertiesEditor {
 
     fn add_picture(&self, index: i32) {
         let Some(&kind) = usize::try_from(index).ok().and_then(|i| PictureKind::ALL.get(i)) else { return };
-        let Some(file) = rfd::FileDialog::new()
+        let Some(file) = crate::platform::file_dialog_over(self.window.window())
             .set_title(format!("Choose the {} picture", kind.label().to_lowercase()))
             .add_filter("Images", &["jpg", "jpeg", "png", "gif", "bmp", "webp"])
             .pick_file()
@@ -608,7 +798,7 @@ impl PropertiesEditor {
         if edit.is_empty() {
             self.update_dirty();
             if close_after {
-                let _ = self.window.hide();
+                self.hide();
             } else if vinyl_changed {
                 self.window.set_status("Saved.".into());
             }
@@ -693,7 +883,7 @@ impl PropertiesEditor {
             self.picture_edits.borrow_mut().clear();
             self.update_dirty();
             if self.close_after_save.get() {
-                let _ = self.window.hide();
+                self.hide();
             } else {
                 self.window.set_status("Saved.".into());
                 // Reload, so what's shown is what's in the files now.

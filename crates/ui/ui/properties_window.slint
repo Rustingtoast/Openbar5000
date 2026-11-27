@@ -1,6 +1,7 @@
-import { Button, CheckBox, ComboBox, LineEdit, ListView, Palette, TabWidget } from "std-widgets.slint";
+import { Button, CheckBox, ComboBox, LineEdit, ListView, Palette, ScrollView, Slider, TabWidget } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { VinylDisc, Platter } from "vinyl_view.slint";
+import { PickerChip } from "picker_chip.slint";
 
 /// A color offered for the record on the Vinyl tab.
 export struct VinylSwatch {
@@ -31,36 +32,104 @@ component SwatchChip inherits Rectangle {
     }
 }
 
-/// "Clear": a see-through chip -- a checkerboard, as image editors show
-/// transparency.
-component ClearChip inherits Rectangle {
-    in property <bool> chosen;
-    callback clicked();
+/// A CheckBox whose text wraps when there isn't room for it on one line
+/// (a long album name, a narrow window); clicking the text ticks it too.
+component WrappingCheckBox inherits HorizontalLayout {
+    in property <string> text;
+    in-out property <bool> checked;
+    callback toggled(bool);
 
-    width: 26px;
-    height: 26px;
+    spacing: 4px;
+    VerticalLayout {
+        alignment: start;
+        CheckBox {
+            accessible-label: root.text;
+            checked <=> root.checked;
+            toggled => { root.toggled(self.checked); }
+        }
+    }
+    Text {
+        horizontal-stretch: 1;
+        // Level with the box beside it, on the first line.
+        min-height: 24px;
+        vertical-alignment: center;
+        text: root.text;
+        wrap: word-wrap;
+        color: Theme.text-primary;
+        accessible-role: none;
+        TouchArea {
+            clicked => {
+                root.checked = !root.checked;
+                root.toggled(root.checked);
+            }
+        }
+    }
+}
+
+/// An "i" in a circle, its `text` shown on hovering over it.
+component InfoTip inherits Rectangle {
+    in property <string> text;
+
+    width: 16px;
+    height: 16px;
     border-radius: self.width / 2;
-    clip: true;
-    background: #e6e6e6;
-    accessible-role: button;
-    accessible-label: "Clear";
-    accessible-checked: root.chosen;
-    accessible-action-default => { root.clicked(); }
-    for i in 4: Rectangle {
-        x: Math.mod(i, 2) * parent.width / 2;
-        y: Math.floor(i / 2) * parent.height / 2;
-        width: parent.width / 2;
-        height: parent.height / 2;
-        background: Math.mod(i + Math.floor(i / 2), 2) == 0 ? #9a9a9a : #e6e6e6;
+    border-width: 1px;
+    border-color: hover.has-hover ? Theme.text-primary : Theme.text-muted;
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.text;
+    Text {
+        text: "i";
+        font-size: 11px;
+        font-weight: 700;
+        color: hover.has-hover ? Theme.text-primary : Theme.text-muted;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        accessible-role: none;
     }
-    Rectangle {
-        border-radius: self.width / 2;
-        border-width: root.chosen ? 3px : 1px;
-        border-color: root.chosen ? Theme.accent : touch.has-hover ? Theme.text-primary : Theme.text-muted.transparentize(0.5);
+    hover := TouchArea {}
+    Tooltip {
+        Rectangle {
+            background: Theme.bg-sunken;
+            border-radius: 4px;
+            border-width: 1px;
+            border-color: Theme.text-muted.transparentize(0.6);
+            VerticalLayout {
+                padding: 8px;
+                Text {
+                    width: 260px;
+                    text: root.text;
+                    wrap: word-wrap;
+                    font-size: 12px;
+                    color: Theme.text-primary;
+                }
+            }
+        }
     }
-    touch := TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.clicked(); }
+}
+
+/// How see-through: a slider from 0 to 100 %.
+component ClaritySlider inherits HorizontalLayout {
+    in property <string> label: "Transparency";
+    in-out property <float> value;
+    callback changed(float);
+
+    spacing: 8px;
+    alignment: start;
+    Text { text: root.label; vertical-alignment: center; color: Theme.text-primary; }
+    Slider {
+        min-width: 90px;
+        preferred-width: 180px;
+        minimum: 0;
+        maximum: 1;
+        step: 0.05;
+        value <=> root.value;
+        changed(value) => { root.changed(value); }
+    }
+    Text {
+        text: "\{Math.round(root.value * 100)} %";
+        min-width: 40px;
+        vertical-alignment: center;
+        color: Theme.text-muted;
     }
 }
 
@@ -74,11 +143,10 @@ component VinylColorPicker inherits VerticalLayout {
     in property <bool> none-chosen: false;
     in-out property <string> hex;
     in property <bool> can-reset;
-    /// A "Clear" chip after the swatches (the label's), and whether it's
-    /// the one chosen.
-    in property <bool> show-clear: false;
-    in property <bool> clear-chosen: false;
-    callback clear-picked();
+    /// The rainbow chip after the swatches: the colour picker -- ringed
+    /// when the colour is `custom`, none of the swatches'.
+    callback pick-clicked();
+    in property <bool> custom: false;
     /// What Reset goes back to, for its tooltip-less label.
     in property <string> reset-label: "Reset";
     callback chosen(string);
@@ -87,22 +155,36 @@ component VinylColorPicker inherits VerticalLayout {
 
     spacing: 8px;
     alignment: start;
-    HorizontalLayout {
-        spacing: 6px;
-        alignment: start;
-        for swatch in root.swatches-top: SwatchChip {
+    // The chips in a row, going on to the next where it's too narrow.
+    Rectangle {
+        property <length> step: 32px;
+        property <int> count: root.swatches-top.length + root.swatches-bottom.length + 1;
+        // As many as fit, the rows then evened out (7 and 6, not 11 and 2).
+        property <int> fit: Math.max(1, Math.floor((self.width + 6px) / self.step));
+        property <int> per-row: Math.ceil(self.count / Math.ceil(self.count / self.fit));
+        min-width: 6 * self.step - 6px;
+        preferred-width: self.count * self.step - 6px;
+        height: Math.ceil(self.count / self.per-row) * self.step - 6px;
+        for swatch[i] in root.swatches-top: SwatchChip {
+            x: Math.mod(i, parent.per-row) * parent.step;
+            y: Math.floor(i / parent.per-row) * parent.step;
             swatch: swatch;
             chosen: !root.none-chosen && swatch.color == root.color;
             clicked => { root.chosen(swatch.hex); }
         }
-        for swatch in root.swatches-bottom: SwatchChip {
+        for swatch[i] in root.swatches-bottom: SwatchChip {
+            property <int> at: root.swatches-top.length + i;
+            x: Math.mod(self.at, parent.per-row) * parent.step;
+            y: Math.floor(self.at / parent.per-row) * parent.step;
             swatch: swatch;
             chosen: !root.none-chosen && swatch.color == root.color;
             clicked => { root.chosen(swatch.hex); }
         }
-        if root.show-clear: ClearChip {
-            chosen: root.clear-chosen;
-            clicked => { root.clear-picked(); }
+        PickerChip {
+            x: Math.mod(parent.count - 1, parent.per-row) * parent.step;
+            y: Math.floor((parent.count - 1) / parent.per-row) * parent.step;
+            chosen: root.custom;
+            clicked => { root.pick-clicked(); }
         }
     }
     HorizontalLayout {
@@ -110,7 +192,8 @@ component VinylColorPicker inherits VerticalLayout {
         alignment: start;
         Text { text: "Custom"; vertical-alignment: center; color: Theme.text-primary; }
         LineEdit {
-            width: 110px;
+            min-width: 70px;
+            preferred-width: 110px;
             text <=> root.hex;
             placeholder-text: "#rrggbb";
             edited(text) => { root.hex-edited(text); }
@@ -154,6 +237,8 @@ export struct ArtworkRow {
 export component PropertiesWindow inherits Window {
     title: "Properties \u{2014} " + root.subject;
     icon: Theme.logo;
+    // A dialog, like Preferences: it stays over the player until closed.
+    always-on-top: true;
     preferred-width: 760px;
     preferred-height: 620px;
     min-width: 520px;
@@ -207,8 +292,8 @@ export component PropertiesWindow inherits Window {
     /// The vinyl colour isn't the default (black): Reset can undo it.
     in property <bool> vinyl-color-changed: false;
     callback vinyl-color-reset();
-    /// The label: "accent" (the theme's), "color" (`vinyl-label-color`),
-    /// "match" (the vinyl's) or "clear" -- and whether the cover art is
+    /// The label: "accent" (the theme's), "color" (`vinyl-label-color`) or
+    /// "match" (the vinyl's) -- and whether the cover art is
     /// printed on it.
     in property <string> vinyl-label-kind: "accent";
     in property <color> vinyl-label-color;
@@ -225,7 +310,28 @@ export component PropertiesWindow inherits Window {
     /// Whether the renderer can turn things (see `MainWindow`): without,
     /// the preview record stands still.
     in property <bool> vinyl-can-turn: true;
-    callback vinyl-label-clear-chosen();
+    /// The label see-through ("Transparent", two-way like the CheckBox's
+    /// own `checked`) and how much, 0 to 1; the translucent design's
+    /// clarity.
+    in-out property <bool> vinyl-label-clear: false;
+    in-out property <float> vinyl-label-clarity: 0.5;
+    callback vinyl-label-clear-toggled(bool);
+    callback vinyl-label-clarity-changed(float);
+    in-out property <float> vinyl-clarity: 0.5;
+    callback vinyl-clarity-changed(float);
+    /// The texture design's image, and choosing one.
+    in property <image> vinyl-texture;
+    in property <bool> vinyl-has-texture: false;
+    callback vinyl-texture-choose-clicked();
+    /// An image read in the background for the texture (see
+    /// `app::properties`): which request, its name, or what went wrong.
+    callback vinyl-texture-imported(int, string, string);
+    /// The rainbow chip: the colour picker, for the vinyl or the label.
+    callback vinyl-pick-clicked();
+    /// The vinyl's or label's colour is none of the swatches'.
+    in property <bool> vinyl-color-custom: false;
+    in property <bool> vinyl-label-custom: false;
+    callback vinyl-label-pick-clicked();
     /// The tab shown (3: Vinyl, for "Customize Vinyl…").
     in-out property <int> current-tab: 0;
     callback vinyl-synced-toggled(bool);
@@ -389,38 +495,52 @@ export component PropertiesWindow inherits Window {
 
             Tab {
                 title: "Vinyl";
-                HorizontalLayout {
+                // Scrolls when the window is too short for it all, rather
+                // than squeezing it.
+                vinyl-scroll := ScrollView {
+                content-width: Math.max(self.visible-width, vinyl-content.min-width);
+                content-height: Math.max(self.visible-height, vinyl-content.preferred-height);
+                vinyl-content := HorizontalLayout {
+                    width: vinyl-scroll.content-width;
+                    height: vinyl-scroll.content-height;
                     padding: 14px;
                     spacing: 20px;
-                    alignment: start;
 
                     // The record as the VNL panel will show it, turning while
-                    // this tab is open.
+                    // this tab is open. Sharing the width with the settings:
+                    // smaller when it's narrow, bigger when it's wide.
                     VerticalLayout {
                         alignment: start;
+                        horizontal-stretch: 1;
+                        min-width: 150px;
+                        preferred-width: 220px;
+                        max-width: 300px;
                         Rectangle {
-                            width: 220px;
-                            height: 220px;
+                            property <length> disc: self.width - 20px;
+                            height: self.width;
                             Platter {
-                                disc: 200px;
-                                width: 207px;
-                                height: 207px;
+                                disc: parent.disc;
+                                width: parent.disc * 1.035;
+                                height: self.width;
                                 x: (parent.width - self.width) / 2;
                                 y: (parent.height - self.height) / 2;
                             }
                             VinylDisc {
                                 x: 10px;
                                 y: 10px;
-                                width: 200px;
-                                height: 200px;
+                                width: parent.disc;
+                                height: parent.disc;
                                 art: root.vinyl-art;
                                 has-art: root.vinyl-has-art;
                                 vinyl: root.vinyl-color;
                                 contrast: root.vinyl-contrast;
                                 design: root.vinyl-design;
+                                texture: root.vinyl-texture;
                                 label-kind: root.vinyl-label-kind;
                                 label-color: root.vinyl-label-color;
                                 label-art: root.vinyl-label-art;
+                                clarity: root.vinyl-clarity;
+                                label-clarity: root.vinyl-label-clear ? root.vinyl-label-clarity : 0;
                                 spin: tabs.current-index == 3 && root.vinyl-can-turn ? animation-tick() / 1ms * 0.2deg : 0deg;
                                 blur: tabs.current-index == 3 && root.vinyl-can-turn ? 1 : 0;
                             }
@@ -428,22 +548,31 @@ export component PropertiesWindow inherits Window {
                     }
 
                     VerticalLayout {
+                        horizontal-stretch: 2;
                         alignment: start;
                         spacing: 10px;
-                        CheckBox {
-                            text: root.vinyl-album == "" ? "Same vinyl for the whole album" : "Same vinyl for the whole album \u{201c}" + root.vinyl-album + "\u{201d}";
-                            checked <=> root.vinyl-synced;
-                            toggled => { root.vinyl-synced-toggled(self.checked); }
-                        }
-                        Text {
-                            text: !root.vinyl-synced
-                                ? "Only this song gets this record; the rest of the album keeps its own."
-                                : root.vinyl-record-albums > 1
-                                ? "Every song of the album is on this record \u{2014} as smart grouping gathers it, from \{root.vinyl-record-albums} differently tagged albums."
-                                : "Every song of the album is on this record.";
-                            font-size: 11px;
-                            color: Theme.text-muted;
-                            wrap: word-wrap;
+                        HorizontalLayout {
+                            spacing: 6px;
+                            WrappingCheckBox {
+                                horizontal-stretch: 0;
+                                text: root.vinyl-album == "" ? "Same vinyl for the whole album" : "Same vinyl for the whole album \u{201c}" + root.vinyl-album + "\u{201d}";
+                                checked <=> root.vinyl-synced;
+                                toggled(checked) => { root.vinyl-synced-toggled(checked); }
+                            }
+                            // What it means, on hovering: level with the
+                            // first line.
+                            VerticalLayout {
+                                padding-top: 4px;
+                                alignment: start;
+                                InfoTip {
+                                    text: !root.vinyl-synced
+                                        ? "Applies to this song only."
+                                        : root.vinyl-record-albums > 1
+                                        ? "Applies to the whole album, including \{root.vinyl-record-albums} differently tagged parts merged by smart grouping."
+                                        : "Applies to the whole album.";
+                                }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
                         }
 
                         Text { text: "Color"; font-weight: 700; color: Theme.text-primary; }
@@ -457,39 +586,76 @@ export component PropertiesWindow inherits Window {
                             chosen(hex) => { root.vinyl-color-chosen(hex); }
                             hex-edited(hex) => { root.vinyl-hex-edited(hex); }
                             reset => { root.vinyl-color-reset(); }
+                            custom: root.vinyl-color-custom;
+                            pick-clicked => { root.vinyl-pick-clicked(); }
                         }
 
                         Text { text: "Design"; font-weight: 700; color: Theme.text-primary; }
-                        ComboBox {
-                            width: 200px;
-                            model: root.vinyl-design-labels;
-                            current-index <=> root.vinyl-design-index;
-                            selected => { root.vinyl-design-chosen(self.current-index); }
+                        // Its own width, not the column's.
+                        HorizontalLayout {
+                            alignment: start;
+                            ComboBox {
+                                min-width: 140px;
+                                preferred-width: 220px;
+                                model: root.vinyl-design-labels;
+                                current-index <=> root.vinyl-design-index;
+                                selected => { root.vinyl-design-chosen(self.current-index); }
+                            }
+                        }
+                        if root.vinyl-design == "texture": HorizontalLayout {
+                            spacing: 8px;
+                            alignment: start;
+                            Button {
+                                text: root.vinyl-has-texture ? "Change Image\u{2026}" : "Choose Image\u{2026}";
+                                clicked => { root.vinyl-texture-choose-clicked(); }
+                            }
+                            Text {
+                                horizontal-stretch: 1;
+                                text: root.vinyl-has-texture
+                                    ? "Wrapped round the record, under its grooves."
+                                    : "No image yet: the record is plain.";
+                                wrap: word-wrap;
+                                vertical-alignment: center;
+                                font-size: 11px;
+                                color: Theme.text-muted;
+                            }
+                        }
+                        if root.vinyl-design == "translucent" || (root.vinyl-design == "texture" && root.vinyl-has-texture): ClaritySlider {
+                            value <=> root.vinyl-clarity;
+                            changed(value) => { root.vinyl-clarity-changed(value); }
                         }
 
                         Text { text: "Label"; font-weight: 700; color: Theme.text-primary; }
+                        WrappingCheckBox {
+                            text: "Cover art on the label";
+                            checked <=> root.vinyl-label-art;
+                            toggled(checked) => { root.vinyl-label-art-toggled(checked); }
+                        }
                         HorizontalLayout {
                             spacing: 16px;
                             alignment: start;
-                            CheckBox {
-                                text: "Cover art on the label";
-                                checked <=> root.vinyl-label-art;
-                                toggled => { root.vinyl-label-art-toggled(self.checked); }
-                            }
-                            CheckBox {
+                            WrappingCheckBox {
                                 text: "Match the vinyl";
                                 checked <=> root.vinyl-label-match;
-                                toggled => { root.vinyl-label-match-toggled(self.checked); }
+                                toggled(checked) => { root.vinyl-label-match-toggled(checked); }
                             }
+                            WrappingCheckBox {
+                                text: "Transparent";
+                                checked <=> root.vinyl-label-clear;
+                                toggled(checked) => { root.vinyl-label-clear-toggled(checked); }
+                            }
+                        }
+                        if root.vinyl-label-clear: ClaritySlider {
+                            value <=> root.vinyl-label-clarity;
+                            changed(value) => { root.vinyl-label-clarity-changed(value); }
                         }
                         VinylColorPicker {
                             swatches-top: root.vinyl-swatches-top;
                             swatches-bottom: root.vinyl-swatches-bottom;
                             color: root.vinyl-label-color;
                             none-chosen: root.vinyl-label-kind != "color";
-                            show-clear: true;
-                            clear-chosen: root.vinyl-label-kind == "clear";
-                            clear-picked => { root.vinyl-label-clear-chosen(); }
+                            custom: root.vinyl-label-custom;
+                            pick-clicked => { root.vinyl-label-pick-clicked(); }
                             hex <=> root.vinyl-label-hex;
                             can-reset: root.vinyl-label-kind != "accent";
                             reset-label: "Reset to accent";
@@ -499,15 +665,19 @@ export component PropertiesWindow inherits Window {
                         }
                         Text {
                             text: root.vinyl-label-kind == "match"
-                                ? (root.vinyl-label-art ? "The vinyl goes on to the middle where there's no cover." : "The vinyl goes on to the middle.")
-                                : root.vinyl-label-kind == "clear"
-                                ? (root.vinyl-label-art ? "Clear where there's no cover: the platter shows through." : "Clear: the platter shows through.")
+                                ? (root.vinyl-label-clear
+                                    ? "The vinyl's color and transparency; the label's can be set on its own."
+                                    : root.vinyl-label-art ? "The vinyl's color shows where there's no cover." : "A plain label in the vinyl's color.")
+                                : root.vinyl-label-clear
+                                ? (root.vinyl-label-art ? "The color shows where there's no cover, the platter through it." : "A see-through label in this color, the platter showing through.")
                                 : root.vinyl-label-art ? "The color shows where there's no cover."
                                 : "A plain label in this color.";
                             font-size: 11px;
                             color: Theme.text-muted;
+                            wrap: word-wrap;
                         }
                     }
+                }
                 }
             }
         }

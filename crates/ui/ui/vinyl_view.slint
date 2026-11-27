@@ -65,6 +65,7 @@ component DiscPattern inherits Rectangle {
     in property <color> contrast;
     in property <image> art;
     in property <bool> has-art;
+    in property <image> texture;
 
     // Drawn once and kept: turning it (and its blurred copies) then costs
     // one picture each, not every streak and fleck again.
@@ -76,6 +77,13 @@ component DiscPattern inherits Rectangle {
             width: parent.width;
             height: parent.height;
             source: root.art;
+            image-fit: cover;
+        }
+        // An image of one's own, wrapped round the record.
+        if root.design == "texture": Image {
+            width: parent.width;
+            height: parent.height;
+            source: root.texture;
             image-fit: cover;
         }
         // Two halves, the seam a little soft as where two colors of vinyl were
@@ -233,19 +241,30 @@ export component VinylDisc inherits Rectangle {
     in property <color> vinyl: #161616;
     /// The marbled, splatter and split designs' second color.
     in property <color> contrast: #eeece6;
-    /// "classic", "translucent", "marbled", "splatter", "split" or
-    /// "picture".
+    /// "classic", "translucent", "marbled", "splatter", "split",
+    /// "picture" or "texture" (`texture`, an image of one's own).
     in property <string> design: "classic";
+    in property <image> texture;
+    /// How see-through the translucent design is: 0 (barely) to 1 (all
+    /// but clear glass); the texture fades by it to glass in the vinyl's
+    /// color.
+    in property <float> clarity: 0.5;
     /// What the label is (see `app::vinyl_style::Label`): "accent" (the
-    /// theme's), "color" (`label-color`), "match" (the vinyl going on to the
-    /// middle) or "clear" (the platter showing through) -- and whether the
-    /// cover art is printed on it.
+    /// theme's), "color" (`label-color`) or "match" (the vinyl's colour) --
+    /// how see-through it is, 0 to 1 (clear, the platter showing), and
+    /// whether the cover art is printed on it.
     in property <string> label-kind: "accent";
     in property <color> label-color: Theme.accent;
+    in property <float> label-clarity: 0;
     in property <bool> label-art: true;
 
-    property <bool> translucent: root.design == "translucent";
-    property <bool> patterned: root.design != "classic" && !root.translucent;
+    // A texture whose image is gone: plain.
+    property <string> look: root.design == "texture" && root.texture.width == 0 ? "classic" : root.design;
+    property <bool> translucent: root.look == "translucent" || (root.look == "texture" && root.clarity > 0);
+    // How much of each part of the translucent body is let through, by
+    // `clarity`: twice the base at the middle setting, never quite all.
+    property <float> see-through: Math.clamp(root.clarity, 0, 1) * 2;
+    property <bool> patterned: root.look != "classic" && root.look != "translucent";
     property <length> label-size: root.width * 0.36;
 
     border-radius: self.width / 2;
@@ -271,7 +290,11 @@ export component VinylDisc inherits Rectangle {
             // at the edge where the light comes through; its shadow takes
             // its color.
             background: root.translucent
-                ? @radial-gradient(circle, root.vinyl.brighter(0.3).transparentize(0.6) 0%, root.vinyl.transparentize(0.5) 45%, root.vinyl.transparentize(0.42) 82%, root.vinyl.brighter(0.6).transparentize(0.12) 100%)
+                ? @radial-gradient(circle,
+                    root.vinyl.brighter(0.3).transparentize(Math.min(0.97, 0.6 * root.see-through)) 0%,
+                    root.vinyl.transparentize(Math.min(0.97, 0.5 * root.see-through)) 45%,
+                    root.vinyl.transparentize(Math.min(0.95, 0.42 * root.see-through)) 82%,
+                    root.vinyl.brighter(0.6).transparentize(Math.min(0.6, 0.12 * root.see-through)) 100%)
                 : @radial-gradient(circle, root.vinyl.brighter(0.12) 0%, root.vinyl 40%, root.vinyl.darker(0.18) 85%, root.vinyl.brighter(0.05) 100%);
             drop-shadow-blur: root.translucent ? 20px : 14px;
             drop-shadow-color: root.translucent ? root.vinyl.transparentize(0.5) : #00000090;
@@ -282,10 +305,12 @@ export component VinylDisc inherits Rectangle {
     if root.patterned: Rectangle {
         border-radius: self.width / 2;
         clip: true;
+        opacity: root.look == "texture" ? 1 - Math.clamp(root.clarity, 0, 1) : 1;
         for i in 4: DiscPattern {
             width: parent.width;
             height: parent.height;
-            design: root.design;
+            design: root.look;
+            texture: root.texture;
             vinyl: root.vinyl;
             contrast: root.contrast;
             art: root.art;
@@ -376,6 +401,34 @@ export component VinylDisc inherits Rectangle {
         }
     }
 
+    // Rills: a real record's grooves aren't even all the way round -- loud
+    // and quiet passages, the pressing -- so arcs of them catch more light,
+    // or less, than the rest, and turn with it. Perfectly round rings look
+    // the same at any angle; these show the record turning. Drawn once and
+    // kept, each ring's arcs at its own angle; blurred along the turn like
+    // the label.
+    for g in 3: Rectangle {
+        transform-rotation: root.spin - g * root.blur * 2.4deg;
+        opacity: 1 / (g + 1);
+        visible: g == 0 || root.blur > 0.01;
+        Rectangle {
+            cache-rendering-hint: true;
+            for i in 28: Rectangle {
+                property <float> t: (i + 0.5) / 28;
+                width: root.width * 2 * (Grooves.inner + 0.01 + (Grooves.outer - Grooves.inner - 0.015) * self.t);
+                height: self.width;
+                x: (root.width - self.width) / 2;
+                y: (root.height - self.height) / 2;
+                border-radius: self.width / 2;
+                border-width: Math.max(1px, root.width * (0.003 + 0.005 * Math.mod(i * 0.618034, 1)));
+                transform-rotation: Math.mod(i * 137.508, 360) * 1deg;
+                border-color: Math.mod(i, 3) == 2
+                    ? @conic-gradient(#00000000 0deg, #00000048 45deg, #00000000 105deg, #00000000 195deg, #00000030 235deg, #00000000 285deg, #00000000 360deg)
+                    : @conic-gradient(#ffffff00 0deg, #ffffff26 30deg, #ffffff00 85deg, #ffffff00 165deg, #ffffff16 205deg, #ffffff00 250deg, #ffffff00 360deg);
+            }
+        }
+    }
+
     // The real proportions of a 12" LP: a 100 mm label on a 300 mm disc. A
     // picture disc has the cover all over instead.
     if root.design != "picture" || !root.has-art: Rectangle {
@@ -385,14 +438,12 @@ export component VinylDisc inherits Rectangle {
         y: (parent.height - self.height) / 2;
         border-radius: self.width / 2;
         clip: true;
-        // Matching the vinyl: nothing of its own, the record shows.
-        background: root.label-kind == "color" ? root.label-color
-            : root.label-kind == "accent" ? Theme.accent
-            : transparent;
+        property <bool> see-through: root.label-clarity > 0;
 
-        // Clear: the platter's mat seen through it, and the light on the
-        // clear vinyl.
-        if root.label-kind == "clear": Rectangle {
+        // See-through: the platter's mat seen through it, and the light on
+        // the clear vinyl -- under the colour, which fades as it gets
+        // clearer.
+        if self.see-through: Rectangle {
             background: @radial-gradient(circle, #2c2c2c 0%, #222222 70%, #1d1d1d 100%);
             for i in 3: Rectangle {
                 width: parent.width * (0.4 + i * 0.22);
@@ -409,6 +460,13 @@ export component VinylDisc inherits Rectangle {
                 border-color: #ffffff26;
                 background: @linear-gradient(135deg, #ffffff16 0%, #ffffff00 40%, #ffffff00 70%, #ffffff0c 100%);
             }
+        }
+        // Its colour: its own, the accent, or the vinyl's (just the colour,
+        // not the design).
+        Rectangle {
+            background: (root.label-kind == "color" ? root.label-color
+                : root.label-kind == "match" ? root.vinyl
+                : Theme.accent).transparentize(parent.see-through ? Math.min(1, root.label-clarity) : 0);
         }
 
         // The cover a few times over, each a little further back along the
@@ -492,6 +550,12 @@ export component VinylView inherits Rectangle {
     in property <string> outgoing-label-kind: "accent";
     in property <color> outgoing-label-color: Theme.accent;
     in property <bool> outgoing-label-art: true;
+    in property <float> clarity: 0.5;
+    in property <float> label-clarity: 0;
+    in property <float> outgoing-clarity: 0.5;
+    in property <float> outgoing-label-clarity: 0;
+    in property <image> texture;
+    in property <image> outgoing-texture;
     /// Right-click "Customize Vinyl…": the record's look in Properties.
     callback customize-clicked();
     /// Changed when the album does: plays the record swap.
@@ -775,6 +839,9 @@ export component VinylView inherits Rectangle {
         label-kind: root.outgoing-phase ? root.outgoing-label-kind : root.label-kind;
         label-color: root.outgoing-phase ? root.outgoing-label-color : root.label-color;
         label-art: root.outgoing-phase ? root.outgoing-label-art : root.label-art;
+        clarity: root.outgoing-phase ? root.outgoing-clarity : root.clarity;
+        label-clarity: root.outgoing-phase ? root.outgoing-label-clarity : root.label-clarity;
+        texture: root.outgoing-phase ? root.outgoing-texture : root.texture;
         art: root.outgoing-phase ? root.outgoing-art : root.art;
         has-art: root.outgoing-phase
             ? root.outgoing-has-art

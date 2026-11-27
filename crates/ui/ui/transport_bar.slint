@@ -65,6 +65,27 @@ export component ThinSlider inherits Rectangle {
     }
 }
 
+/// The speaker by the volume slider: click to mute, again for the volume
+/// there was.
+component VolumeIcon inherits Rectangle {
+    in property <bool> muted;
+    callback clicked();
+
+    accessible-role: button;
+    accessible-label: root.muted ? "Unmute" : "Mute";
+    accessible-action-default => { root.clicked(); }
+    Image {
+        width: parent.width;
+        height: parent.height;
+        source: root.muted ? @image-url("assets/icons/volume-muted.svg") : @image-url("assets/icons/volume.svg");
+        colorize: touch.has-hover ? Theme.text-primary : Theme.text-muted;
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
 // Flat icon button, as in the reference UI's transport row: no button
 // chrome, the icon itself lights up -- accent-colored when `active` (the
 // Shuffle/Repeat toggles), brighter on hover.
@@ -101,6 +122,8 @@ export component TransportBar inherits Rectangle {
     in property <float> position-seconds: 0;
     in property <float> duration-seconds: 0;
     in property <float> volume: 1.0;
+    /// Muted with the speaker icon (the slider shows 0 meanwhile).
+    in property <bool> muted;
     in property <string> position-text: "0:00";
     in property <string> duration-text: "0:00";
     in property <bool> shuffle-active: false;
@@ -114,6 +137,7 @@ export component TransportBar inherits Rectangle {
     callback random-clicked();
     callback seek-requested(float);
     callback volume-changed(float);
+    callback mute-clicked();
     callback shuffle-clicked();
     callback loop-clicked();
 
@@ -202,12 +226,12 @@ export component TransportBar inherits Rectangle {
             value: root.volume;
             changed(v) => { root.volume-changed(v); }
         }
-        Image {
+        VolumeIcon {
             y: (parent.height - self.height) / 2;
             width: 15px;
             height: 15px;
-            source: @image-url("assets/icons/volume.svg");
-            colorize: Theme.text-muted;
+            muted: root.muted;
+            clicked => { root.mute-clicked(); }
         }
     }
 }
@@ -296,12 +320,15 @@ export component SeekBar inherits Rectangle {
     in property <float> position-seconds: 0;
     in property <float> duration-seconds: 0;
     in property <float> volume: 1.0;
+    /// Muted with the speaker icon (the slider shows 0 meanwhile).
+    in property <bool> muted;
     in property <string> position-text: "0:00";
     in property <bool> shuffle-active: false;
     in property <bool> loop-active: false;
     in property <bool> repeat-one-active: false;
     callback seek-requested(float);
     callback volume-changed(float);
+    callback mute-clicked();
     callback shuffle-clicked();
     callback loop-clicked();
 
@@ -360,12 +387,12 @@ export component SeekBar inherits Rectangle {
             value: root.volume;
             changed(v) => { root.volume-changed(v); }
         }
-        Image {
+        VolumeIcon {
             y: (parent.height - self.height) / 2;
             width: 15px;
             height: 15px;
-            source: @image-url("assets/icons/volume.svg");
-            colorize: Theme.text-muted;
+            muted: root.muted;
+            clicked => { root.mute-clicked(); }
         }
     }
 }
@@ -397,11 +424,14 @@ export component SeekSlider inherits Rectangle {
 /// frame: the times change once a second.
 export component PlaybackOptions inherits Rectangle {
     in property <float> volume: 1.0;
+    /// Muted with the speaker icon (the slider shows 0 meanwhile).
+    in property <bool> muted;
     in property <string> position-text: "0:00";
     in property <bool> shuffle-active: false;
     in property <bool> loop-active: false;
     in property <bool> repeat-one-active: false;
     callback volume-changed(float);
+    callback mute-clicked();
     callback shuffle-clicked();
     callback loop-clicked();
 
@@ -445,12 +475,12 @@ export component PlaybackOptions inherits Rectangle {
             value: root.volume;
             changed(v) => { root.volume-changed(v); }
         }
-        Image {
+        VolumeIcon {
             y: (parent.height - self.height) / 2;
             width: 14px;
             height: 14px;
-            source: @image-url("assets/icons/volume.svg");
-            colorize: Theme.text-muted;
+            muted: root.muted;
+            clicked => { root.mute-clicked(); }
         }
     }
 }

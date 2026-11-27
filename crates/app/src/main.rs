@@ -5,15 +5,18 @@
 
 mod artist_info;
 mod audio_output;
+mod color_picker;
 mod crash_report;
 mod discord_presence;
 mod display_power;
 mod equalizer;
 mod holiday;
+mod logo_files;
+mod logo_preview;
 mod layout;
 mod lyrics;
-mod media_library;
 mod media_keys;
+mod media_library;
 mod now_playing_file;
 mod platform;
 mod playlist_rows;
@@ -85,8 +88,13 @@ fn main() {
 /// browser, the file manager) don't present it as their own.
 #[cfg(all(unix, not(target_os = "macos")))]
 fn take_startup_token() -> Option<String> {
-    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("WAYLAND_SOCKET").is_some();
-    let name = if wayland { "XDG_ACTIVATION_TOKEN" } else { "DESKTOP_STARTUP_ID" };
+    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some()
+        || std::env::var_os("WAYLAND_SOCKET").is_some();
+    let name = if wayland {
+        "XDG_ACTIVATION_TOKEN"
+    } else {
+        "DESKTOP_STARTUP_ID"
+    };
     let token = std::env::var(name).ok().filter(|token| !token.is_empty());
     std::env::remove_var("XDG_ACTIVATION_TOKEN");
     std::env::remove_var("DESKTOP_STARTUP_ID");
@@ -107,7 +115,8 @@ fn select_backend(
     placement: &Rc<WindowPlacement>,
     #[cfg(all(unix, not(target_os = "macos")))] startup_token: Option<String>,
 ) {
-    let selector = slint::BackendSelector::new().with_winit_custom_application_handler(placement.handler());
+    let selector =
+        slint::BackendSelector::new().with_winit_custom_application_handler(placement.handler());
     #[cfg(all(unix, not(target_os = "macos")))]
     let selector = {
         use slint::winit_030::winit::platform::startup_notify::WindowAttributesExtStartupNotify;
@@ -134,7 +143,9 @@ fn select_backend(
 /// to go, and is left there.
 #[cfg(windows)]
 fn attach_parent_console() {
-    use windows::Win32::System::Console::{AttachConsole, GetStdHandle, ATTACH_PARENT_PROCESS, STD_OUTPUT_HANDLE};
+    use windows::Win32::System::Console::{
+        AttachConsole, GetStdHandle, ATTACH_PARENT_PROCESS, STD_OUTPUT_HANDLE,
+    };
     // SAFETY: plain calls; without a parent console, attaching just fails.
     unsafe {
         if GetStdHandle(STD_OUTPUT_HANDLE).is_err() {
@@ -150,13 +161,15 @@ fn attach_parent_console() {
 #[cfg(windows)]
 fn quiet_error_dialogs() {
     use windows::Win32::System::Diagnostics::Debug::{
-        GetErrorMode, SetErrorMode, SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SEM_NOOPENFILEERRORBOX,
-        THREAD_ERROR_MODE,
+        GetErrorMode, SetErrorMode, SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX,
+        SEM_NOOPENFILEERRORBOX, THREAD_ERROR_MODE,
     };
     // SAFETY: plain calls.
     unsafe {
         let mode = THREAD_ERROR_MODE(GetErrorMode());
-        SetErrorMode(mode | SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+        SetErrorMode(
+            mode | SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX,
+        );
     }
 }
 

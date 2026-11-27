@@ -787,7 +787,16 @@ impl MediaLibrary {
     }
 
     fn add_folder(&self) {
-        let Some(folder) = rfd::FileDialog::new().set_title("Add music folder").pick_folder() else {
+        // Over whichever window it was asked from: Preferences, kept on
+        // top, if it's open, or the player.
+        let dialog = match (self.preferences.upgrade(), self.main.upgrade()) {
+            (Some(preferences), _) if preferences.window().is_visible() => {
+                crate::platform::file_dialog_over(preferences.window())
+            }
+            (_, Some(main)) => crate::platform::file_dialog_over(main.window()),
+            _ => rfd::FileDialog::new(),
+        };
+        let Some(folder) = dialog.set_title("Add music folder").pick_folder() else {
             return;
         };
         {

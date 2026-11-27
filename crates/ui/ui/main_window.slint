@@ -10,7 +10,8 @@ import { NowPlayingBar, AlbumArtView } from "now_playing.slint";
 import { VinylView } from "vinyl_view.slint";
 import { PropertiesWindow, PropertyField, DetailRow, ArtworkRow } from "properties_window.slint";
 import { AboutWindow } from "about_window.slint";
-import { SettingsWindow, ThemeListEntry } from "settings_window.slint";
+import { SettingsWindow, ThemeListEntry, LogoOption } from "settings_window.slint";
+import { LogoPreviewWindow, LogoVersion } from "logo_preview_window.slint";
 import { ThemeEditorWindow } from "theme_editor_window.slint";
 import { LyricsEditorWindow } from "lyrics_editor_window.slint";
 import { VintageEqualizer, Vfd } from "vintage_equalizer.slint";
@@ -18,6 +19,7 @@ import { LibraryView, LibraryRow } from "library_view.slint";
 import { LoadingOverlay } from "loading_overlay.slint";
 import { PlaylistManagerWindow, PlaylistManagerRow } from "playlist_manager_window.slint";
 import { CrashReportWindow } from "crash_report_window.slint";
+import { ColorPickerWindow } from "color_picker_window.slint";
 
 /// One placed panel (see `app::layout`): which panel to draw and where,
 /// relative to the panel area below the menu bar.
@@ -92,7 +94,7 @@ export struct PanelChoice {
     label: string,
 }
 
-export { Vfd, PropertyField, DetailRow, ArtworkRow, LibraryRow, PlaylistManagerWindow, PlaylistManagerRow, PlaylistRow, PropertiesWindow, AboutWindow, SettingsWindow, ThemeListEntry, ThemeEditorWindow, LyricsEditorWindow, CrashReportWindow, Theme }
+export { Vfd, PropertyField, DetailRow, ArtworkRow, LibraryRow, PlaylistManagerWindow, PlaylistManagerRow, PlaylistRow, PropertiesWindow, AboutWindow, SettingsWindow, ThemeListEntry, ThemeEditorWindow, LyricsEditorWindow, CrashReportWindow, ColorPickerWindow, LogoPreviewWindow, LogoVersion, LogoOption, Theme }
 
 export component MainWindow inherits Window {
     // Set from Cargo.toml's version at startup (see `app::wiring`).
@@ -135,6 +137,8 @@ export component MainWindow inherits Window {
     in property <string> remaining-text: "-0:00";
     in property <string> duration-text: "0:00";
     in property <float> volume: 1.0;
+    /// Muted with the speaker icon by the volume slider.
+    in property <bool> volume-muted;
     in property <bool> shuffle-active: false;
     in property <bool> loop-active: false;
     in property <bool> repeat-one-active: false;
@@ -238,10 +242,17 @@ export component MainWindow inherits Window {
     in property <string> vinyl-outgoing-label-kind: "accent";
     in property <color> vinyl-outgoing-label-color;
     in property <bool> vinyl-outgoing-label-art: true;
+    in property <float> vinyl-clarity: 0.5;
+    in property <float> vinyl-label-clarity: 0;
+    in property <float> vinyl-outgoing-clarity: 0.5;
+    in property <float> vinyl-outgoing-label-clarity: 0;
+    in property <image> vinyl-texture;
+    in property <image> vinyl-outgoing-texture;
     // "Customize Vinyl…": from the vinyl panel (the playing track) or a
     // playlist row; Properties opens on its Vinyl tab.
     callback vinyl-customize-clicked();
     callback row-vinyl-clicked(int);
+    callback row-share-album-clicked(int);
     // The tonearm dragged: inwards (true) on to another song of the record,
     // outwards back.
     callback vinyl-arm-dragged(bool);
@@ -275,6 +286,7 @@ export component MainWindow inherits Window {
     callback random-clicked();
     callback seek-requested(float);
     callback volume-changed(float);
+    callback volume-mute-clicked();
     callback shuffle-clicked();
     callback loop-clicked();
     callback row-clicked(int);
@@ -510,6 +522,7 @@ export component MainWindow inherits Window {
                 row-clicked(i) => { root.row-clicked(i); }
                 row-properties-clicked(i) => { root.row-properties-clicked(i); }
                 row-vinyl-clicked(i) => { root.row-vinyl-clicked(i); }
+                row-share-album-clicked(i) => { root.row-share-album-clicked(i); }
                 row-open-folder-clicked(i) => { root.row-open-folder-clicked(i); }
                 row-remove-clicked(i) => { root.row-remove-clicked(i); }
                 row-cut-clicked(i) => { root.row-cut-clicked(i); }
@@ -552,6 +565,7 @@ export component MainWindow inherits Window {
                 remaining-text: root.remaining-text;
                 duration-text: root.duration-text;
                 volume: root.volume;
+                muted: root.volume-muted || root.volume <= 0;
                 shuffle-active: root.shuffle-active;
                 loop-active: root.loop-active;
                 repeat-one-active: root.repeat-one-active;
@@ -562,6 +576,7 @@ export component MainWindow inherits Window {
                 random-clicked => { root.random-clicked(); }
                 seek-requested(pos) => { root.seek-requested(pos); }
                 volume-changed(v) => { root.volume-changed(v); }
+                mute-clicked => { root.volume-mute-clicked(); }
                 shuffle-clicked => { root.shuffle-clicked(); }
                 loop-clicked => { root.loop-clicked(); }
             }
@@ -605,6 +620,12 @@ export component MainWindow inherits Window {
                 outgoing-label-kind: root.vinyl-outgoing-label-kind;
                 outgoing-label-color: root.vinyl-outgoing-label-color;
                 outgoing-label-art: root.vinyl-outgoing-label-art;
+                clarity: root.vinyl-clarity;
+                label-clarity: root.vinyl-label-clarity;
+                outgoing-clarity: root.vinyl-outgoing-clarity;
+                outgoing-label-clarity: root.vinyl-outgoing-label-clarity;
+                texture: root.vinyl-texture;
+                outgoing-texture: root.vinyl-outgoing-texture;
                 customize-clicked => { root.vinyl-customize-clicked(); }
                 swap-serial: root.vinyl-swap-serial;
                 outgoing-art: root.vinyl-outgoing-art;
@@ -643,11 +664,13 @@ export component MainWindow inherits Window {
                 position-text: root.position-text;
                 remaining-text: root.remaining-text;
                 volume: root.volume;
+                muted: root.volume-muted || root.volume <= 0;
                 shuffle-active: root.shuffle-active;
                 loop-active: root.loop-active;
                 repeat-one-active: root.repeat-one-active;
                 seek-requested(pos) => { root.seek-requested(pos); }
                 volume-changed(v) => { root.volume-changed(v); }
+                mute-clicked => { root.volume-mute-clicked(); }
                 shuffle-clicked => { root.shuffle-clicked(); }
                 loop-clicked => { root.loop-clicked(); }
             }
@@ -664,10 +687,12 @@ export component MainWindow inherits Window {
                 position-text: root.position-text;
                 remaining-text: root.remaining-text;
                 volume: root.volume;
+                muted: root.volume-muted || root.volume <= 0;
                 shuffle-active: root.shuffle-active;
                 loop-active: root.loop-active;
                 repeat-one-active: root.repeat-one-active;
                 volume-changed(v) => { root.volume-changed(v); }
+                mute-clicked => { root.volume-mute-clicked(); }
                 shuffle-clicked => { root.shuffle-clicked(); }
                 loop-clicked => { root.loop-clicked(); }
             }
@@ -941,6 +966,12 @@ export component MainWindow inherits Window {
                     outgoing-label-kind: root.vinyl-outgoing-label-kind;
                     outgoing-label-color: root.vinyl-outgoing-label-color;
                     outgoing-label-art: root.vinyl-outgoing-label-art;
+                clarity: root.vinyl-clarity;
+                label-clarity: root.vinyl-label-clarity;
+                outgoing-clarity: root.vinyl-outgoing-clarity;
+                outgoing-label-clarity: root.vinyl-outgoing-label-clarity;
+                texture: root.vinyl-texture;
+                outgoing-texture: root.vinyl-outgoing-texture;
                     customize-clicked => { root.vinyl-customize-clicked(); }
                     swap-serial: root.vinyl-swap-serial;
                     outgoing-art: root.vinyl-outgoing-art;

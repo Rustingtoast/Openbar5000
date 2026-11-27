@@ -93,6 +93,8 @@ pub struct UiHandles {
     pub audio_output: Rc<AudioOutput>,
     /// Re-checks the date for the holiday logo.
     pub logo_timer: Timer,
+    /// Preferences > Appearance > Icon > Preview.
+    pub logo_preview_window: ui::LogoPreviewWindow,
     pub playlist_manager_window: PlaylistManagerWindow,
     pub playlists: Rc<Playlists>,
     pub media_keys_timer: Rc<Timer>,
@@ -170,7 +172,10 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
 
 
     let properties_window = PropertiesWindow::new().expect("failed to create properties window");
-    let properties_editor = PropertiesEditor::wire(&properties_window, engine.clone(), store.clone());
+    let color_picker = crate::color_picker::ColorPicker::new();
+    let logo_preview_window = ui::LogoPreviewWindow::new().expect("failed to create the icon preview window");
+    let properties_editor =
+        PropertiesEditor::wire(&properties_window, engine.clone(), store.clone(), color_picker.clone());
 
     window.set_app_version(display_version(APP_VERSION).into());
     let about_window = AboutWindow::new().expect("failed to create about window");
@@ -179,7 +184,9 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         let about_window_weak = about_window.as_weak();
         about_window.on_close_clicked(move || {
             if let Some(window) = about_window_weak.upgrade() {
-                window.hide().expect("failed to hide about window");
+                if let Err(e) = window.hide() {
+                    tracing::warn!("couldn't hide the about window: {e}");
+                }
             }
         });
     }
@@ -187,7 +194,9 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         let about_window_weak = about_window.as_weak();
         window.on_about_clicked(move || {
             if let Some(window) = about_window_weak.upgrade() {
-                window.show().expect("failed to show about window");
+                if let Err(e) = window.show() {
+                    tracing::warn!("couldn't show the about window: {e}");
+                }
             }
         });
     }
@@ -233,6 +242,8 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         &theme_editor_window,
         &lyrics_editor_window,
         &playlist_manager_window,
+        color_picker.window(),
+        &logo_preview_window,
     );
     themed_windows.apply(&initial_colors);
 
@@ -245,40 +256,46 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         &theme_editor_window,
         &lyrics_editor_window,
         &playlist_manager_window,
+        color_picker.window(),
+        &logo_preview_window,
     ));
     let show_logo = {
         let settings = settings.clone();
         let logo_windows = logo_windows.clone();
         let settings_window_weak = settings_window.as_weak();
-        let shown = RefCell::new(None::<crate::holiday::LogoChoice>);
+        // The icon and version shown, so an hourly check that changes
+        // nothing redraws nothing.
+        let shown = RefCell::new(None::<(&'static str, String)>);
         Rc::new(move || {
             let (month, day) = crate::holiday::today();
-            let choice = {
+            let (icon, version, describe) = {
                 let settings = settings.borrow();
-                crate::holiday::LogoChoice::for_date(
-                    month,
-                    day,
-                    settings.holiday_logos,
-                    settings.holiday_special_mode,
-                )
+                let icon = crate::holiday::icon(&settings.logo_icon);
+                if crate::holiday::is_version(&settings.logo_pinned) {
+                    let label = crate::holiday::version_label(&settings.logo_pinned);
+                    (icon, settings.logo_pinned.clone(), format!("{label} (always)"))
+                } else {
+                    let choice = crate::holiday::LogoChoice::for_date(
+                        month,
+                        day,
+                        settings.holiday_logos,
+                        settings.holiday_special_mode,
+                    );
+                    (icon, choice.version(), choice.describe())
+                }
             };
-            if shown.borrow().as_ref() == Some(&choice) {
+            if let Some(settings_window) = settings_window_weak.upgrade() {
+                settings_window.set_logo_occasion(describe.into());
+            }
+            let key = (icon.id, version);
+            if shown.borrow().as_ref() == Some(&key) {
                 return;
             }
-            let logo = if choice.is_plain() {
-                // The built-in logo, as shipped.
-                slint::Image::load_from_svg_data(include_bytes!("../../ui/ui/assets/icons/app-icon.svg"))
-            } else {
-                slint::Image::load_from_svg_data(choice.svg().as_bytes())
-            };
-            match logo {
+            match slint::Image::load_from_svg_data(crate::holiday::logo_svg(icon, &key.1).as_bytes()) {
                 Ok(logo) => logo_windows.set_logo(&logo),
-                Err(e) => tracing::warn!("couldn't draw the holiday logo: {e:?}"),
+                Err(e) => tracing::warn!("couldn't draw the logo {} {}: {e:?}", key.0, key.1),
             }
-            if let Some(settings_window) = settings_window_weak.upgrade() {
-                settings_window.set_logo_occasion(choice.describe().into());
-            }
-            *shown.borrow_mut() = Some(choice);
+            *shown.borrow_mut() = Some(key);
         })
     };
     show_logo();
@@ -290,6 +307,100 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     }
     settings_window.set_holiday_logos(settings.borrow().holiday_logos);
     settings_window.set_holiday_special_mode(settings.borrow().holiday_special_mode);
+
+    // --- The icon (Preferences > Appearance > Icon) ---------------------
+    settings_window.set_logo_icons(slint::ModelRc::from(Rc::new(slint::VecModel::from(
+        crate::logo_files::ICONS
+            .iter()
+            .map(|icon| ui::LogoOption {
+                id: icon.id.into(),
+                name: icon.name.into(),
+                image: crate::logo_preview::image(icon.versions[0]),
+            })
+            .collect::<Vec<_>>(),
+    ))));
+    let show_logo_choice = {
+        let settings = settings.clone();
+        let settings_window_weak = settings_window.as_weak();
+        let preview_weak = logo_preview_window.as_weak();
+        Rc::new(move || {
+            let settings = settings.borrow();
+            let icon = crate::holiday::icon(&settings.logo_icon);
+            let pinned = if crate::holiday::is_version(&settings.logo_pinned) { settings.logo_pinned.as_str() } else { "" };
+            if let Some(window) = settings_window_weak.upgrade() {
+                window.set_logo_icon(icon.id.into());
+                window.set_logo_icon_name(icon.name.into());
+                window.set_logo_pinned(
+                    if pinned.is_empty() { String::new() } else { crate::holiday::version_label(pinned) }.into(),
+                );
+            }
+            if let Some(preview) = preview_weak.upgrade() {
+                crate::logo_preview::set_pinned(&preview, pinned);
+            }
+        })
+    };
+    show_logo_choice();
+    {
+        let settings = settings.clone();
+        let store = store.clone();
+        let show_logo = show_logo.clone();
+        let show_logo_choice = show_logo_choice.clone();
+        let preview_weak = logo_preview_window.as_weak();
+        settings_window.on_logo_icon_chosen(move |id| {
+            settings.borrow_mut().logo_icon = id.to_string();
+            settings.borrow().save(&store);
+            show_logo();
+            show_logo_choice();
+            // An open preview follows the choice.
+            if let Some(preview) = preview_weak.upgrade().filter(|p| p.window().is_visible()) {
+                let settings = settings.borrow();
+                crate::logo_preview::show(&preview, crate::holiday::icon(&settings.logo_icon), &settings.logo_pinned);
+            }
+        });
+    }
+    {
+        let settings = settings.clone();
+        let preview_weak = logo_preview_window.as_weak();
+        settings_window.on_logo_preview_clicked(move || {
+            let Some(preview) = preview_weak.upgrade() else { return };
+            let settings = settings.borrow();
+            let pinned = if crate::holiday::is_version(&settings.logo_pinned) { settings.logo_pinned.as_str() } else { "" };
+            crate::logo_preview::show(&preview, crate::holiday::icon(&settings.logo_icon), pinned);
+        });
+    }
+    // Pinning a version, or going back to the calendar.
+    let pin_logo = {
+        let settings = settings.clone();
+        let store = store.clone();
+        let show_logo = show_logo.clone();
+        let show_logo_choice = show_logo_choice.clone();
+        Rc::new(move |version: &str| {
+            settings.borrow_mut().logo_pinned = version.to_string();
+            settings.borrow().save(&store);
+            show_logo();
+            show_logo_choice();
+        })
+    };
+    {
+        let pin_logo = pin_logo.clone();
+        logo_preview_window.on_use_version(move |version| pin_logo(&version));
+    }
+    {
+        let pin_logo = pin_logo.clone();
+        logo_preview_window.on_follow_calendar(move || pin_logo(""));
+    }
+    {
+        let pin_logo = pin_logo.clone();
+        settings_window.on_logo_follow_calendar_clicked(move || pin_logo(""));
+    }
+    {
+        let preview_weak = logo_preview_window.as_weak();
+        logo_preview_window.on_close_clicked(move || {
+            if let Some(preview) = preview_weak.upgrade() {
+                let _ = preview.hide();
+            }
+        });
+    }
     {
         let settings = settings.clone();
         let store = store.clone();
@@ -375,6 +486,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         engine.clone(),
         store.clone(),
         settings.clone(),
+        color_picker.clone(),
     );
 
     let audio_output = AudioOutput::wire(&settings_window, engine.clone(), store.clone(), settings.clone());
@@ -703,7 +815,9 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         let settings_window_weak = settings_window.as_weak();
         settings_window.on_close_clicked(move || {
             if let Some(window) = settings_window_weak.upgrade() {
-                window.hide().expect("failed to hide settings window");
+                if let Err(e) = window.hide() {
+                    tracing::warn!("couldn't hide the settings window: {e}");
+                }
             }
         });
     }
@@ -716,7 +830,9 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             if let Some(window) = settings_window_weak.upgrade() {
                 // Advanced frame rates: seen only when opened on purpose.
                 window.set_performance_advanced_open(false);
-                window.show().expect("failed to show settings window");
+                if let Err(e) = window.show() {
+                    tracing::warn!("couldn't show the settings window: {e}");
+                }
             }
         });
     }
@@ -1001,7 +1117,9 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             };
             editor.set_theme_name("".into());
             set_editor_fields(&editor, &colors);
-            editor.show().expect("failed to show theme editor window");
+            if let Err(e) = editor.show() {
+                tracing::warn!("couldn't show the theme editor window: {e}");
+            }
         });
     }
     {
@@ -1024,6 +1142,26 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         });
     }
     {
+        // A swatch clicked: the colour picker, which then does what typing
+        // the colour's code would.
+        let draft_colors = draft_colors.clone();
+        let color_picker = color_picker.clone();
+        let theme_editor_window_weak = theme_editor_window.as_weak();
+        theme_editor_window.on_field_pick(move |key| {
+            let Some(color) = draft_colors.borrow().get(&key) else { return };
+            let draft_colors = draft_colors.clone();
+            let editor_weak = theme_editor_window_weak.clone();
+            let picked_key = key.to_string();
+            color_picker.open(&format!("{} color", theme_field_label(&key)), color, move |color| {
+                draft_colors.borrow_mut().set(&picked_key, color);
+                if let Some(editor) = editor_weak.upgrade() {
+                    set_editor_swatch(&editor, &picked_key, color);
+                    set_editor_value(&editor, &picked_key, theme::color_to_hex(color));
+                }
+            });
+        });
+    }
+    {
         let draft_colors = draft_colors.clone();
         let theme_editor_window_weak = theme_editor_window.as_weak();
         theme_editor_window.on_field_reset(move |key| {
@@ -1041,7 +1179,9 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         let theme_editor_window_weak = theme_editor_window.as_weak();
         theme_editor_window.on_cancel_clicked(move || {
             if let Some(editor) = theme_editor_window_weak.upgrade() {
-                editor.hide().expect("failed to hide theme editor window");
+                if let Err(e) = editor.hide() {
+                    tracing::warn!("couldn't hide the theme editor window: {e}");
+                }
             }
         });
     }
@@ -1073,7 +1213,9 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                 return;
             };
             refresh_theme_list(&settings_window, &theme_registry.borrow(), &new_id);
-            editor.hide().expect("failed to hide theme editor window");
+            if let Err(e) = editor.hide() {
+                tracing::warn!("couldn't hide the theme editor window: {e}");
+            }
         });
     }
     {
@@ -1115,14 +1257,14 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     }
 
     window.on_exit_clicked(|| {
-        slint::quit_event_loop().expect("failed to quit event loop");
+        let _ = slint::quit_event_loop();
     });
     // Closing the main window ends the app, as Exit does, and takes every
     // other window with it: Slint only stops once the last window is
     // closed, so a dialog left open (Preferences, Properties, ...) would
     // otherwise keep the app running -- and playing -- without its window.
     window.window().on_close_requested(|| {
-        slint::quit_event_loop().expect("failed to quit event loop");
+        let _ = slint::quit_event_loop();
         slint::CloseRequestResponse::HideWindow
     });
 
@@ -1249,6 +1391,21 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             let paths = selected_paths(&playlist_view_state.borrow(), index as usize);
             if let (false, Some(window)) = (paths.is_empty(), window_weak.upgrade()) {
                 window.invoke_copy_to_clipboard(paths.into());
+            }
+        });
+    }
+    {
+        let playlist_view_state = playlist_view_state.clone();
+        let window_weak = window.as_weak();
+        window.on_row_share_album_clicked(move |index| {
+            let Some(window) = window_weak.upgrade() else { return };
+            let text = {
+                let state = playlist_view_state.borrow();
+                crate::playlist_rows::album_share_text(&state.tracks, index as usize, state.smart_grouping)
+            };
+            if let Some(text) = text {
+                window.invoke_copy_to_clipboard(text.into());
+                window.set_status_text("Album copied to the clipboard.".into());
             }
         });
     }
@@ -1577,9 +1734,35 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         let settings = settings.clone();
         let store = store.clone();
         let save_timer = Rc::new(Timer::default());
+        // Muted with the speaker icon: the volume to go back to. Not saved,
+        // so the next start isn't muted.
+        let muted_from: Rc<Cell<Option<f32>>> = Rc::new(Cell::new(None));
+        {
+            let engine = engine.clone();
+            let window_weak = window.as_weak();
+            let muted_from = muted_from.clone();
+            window.on_volume_mute_clicked(move || {
+                let Some(window) = window_weak.upgrade() else { return };
+                if let Some(volume) = muted_from.take() {
+                    window.invoke_volume_changed(volume);
+                } else if window.get_volume() <= 0.0 {
+                    // Turned all the way down already: unmuting is turning
+                    // it up.
+                    window.invoke_volume_changed(0.5);
+                } else {
+                    muted_from.set(Some(window.get_volume()));
+                    window.set_volume_muted(true);
+                    window.set_volume(0.0);
+                    engine.send(EngineCommand::SetVolume(0.0));
+                }
+            });
+        }
         window.on_volume_changed(move |volume| {
             let volume = volume.clamp(0.0, 1.0);
+            // Any volume set -- the slider, the media keys -- unmutes.
+            muted_from.set(None);
             if let Some(window) = window_weak.upgrade() {
+                window.set_volume_muted(false);
                 window.set_volume(volume);
             }
             engine.send(EngineCommand::SetVolume(volume));
@@ -1930,6 +2113,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         media_library,
         audio_output,
         logo_timer,
+        logo_preview_window,
         playlist_manager_window,
         playlists,
         media_keys_timer,
@@ -1972,6 +2156,9 @@ fn swap_records(window: &MainWindow, had_record: bool) {
     window.set_vinyl_outgoing_label_kind(window.get_vinyl_label_kind());
     window.set_vinyl_outgoing_label_color(window.get_vinyl_label_color());
     window.set_vinyl_outgoing_label_art(window.get_vinyl_label_art());
+    window.set_vinyl_outgoing_clarity(window.get_vinyl_clarity());
+    window.set_vinyl_outgoing_label_clarity(window.get_vinyl_label_clarity());
+    window.set_vinyl_outgoing_texture(window.get_vinyl_texture());
     window.set_vinyl_swap_has_outgoing(had_record);
     window.set_vinyl_swap_serial(window.get_vinyl_swap_serial().wrapping_add(1));
 }
@@ -2245,6 +2432,9 @@ impl TrackPanels {
         window.set_vinyl_label_kind(style.label.kind().into());
         window.set_vinyl_label_color(style.label.color().unwrap_or_default());
         window.set_vinyl_label_art(style.label_art);
+        window.set_vinyl_clarity(style.clarity);
+        window.set_vinyl_label_clarity(style.label_clarity());
+        window.set_vinyl_texture(style.texture_image());
     }
 
     /// Whether a stop cleared the track's panels (and nothing has shown a
@@ -3901,6 +4091,23 @@ fn set_editor_fields(editor: &ThemeEditorWindow, colors: &ThemeColors) {
         let color = colors.get(key).expect("field key must be valid");
         set_editor_swatch(editor, key, color);
         set_editor_value(editor, key, theme::color_to_hex(color));
+    }
+}
+
+/// A theme colour's name, as the editor labels it, for the colour
+/// picker's title.
+fn theme_field_label(key: &str) -> &'static str {
+    match key {
+        "bg_base" => "Background",
+        "bg_raised" => "Panel background",
+        "bg_sunken" => "Sunken background",
+        "text_primary" => "Text",
+        "text_muted" => "Muted text",
+        "accent" => "Accent",
+        "accent_text" => "Accent text",
+        "waveform_unplayed" => "Waveform",
+        "spectrum_bar" => "Spectrum bar",
+        _ => "Theme",
     }
 }
 

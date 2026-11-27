@@ -16,8 +16,9 @@ ui.workspace = true
 plugin-host.workspace = true
 # winit access: to notice the window being entirely covered; wgpu access:
 # to tell which GPU interface Skia draws with (see `wiring`). Both are tied
-# to Slint's minor version.
-slint = { workspace = true, features = ["unstable-winit-030", "unstable-wgpu-30"] }
+# to Slint's minor version. Window handles: to attach file dialogs to the
+# window they're opened from (`platform::file_dialog_over`).
+slint = { workspace = true, features = ["unstable-winit-030", "unstable-wgpu-30", "raw-window-handle-06"] }
 crossbeam-channel.workspace = true
 discord-rich-presence.workspace = true
 rfd.workspace = true

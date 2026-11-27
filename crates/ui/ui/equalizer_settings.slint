@@ -1,5 +1,6 @@
 import { Button, CheckBox, ComboBox, LineEdit, Switch } from "std-widgets.slint";
 import { Theme } from "theme.slint";
+import { PickerChip } from "picker_chip.slint";
 import { Vfd } from "vintage_equalizer.slint";
 
 /// One band's vertical slider: whole dB from -max to +max, +max at the
@@ -142,6 +143,8 @@ export component EqualizerSettingsPage inherits VerticalLayout {
     callback preset-chosen(int);
     callback vfd-color-chosen(color);
     callback vfd-color-edited(string);
+    /// The rainbow chip: any colour, in the colour picker.
+    callback vfd-pick-clicked();
 
     property <length> scale-width: 46px;
 
@@ -320,6 +323,13 @@ export component EqualizerSettingsPage inherits VerticalLayout {
             swatch: swatch;
             current: swatch == root.vfd-color;
             clicked => { root.vfd-color-chosen(swatch); }
+        }
+        PickerChip {
+            y: (parent.height - self.height) / 2;
+            width: 22px;
+            height: 22px;
+            chosen: root.vfd-color != #6fd6ff && root.vfd-color != #2fe6c8 && root.vfd-color != #6dff6d && root.vfd-color != #ffb340 && root.vfd-color != #ff4d4d && root.vfd-color != #c38bff && root.vfd-color != #e9f6ff;
+            clicked => { root.vfd-pick-clicked(); }
         }
         Rectangle { width: 4px; }
         LineEdit {
