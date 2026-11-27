@@ -24,7 +24,7 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
 Write-Host "==> Building Openbar5000 (release) for Windows..."
 Push-Location $RepoRoot
 try {
-    cargo build --release -p app
+    cargo build --release --locked -p app
 }
 finally {
     Pop-Location

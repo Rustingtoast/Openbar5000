@@ -1,0 +1,1249 @@
+import { Theme } from "theme.slint";
+import { Vfd, HardwareKey } from "vintage_equalizer.slint";
+
+/// A small icon button in the panel's top-right corner. `enabled` false:
+/// dimmed, saying why (`hint`) while pointed at.
+export component CornerButton inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <bool> active: false;
+    in property <bool> enabled: true;
+    in property <string> hint;
+    callback clicked();
+
+    width: 26px;
+    height: 26px;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-checkable: root.active;
+    accessible-checked: root.active;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => {
+            if root.enabled {
+                root.clicked();
+            }
+        }
+    }
+    Image {
+        width: 15px;
+        height: 15px;
+        source: root.icon;
+        colorize: !root.enabled ? Theme.text-muted.transparentize(0.6)
+            : root.active ? Theme.accent
+            : touch.has-hover ? Theme.text-primary : Theme.text-muted;
+        animate colorize { duration: 120ms; }
+    }
+    if !root.enabled && touch.has-hover && root.hint != "": Text {
+        x: parent.width - self.preferred-width;
+        y: parent.height + 2px;
+        text: root.hint;
+        font-size: 11px;
+        color: Theme.text-muted;
+    }
+}
+
+/// Where the music is on a record, as fractions of its diameter from the
+/// centre: from the outer edge in to just outside the label.
+global Grooves {
+    out property <float> outer: 0.46;
+    out property <float> inner: 0.215;
+}
+
+/// What turns with a record besides its label, for the designs that have
+/// more than a plain color (see `app::vinyl_style::Design`).
+component DiscPattern inherits Rectangle {
+    in property <string> design;
+    in property <color> vinyl;
+    in property <color> contrast;
+    in property <image> art;
+    in property <bool> has-art;
+    in property <image> texture;
+
+    // Drawn once and kept: turning it (and its blurred copies) then costs
+    // one picture each, not every streak and fleck again.
+    Rectangle {
+        cache-rendering-hint: true;
+
+        // The cover printed across the whole record.
+        if root.design == "picture" && root.has-art: Image {
+            width: parent.width;
+            height: parent.height;
+            source: root.art;
+            image-fit: cover;
+        }
+        // An image of one's own, wrapped round the record.
+        if root.design == "texture": Image {
+            width: parent.width;
+            height: parent.height;
+            source: root.texture;
+            image-fit: cover;
+        }
+        // Two halves, the seam a little soft as where two colors of vinyl were
+        // pressed together.
+        if root.design == "split": Rectangle {
+            x: parent.width / 2 - parent.width * 0.01;
+            width: parent.width / 2 + parent.width * 0.01;
+            background: @linear-gradient(90deg, root.contrast.transparentize(1) 0%, root.contrast.transparentize(0.04) 4%, root.contrast.transparentize(0.04) 100%);
+        }
+        // Marbling: a few broad clouds, then thin streaks drawn round the
+        // record the way the pressing spreads them -- in the second color, a
+        // lighter and a darker shade of the vinyl.
+        if root.design == "marbled": Rectangle {
+            for i in 4: Rectangle {
+                property <angle> at: i * 97deg + 20deg;
+                property <float> from-centre: 0.18 + Math.mod(i * 0.381966, 1) * 0.18;
+                width: root.width * 0.55;
+                height: self.width;
+                x: root.width * (0.5 + self.from-centre * Math.cos(self.at)) - self.width / 2;
+                y: root.height * (0.5 + self.from-centre * Math.sin(self.at)) - self.height / 2;
+                transform-rotation: self.at + 90deg;
+                transform-scale-y: 0.45;
+                border-radius: self.width / 2;
+                background: @radial-gradient(circle, root.contrast.transparentize(0.78) 0%, root.contrast.transparentize(1) 50%);
+            }
+            for i in 18: Rectangle {
+                property <angle> at: i * 67.5deg + Math.mod(i * 0.618034, 1) * 50deg;
+                property <float> from-centre: 0.2 + Math.mod(i * 0.381966 + 0.1, 1) * 0.27;
+                property <float> size: 0.22 + Math.mod(i * 0.5698403 + 0.3, 1) * 0.38;
+                property <color> tint: Math.mod(i, 3) == 0 ? root.contrast.transparentize(0.22)
+                    : Math.mod(i, 3) == 1 ? root.vinyl.brighter(0.8).transparentize(0.4)
+                    : root.vinyl.darker(0.6).transparentize(0.3);
+                width: root.width * self.size;
+                height: self.width;
+                x: root.width * (0.5 + self.from-centre * Math.cos(self.at)) - self.width / 2;
+                y: root.height * (0.5 + self.from-centre * Math.sin(self.at)) - self.height / 2;
+                transform-rotation: self.at + 90deg + (Math.mod(i * 0.73, 1) - 0.5) * 50deg;
+                transform-scale-y: 0.06 + Math.mod(i * 0.29, 1) * 0.12;
+                border-radius: self.width / 2;
+                background: @radial-gradient(circle, self.tint 0%, self.tint.transparentize(0.6) 25%, self.tint.transparentize(1) 50%);
+            }
+        }
+        // Splatter: flecks spread around the record (golden-angle spacing,
+        // irregular distances), mostly fine spray and a few big drops, in the
+        // second color and the theme's accent.
+        if root.design == "splatter": Rectangle {
+            for i in 80: Rectangle {
+                // Unrelated sequences, so angle, distance and size don't line
+                // up into a pattern.
+                property <angle> at: i * 137.508deg + Math.mod(i * 0.2357, 1) * 90deg;
+                property <float> from-centre: 0.03 + 0.46 * Math.sqrt(Math.mod(i * 0.7548777 + 0.31, 1));
+                property <float> u: Math.mod(i * 0.5698403 + 0.17, 1);
+                property <float> size: 0.005 + 0.05 * self.u * self.u * self.u;
+                width: root.width * self.size;
+                height: self.width;
+                x: root.width * (0.5 + self.from-centre * Math.cos(self.at)) - self.width / 2;
+                y: root.height * (0.5 + self.from-centre * Math.sin(self.at)) - self.height / 2;
+                transform-rotation: Math.mod(i * 0.41, 1) * 180deg;
+                transform-scale-y: 0.55 + 0.45 * Math.mod(i * 0.83, 1);
+                border-radius: self.width / 2;
+                background: Math.mod(i, 4) == 1 ? Theme.accent
+                    : root.contrast.transparentize(Math.mod(i, 4) == 3 ? 0.5 : 0.04);
+            }
+        }
+    }
+}
+
+/// The turntable's platter: a rubber mat with fine ridges, seen while the
+/// record is off it and through a translucent one, inside a silver rim
+/// with strobe dots that turn with it. A little wider than the record, so
+/// the rim shows round it.
+export component Platter inherits Rectangle {
+    /// The record's diameter: the mat's.
+    in property <length> disc;
+    /// How far the platter has turned (its strobe dots stand still; see
+    /// below).
+    in property <angle> spin;
+
+    // Room round it in the cached layer below for the shadow, which a
+    // layer would otherwise cut off at its edge.
+    property <length> shadow-room: 24px;
+
+    // What doesn't turn -- the rim, its shadow and the mat -- drawn once and
+    // kept, rather than its gradients and shadow drawn again every frame.
+    Rectangle {
+        x: -root.shadow-room;
+        y: -root.shadow-room;
+        width: root.width + 2 * root.shadow-room;
+        height: root.height + 2 * root.shadow-room;
+        cache-rendering-hint: true;
+
+        Rectangle {
+            x: root.shadow-room;
+            y: root.shadow-room;
+            width: root.width;
+            height: root.height;
+            border-radius: self.width / 2;
+            background: @conic-gradient(#9a9a9a 0deg, #e4e4e4 40deg, #8a8a8a 110deg, #cfcfcf 180deg, #7e7e7e 250deg, #e0e0e0 320deg, #9a9a9a 360deg);
+            drop-shadow-blur: 10px;
+            drop-shadow-color: #00000080;
+        }
+        // The mat. (Under the strobe dots before; they lie outside it, so
+        // the order doesn't show.)
+        Rectangle {
+            width: root.disc;
+            height: self.width;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            border-radius: self.width / 2;
+            background: @radial-gradient(circle, #2c2c2c 0%, #222222 60%, #1b1b1b 100%);
+            for i in 14: Rectangle {
+                width: root.disc * (0.24 + i * 0.054);
+                height: self.width;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                border-radius: self.width / 2;
+                border-width: Math.max(1px, root.disc * 0.004);
+                border-color: Math.mod(i, 2) == 0 ? #ffffff10 : #00000040;
+            }
+        }
+    }
+
+    // Strobe dots round the rim's edge, drawn once. They stand still, as a
+    // real platter's do under the light they're made for at the right
+    // speed: turned, they turned almost a dot's spacing each frame, so the
+    // eye saw them creep one way or the other -- changing with the frame
+    // rate, as when scrolling elsewhere redraws the window faster (the
+    // wagon-wheel effect). The record and its label show the turning.
+    Rectangle {
+        Rectangle {
+            cache-rendering-hint: true;
+            for i in 72: Rectangle {
+                property <angle> at: i * 5deg;
+                width: Math.max(1.5px, root.width * 0.006);
+                height: self.width;
+                x: root.width * 0.5 + (root.width * 0.5 - self.width * 1.6) * Math.cos(self.at) - self.width / 2;
+                y: root.height * 0.5 + (root.height * 0.5 - self.width * 1.6) * Math.sin(self.at) - self.height / 2;
+                border-radius: self.width / 2;
+                background: #3a3a3a;
+            }
+        }
+    }
+}
+
+/// One record: vinyl in its color and design (see `app::vinyl_style`),
+/// with what makes it read as vinyl -- fine grooves between a smooth lead-in
+/// and run-out, the gaps between tracks, the bow-tie of light the grooves
+/// catch (staying put while the record turns, as on a real one), a rim
+/// highlight -- and the label: the cover art, turning with the record,
+/// motion-blurred while it does. No cover: a plain label in the accent
+/// color.
+export component VinylDisc inherits Rectangle {
+    in property <image> art;
+    in property <bool> has-art: false;
+    in property <angle> spin;
+    /// 0 to 1: how much of the motion blur shows.
+    in property <float> blur: 0;
+    /// Where one track ends and the next begins, as fractions of the
+    /// record's playing time: drawn as the smooth gaps between them.
+    in property <[float]> marks: [];
+    in property <color> vinyl: #161616;
+    /// The marbled, splatter and split designs' second color.
+    in property <color> contrast: #eeece6;
+    /// "classic", "translucent", "marbled", "splatter", "split",
+    /// "picture" or "texture" (`texture`, an image of one's own).
+    in property <string> design: "classic";
+    in property <image> texture;
+    /// How see-through the translucent design is: 0 (barely) to 1 (all
+    /// but clear glass); the texture fades by it to glass in the vinyl's
+    /// color.
+    in property <float> clarity: 0.5;
+    /// What the label is (see `app::vinyl_style::Label`): "accent" (the
+    /// theme's), "color" (`label-color`) or "match" (the vinyl's colour) --
+    /// how see-through it is, 0 to 1 (clear, the platter showing), and
+    /// whether the cover art is printed on it.
+    in property <string> label-kind: "accent";
+    in property <color> label-color: Theme.accent;
+    in property <float> label-clarity: 0;
+    in property <bool> label-art: true;
+
+    // A texture whose image is gone: plain.
+    property <string> look: root.design == "texture" && root.texture.width == 0 ? "classic" : root.design;
+    property <bool> translucent: root.look == "translucent" || (root.look == "texture" && root.clarity > 0);
+    // How much of each part of the translucent body is let through, by
+    // `clarity`: twice the base at the middle setting, never quite all.
+    property <float> see-through: Math.clamp(root.clarity, 0, 1) * 2;
+    property <bool> patterned: root.look != "classic" && root.look != "translucent";
+    property <length> label-size: root.width * 0.36;
+
+    border-radius: self.width / 2;
+    // Room round the body in its cached layer for the shadow, which a
+    // layer would otherwise cut off at its edge.
+    property <length> shadow-room: 32px;
+
+    // The body, with its shadow -- drawn once and kept, rather than its
+    // gradient and shadow drawn again every frame.
+    Rectangle {
+        x: -root.shadow-room;
+        y: -root.shadow-room;
+        width: root.width + 2 * root.shadow-room;
+        height: root.height + 2 * root.shadow-room;
+        cache-rendering-hint: true;
+        Rectangle {
+            x: root.shadow-room;
+            y: root.shadow-room;
+            width: root.width;
+            height: root.height;
+            border-radius: self.width / 2;
+            // Translucent: tinted glass, deepest in the middle and glowing
+            // at the edge where the light comes through; its shadow takes
+            // its color.
+            background: root.translucent
+                ? @radial-gradient(circle,
+                    root.vinyl.brighter(0.3).transparentize(Math.min(0.97, 0.6 * root.see-through)) 0%,
+                    root.vinyl.transparentize(Math.min(0.97, 0.5 * root.see-through)) 45%,
+                    root.vinyl.transparentize(Math.min(0.95, 0.42 * root.see-through)) 82%,
+                    root.vinyl.brighter(0.6).transparentize(Math.min(0.6, 0.12 * root.see-through)) 100%)
+                : @radial-gradient(circle, root.vinyl.brighter(0.12) 0%, root.vinyl 40%, root.vinyl.darker(0.18) 85%, root.vinyl.brighter(0.05) 100%);
+            drop-shadow-blur: root.translucent ? 20px : 14px;
+            drop-shadow-color: root.translucent ? root.vinyl.transparentize(0.5) : #00000090;
+        }
+    }
+
+    // The design, turning (and blurred) like the label.
+    if root.patterned: Rectangle {
+        border-radius: self.width / 2;
+        clip: true;
+        opacity: root.look == "texture" ? 1 - Math.clamp(root.clarity, 0, 1) : 1;
+        for i in 4: DiscPattern {
+            width: parent.width;
+            height: parent.height;
+            design: root.look;
+            texture: root.texture;
+            vinyl: root.vinyl;
+            contrast: root.contrast;
+            art: root.art;
+            has-art: root.has-art;
+            transform-rotation: root.spin - i * root.blur * 1.6deg;
+            opacity: 1 / (i + 1);
+            visible: i == 0 || root.blur > 0.01;
+        }
+    }
+
+    // What stays put while the record turns -- grooves, gaps, the light on
+    // them, the rim -- drawn once and kept, not redrawn every frame.
+    Rectangle {
+        cache-rendering-hint: true;
+
+        // The smooth lead-in at the edge and run-out by the label: glossier
+        // than the grooves.
+        Rectangle {
+            border-radius: self.width / 2;
+            border-width: root.width * (0.5 - Grooves.outer);
+            border-color: root.translucent ? root.vinyl.brighter(0.4).transparentize(0.75) : #ffffff07;
+        }
+        Rectangle {
+            width: root.width * 2 * Grooves.inner;
+            height: self.width;
+            x: (root.width - self.width) / 2;
+            y: (root.height - self.height) / 2;
+            border-radius: self.width / 2;
+            border-width: (self.width - root.label-size) / 2;
+            border-color: #ffffff06;
+        }
+        // The grooves: fine rings, light and dark in turn, so they read on
+        // dark and light vinyl alike.
+        for i in 44: Rectangle {
+            width: root.width * 2 * (Grooves.inner + (Grooves.outer - Grooves.inner) * (i + 0.5) / 44);
+            height: self.width;
+            x: (root.width - self.width) / 2;
+            y: (root.height - self.height) / 2;
+            border-radius: self.width / 2;
+            border-width: 1px;
+            border-color: Math.mod(i, 2) == 0 ? (Math.mod(i, 6) == 0 ? #ffffff16 : #ffffff0b) : #0000001e;
+        }
+        for mark in root.marks: Rectangle {
+            property <length> size: root.width * 2 * (Grooves.outer - mark * (Grooves.outer - Grooves.inner));
+            x: (root.width - self.width) / 2;
+            y: (root.height - self.height) / 2;
+            width: self.size;
+            height: self.size;
+            border-radius: self.width / 2;
+            border-width: Math.max(2px, root.width * 0.008);
+            border-color: root.translucent ? root.vinyl.brighter(0.5).transparentize(0.6) : #05050588;
+            // The light catching the gap's edge.
+            Rectangle {
+                x: -1px;
+                y: -1px;
+                width: parent.width + 2px;
+                height: parent.height + 2px;
+                border-radius: self.width / 2;
+                border-width: 1px;
+                border-color: #ffffff20;
+            }
+        }
+        // The light the grooves catch: two bright wedges opposite each other
+        // and two faint ones across them.
+        Rectangle {
+            border-radius: self.width / 2;
+            clip: true;
+            background: @conic-gradient(
+                #ffffff00 0deg, #ffffff00 18deg, #ffffff38 46deg, #ffffff00 74deg,
+                #ffffff00 118deg, #ffffff10 136deg, #ffffff00 154deg,
+                #ffffff00 198deg, #ffffff30 226deg, #ffffff00 254deg,
+                #ffffff00 298deg, #ffffff10 316deg, #ffffff00 334deg, #ffffff00 360deg);
+        }
+        // The rim: a hairline of light on the edge, darker just inside.
+        Rectangle {
+            border-radius: self.width / 2;
+            border-width: 1px;
+            border-color: #ffffff36;
+        }
+        Rectangle {
+            x: 1px;
+            y: 1px;
+            width: parent.width - 2px;
+            height: parent.height - 2px;
+            border-radius: self.width / 2;
+            border-width: 1px;
+            border-color: #00000050;
+        }
+    }
+
+    // Rills: a real record's grooves aren't even all the way round -- loud
+    // and quiet passages, the pressing -- so arcs of them catch more light,
+    // or less, than the rest, and turn with it. Perfectly round rings look
+    // the same at any angle; these show the record turning. Drawn once and
+    // kept, each ring's arcs at its own angle; blurred along the turn like
+    // the label.
+    for g in 3: Rectangle {
+        transform-rotation: root.spin - g * root.blur * 2.4deg;
+        opacity: 1 / (g + 1);
+        visible: g == 0 || root.blur > 0.01;
+        Rectangle {
+            cache-rendering-hint: true;
+            for i in 28: Rectangle {
+                property <float> t: (i + 0.5) / 28;
+                width: root.width * 2 * (Grooves.inner + 0.01 + (Grooves.outer - Grooves.inner - 0.015) * self.t);
+                height: self.width;
+                x: (root.width - self.width) / 2;
+                y: (root.height - self.height) / 2;
+                border-radius: self.width / 2;
+                border-width: Math.max(1px, root.width * (0.003 + 0.005 * Math.mod(i * 0.618034, 1)));
+                transform-rotation: Math.mod(i * 137.508, 360) * 1deg;
+                border-color: Math.mod(i, 3) == 2
+                    ? @conic-gradient(#00000000 0deg, #00000048 45deg, #00000000 105deg, #00000000 195deg, #00000030 235deg, #00000000 285deg, #00000000 360deg)
+                    : @conic-gradient(#ffffff00 0deg, #ffffff26 30deg, #ffffff00 85deg, #ffffff00 165deg, #ffffff16 205deg, #ffffff00 250deg, #ffffff00 360deg);
+            }
+        }
+    }
+
+    // The real proportions of a 12" LP: a 100 mm label on a 300 mm disc. A
+    // picture disc has the cover all over instead.
+    if root.design != "picture" || !root.has-art: Rectangle {
+        width: root.label-size;
+        height: self.width;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        border-radius: self.width / 2;
+        clip: true;
+        property <bool> see-through: root.label-clarity > 0;
+
+        // See-through: the platter's mat seen through it, and the light on
+        // the clear vinyl -- under the colour, which fades as it gets
+        // clearer.
+        if self.see-through: Rectangle {
+            background: @radial-gradient(circle, #2c2c2c 0%, #222222 70%, #1d1d1d 100%);
+            for i in 3: Rectangle {
+                width: parent.width * (0.4 + i * 0.22);
+                height: self.width;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                border-radius: self.width / 2;
+                border-width: 1px;
+                border-color: Math.mod(i, 2) == 0 ? #ffffff10 : #00000040;
+            }
+            Rectangle {
+                border-radius: self.width / 2;
+                border-width: Math.max(1px, root.width * 0.006);
+                border-color: #ffffff26;
+                background: @linear-gradient(135deg, #ffffff16 0%, #ffffff00 40%, #ffffff00 70%, #ffffff0c 100%);
+            }
+        }
+        // Its colour: its own, the accent, or the vinyl's (just the colour,
+        // not the design).
+        Rectangle {
+            background: (root.label-kind == "color" ? root.label-color
+                : root.label-kind == "match" ? root.vinyl
+                : Theme.accent).transparentize(parent.see-through ? Math.min(1, root.label-clarity) : 0);
+        }
+
+        // The cover a few times over, each a little further back along the
+        // turn: the n-th drawn at 1/n opacity, so all weigh the same, as a
+        // camera's shutter would blur it. Stopped, only the first is drawn.
+        // A see-through label shows through the picture too, as much as
+        // through its colour.
+        if root.has-art && root.label-art: Rectangle {
+            opacity: parent.see-through ? Math.max(0, 1 - Math.min(1, root.label-clarity)) : 1;
+            for i in 5: Image {
+                width: parent.width;
+                height: parent.height;
+                source: root.art;
+                image-fit: cover;
+                transform-rotation: root.spin - i * root.blur * 1.6deg;
+                opacity: 1 / (i + 1);
+                visible: i == 0 || root.blur > 0.01;
+            }
+        }
+        // A soft sheen across the paper.
+        Rectangle {
+            background: @linear-gradient(135deg, #ffffff18 0%, #ffffff00 45%, #00000000 60%, #00000022 100%);
+        }
+    }
+    // The ring pressed round the label.
+    Rectangle {
+        width: root.label-size + 2px;
+        height: self.width;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        border-radius: self.width / 2;
+        border-width: 1px;
+        border-color: #00000070;
+    }
+    Rectangle {
+        width: root.label-size * 1.06;
+        height: self.width;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        border-radius: self.width / 2;
+        border-width: 1px;
+        border-color: #ffffff14;
+    }
+}
+
+/// The current track as a record on a turntable (issue #40, the VNL tab):
+/// a 12" record turning at 33⅓ RPM while the track plays, with the cover
+/// art as its centre label, and a tonearm that lowers onto it while playing.
+/// The whole album is on the record, its tracks one after another from the
+/// edge in: the arm moves in as the album plays, and is lifted over to
+/// another song of it. Clicking the tonearm pauses or plays; dragging it
+/// inwards (left) goes on to the next song -- or, paused, plays on --
+/// outwards (right) back, as the songs lie on the record. A new album
+/// swaps the record: the old one slides off the platter, the new one on.
+export component VinylView inherits Rectangle {
+    in property <image> art;
+    in property <bool> has-art: false;
+    /// The new cover is still being read: the incoming record waits for it
+    /// rather than showing the old one.
+    in property <bool> art-loading: false;
+    in property <bool> is-playing: false;
+    /// For the tonearm, moving in as the track goes on.
+    in property <float> position-seconds: 0;
+    in property <float> duration-seconds: 0;
+    /// The album on the record: the playing time before this track and in
+    /// all (0: just this track), and the gaps between its tracks (see
+    /// `VinylDisc`); the record taken off's gaps, in a swap.
+    in property <float> album-offset-seconds: 0;
+    in property <float> album-total-seconds: 0;
+    in property <[float]> marks: [];
+    in property <[float]> outgoing-marks: [];
+    /// Changed when the arm is lifted over to another song of the album.
+    in property <int> cue-serial: 0;
+    /// The record's look (see `VinylDisc`), and the one taken off's.
+    in property <color> vinyl: #161616;
+    in property <color> contrast: #eeece6;
+    in property <string> design: "classic";
+    in property <color> outgoing-vinyl: #161616;
+    in property <color> outgoing-contrast: #eeece6;
+    in property <string> outgoing-design: "classic";
+    in property <string> label-kind: "accent";
+    in property <color> label-color: Theme.accent;
+    in property <bool> label-art: true;
+    in property <string> outgoing-label-kind: "accent";
+    in property <color> outgoing-label-color: Theme.accent;
+    in property <bool> outgoing-label-art: true;
+    in property <float> clarity: 0.5;
+    in property <float> label-clarity: 0;
+    in property <float> outgoing-clarity: 0.5;
+    in property <float> outgoing-label-clarity: 0;
+    in property <image> texture;
+    in property <image> outgoing-texture;
+    /// Right-click "Customize Vinyl…": the record's look in Properties.
+    callback customize-clicked();
+    /// Changed when the album does: plays the record swap.
+    in property <int> swap-serial: 0;
+    /// The record taken off in a swap, and whether there was one at all
+    /// (not after a stop, or at start-up).
+    in property <image> outgoing-art;
+    in property <bool> outgoing-has-art: false;
+    in property <bool> swap-has-outgoing: false;
+    /// Whether there's a record on the turntable: none until a song is
+    /// picked, or after a stop -- the platter turns up empty.
+    in property <bool> has-record: false;
+    /// The button in the top-right corner: "expand" (full screen, with the
+    /// lyrics), "reduce" (back), or "" for none.
+    in property <string> corner-button: "";
+    /// Full screen is for the lyrics: without any, the button stays, dimmed,
+    /// and says why it does nothing.
+    in property <bool> corner-button-enabled: true;
+    callback corner-button-clicked();
+    callback tonearm-clicked();
+    /// On a 1980s deck, like the Vintage Equalizer: its faceplate, print
+    /// and display (in the display colour picked for the equalizer), with
+    /// a START/STOP key. Toggled by the button beside the full screen one.
+    in property <bool> vintage: false;
+    callback vintage-toggled();
+    /// "m:ss" played, for the vintage deck's display.
+    in property <string> time-text;
+    /// The tonearm dragged sideways and let go: inwards -- left, where the
+    /// later songs are -- (true) for the next song, outwards to go back.
+    callback arm-dragged(bool);
+
+    /// Whether this renderer can turn things: not Slint's software
+    /// renderer. Without, the record stands still -- and isn't redrawn for
+    /// nothing -- and the arm hangs straight.
+    in property <bool> can-turn: true;
+    /// How often the turning record is drawn (Preferences > Visualizations
+    /// > Performance): 120 or more, every frame the display shows, by its
+    /// own clock; less, at that rate, by `clock`.
+    in property <int> fps: 120;
+    /// Seconds by the clock, from the app at the `fps` rate while playing,
+    /// wrapping every 1.8 s -- a whole turn, so the wrap doesn't show.
+    /// Reading the display's clock (`animation-tick()`) instead keeps Slint
+    /// drawing every frame, whatever the rate.
+    in property <float> clock: 0;
+
+    // 33⅓ turns a minute: 200° a second, whatever the frame rate.
+    property <bool> display-rate: root.fps <= 0 || root.fps >= 120;
+
+    // The motor: on while the track plays and the record is on the
+    // platter. Platter and record have weight: switched on, they speed up
+    // from standing still; off (paused, or before a record is lifted off),
+    // they slow to a stop -- linearly, over `spin-change`.
+    //
+    // Running, the angle goes on from where it stopped (`run-base`) at a
+    // steady 200°/s by the display's clock -- not by the playback position,
+    // which comes in uneven steps and made the turning uneven; nobody can
+    // tell a record's angle anyway. `lag` makes the speeding up and slowing
+    // down: an ease-out-quad over `spin-change` starts at twice its average
+    // speed, so a change of 200°/s times half `spin-change` takes the speed
+    // linearly from 0 to full, or from full to 0. It only ever adds up, so
+    // a change can start in the middle of another.
+    // Not until a swap asked for has started (`changed swap-serial` runs a
+    // moment after the record changes): else picking the first song, which
+    // starts playing just as its record is put on, set the platter turning
+    // for an instant before the swap stopped it.
+    property <int> swap-started: 0;
+    property <bool> motor: root.is-playing && !root.swapping && root.swap-started == root.swap-serial;
+    // What the angle follows: changed only in `changed motor`, so the angle
+    // stays put until that has run.
+    property <bool> running: false;
+    property <angle> run-base: 0deg;
+    property <duration> run-start: 0ms;
+    property <float> clock-start: 0;
+    // Speeding up, by the display's clock too, whatever the rate: `lag`
+    // animates every frame the display shows, and against the stepped
+    // `clock` it pulled the record back between steps -- it shook as it
+    // started. Back on `clock` once at full speed, on a tick of it
+    // (`changed clock`), so the hand-over starts from a fresh reading.
+    property <bool> ramping: false;
+    property <bool> ramp-over: false;
+    property <bool> by-display: root.display-rate || root.ramping;
+    ramp-timer := Timer {
+        interval: root.spin-change;
+        running: false;
+        triggered => {
+            self.stop();
+            if root.running && !root.display-rate {
+                root.ramp-over = true;
+            } else {
+                root.ramping = false;
+            }
+        }
+    }
+    changed clock => {
+        if root.ramp-over {
+            root.ramp-over = false;
+            root.ramping = false;
+        }
+    }
+    property <angle> run-angle: root.run-base + (root.by-display
+        ? (animation-tick() - root.run-start) / 1ms * 0.2deg
+        : (root.clock - root.clock-start) * 200deg);
+    property <angle> stopped-at: 0deg;
+    property <duration> spin-change: 900ms;
+    property <angle> lag: 0deg;
+    animate lag { duration: root.spin-change; easing: ease-out-quad; }
+    // Shown mid-song (the tab picked, full screen opened): already turning
+    // -- and caught up with swaps it wasn't there for.
+    init => {
+        root.swap-started = root.swap-serial;
+        if root.motor {
+            root.run-start = animation-tick();
+            root.clock-start = root.clock;
+            root.running = true;
+        }
+    }
+    // The clock it turns by changed while it turns (the frame rate, to or
+    // from the display's own, or the speeding up over):
+    // the other clock goes on from the angle it's at.
+    changed by-display => {
+        if root.running {
+            if root.by-display {
+                root.run-base += (root.clock - root.clock-start) * 200deg;
+            } else {
+                root.run-base += (animation-tick() - root.run-start) / 1ms * 0.2deg;
+            }
+            root.run-start = animation-tick();
+            root.clock-start = root.clock;
+        }
+    }
+    changed motor => {
+        if root.motor && !root.running {
+            root.run-base = root.stopped-at;
+            root.run-start = animation-tick();
+            root.clock-start = root.clock;
+            root.ramping = true;
+            root.ramp-over = false;
+            ramp-timer.restart();
+            root.running = true;
+            root.lag -= 200deg * (root.spin-change / 1s) / 2;
+        } else if !root.motor && root.running {
+            root.stopped-at = root.run-angle;
+            root.running = false;
+            root.lag += 200deg * (root.spin-change / 1s) / 2;
+        }
+    }
+    property <angle> spin: !root.can-turn ? 0deg
+        : (root.running ? root.run-angle : root.stopped-at) + root.lag;
+    // Motion blur on the label, growing and fading with the speed.
+    property <float> blur: root.can-turn && root.motor ? 1 : 0;
+    animate blur { duration: root.spin-change; }
+    // How far into the record the needle is: through the album, or just
+    // the track when the album isn't known.
+    property <float> progress: root.album-total-seconds > 0
+        ? Math.clamp((root.album-offset-seconds + root.position-seconds) / root.album-total-seconds, 0, 1)
+        : root.duration-seconds > 0
+        ? Math.clamp(root.position-seconds / root.duration-seconds, 0, 1)
+        : 0;
+    // Not animated: restarted at every position update while playing, even
+    // a zero-length animation keeps Slint drawing every frame, whatever the
+    // frame rate setting. Carried over to another song, the arm is lifted
+    // (`cue-lift`) for the hop.
+    // Everything that's drawn, in records: plain, the platter (a little
+    // wider than the record) and the tonearm's base at its right; vintage,
+    // the whole deck -- the record, the arm and a column of controls. Kept
+    // inside a margin (wider at the top, clear of the corner buttons) at
+    // any size, and no bigger than `max-disc`.
+    property <length> pad: 20px;
+    property <length> top-pad: 38px;
+    property <length> max-disc: 640px;
+    property <float> deck-ratio: root.vintage ? 1.62 : 1.16;
+    property <float> deck-height: root.vintage ? 1.24 : 1.035;
+    // From the deck's left edge to the record's centre.
+    property <float> deck-left: root.vintage ? 0.62 : 0.5175;
+    property <length> disc: Math.max(0px, Math.min(root.max-disc,
+        (root.width - 2 * root.pad) / root.deck-ratio,
+        (root.height - root.top-pad - root.pad) / root.deck-height));
+    property <length> cx: (root.width - root.disc * root.deck-ratio) / 2 + root.disc * root.deck-left;
+    property <length> cy: root.top-pad + (root.height - root.top-pad - root.pad) / 2;
+
+    // The record swap: 0 to 1 over `swap-length`. The arm lifts, the old
+    // record slides off to the left, and the new one slides on from there.
+    property <bool> swapping: false;
+    property <duration> swap-start: 0ms;
+    property <duration> swap-length: 1400ms;
+    property <float> swap-t: root.swapping
+        ? Math.clamp((animation-tick() - root.swap-start) / root.swap-length, 0, 1)
+        : 1;
+    changed swap-serial => {
+        root.swap-started = root.swap-serial;
+        root.swap-start = animation-tick();
+        root.swapping = true;
+        swap-timer.stop();
+        swap-timer.start();
+    }
+    swap-timer := Timer {
+        interval: root.swap-length;
+        running: false;
+        triggered => {
+            self.stop();
+            root.swapping = false;
+        }
+    }
+    // The first half shows the record taken off, the second the new one.
+    property <bool> outgoing-phase: root.swapping && root.swap-t < 0.5;
+    // 0..1 of each slide, eased like a hand lifting a record and setting
+    // one down: off slowly then quicker, on quick then gently.
+    property <float> off-p: Math.clamp((root.swap-t - 0.1) / 0.36, 0, 1);
+    property <float> on-p: Math.clamp((root.swap-t - 0.54) / 0.4, 0, 1);
+    property <float> away: !root.swapping ? (root.has-record ? 0 : 1)
+        : root.outgoing-phase ? (root.swap-has-outgoing ? root.off-p * root.off-p * root.off-p : 1)
+        : root.has-record ? (1 - root.on-p) * (1 - root.on-p) * (1 - root.on-p) : 1;
+    // Far enough left to be out of sight.
+    property <length> away-distance: root.cx + root.disc / 2 + 24px;
+
+    background: Theme.bg-sunken;
+    clip: true;
+
+    // The vintage deck's body: the Vintage Equalizer's faceplate, printed
+    // the same way.
+    if root.vintage: Rectangle {
+        x: root.cx - root.disc * 0.62;
+        y: root.cy - root.disc * 0.62;
+        width: root.disc * 1.62;
+        height: root.disc * 1.24;
+        border-radius: 4px;
+        border-width: 1px;
+        border-color: #000000;
+        background: @linear-gradient(180deg, Vfd.body-top 0%, Vfd.body-bottom 100%);
+        drop-shadow-blur: 14px;
+        drop-shadow-color: #00000090;
+        // The top edge catching the light.
+        Rectangle {
+            x: 4px;
+            y: 1px;
+            width: parent.width - 8px;
+            height: 1px;
+            background: #ffffff.transparentize(0.9);
+        }
+        Text {
+            x: root.disc * 0.035;
+            y: root.disc * 0.025;
+            text: "Direct Drive Turntable System";
+            font-size: Math.max(8px, root.disc * 0.03);
+            color: Vfd.print;
+        }
+        Text {
+            x: parent.width - self.width - root.disc * 0.035;
+            y: root.disc * 0.022;
+            text: "OB-5000";
+            font-size: Math.max(9px, root.disc * 0.036);
+            font-weight: 800;
+            color: Vfd.print;
+        }
+    }
+
+    // The platter, turning with the record (and on while it's swapped).
+    Platter {
+        disc: root.disc;
+        width: root.disc * 1.035;
+        height: self.width;
+        x: root.cx - self.width / 2;
+        y: root.cy - self.height / 2;
+        spin: root.spin;
+    }
+
+    VinylDisc {
+        visible: root.away < 1;
+        x: root.cx - root.disc / 2 - root.away * root.away-distance;
+        y: root.cy - root.disc / 2;
+        width: root.disc;
+        height: root.disc;
+        // Lifted a little while it's carried.
+        transform-scale: 1 + 0.04 * Math.min(1, root.away * 4);
+        spin: root.spin;
+        blur: root.blur;
+        marks: root.outgoing-phase ? root.outgoing-marks : root.marks;
+        vinyl: root.outgoing-phase ? root.outgoing-vinyl : root.vinyl;
+        contrast: root.outgoing-phase ? root.outgoing-contrast : root.contrast;
+        design: root.outgoing-phase ? root.outgoing-design : root.design;
+        label-kind: root.outgoing-phase ? root.outgoing-label-kind : root.label-kind;
+        label-color: root.outgoing-phase ? root.outgoing-label-color : root.label-color;
+        label-art: root.outgoing-phase ? root.outgoing-label-art : root.label-art;
+        clarity: root.outgoing-phase ? root.outgoing-clarity : root.clarity;
+        label-clarity: root.outgoing-phase ? root.outgoing-label-clarity : root.label-clarity;
+        texture: root.outgoing-phase ? root.outgoing-texture : root.texture;
+        art: root.outgoing-phase ? root.outgoing-art : root.art;
+        has-art: root.outgoing-phase
+            ? root.outgoing-has-art
+            : root.has-art && !(root.swapping && root.art-loading);
+    }
+
+    // The vintage deck's strobe light at the platter's front left, lighting
+    // up the dots on its rim -- in the display's colour.
+    if root.vintage: Rectangle {
+        property <length> size: root.disc * 0.075;
+        x: root.cx - root.disc * 0.4 - self.size / 2;
+        y: root.cy + root.disc * 0.4 - self.size / 2;
+        width: self.size;
+        height: self.size;
+        border-radius: self.width / 2;
+        background: @radial-gradient(circle, Vfd.glow.transparentize(0.45) 0%, Vfd.glow.transparentize(1) 70%);
+    }
+    if root.vintage: Rectangle {
+        property <length> size: root.disc * 0.045;
+        x: root.cx - root.disc * 0.425 - self.size / 2;
+        y: root.cy + root.disc * 0.425 - self.size / 2;
+        width: self.size;
+        height: self.size * 0.6;
+        transform-rotation: 45deg;
+        border-radius: 2px;
+        background: @linear-gradient(180deg, #3a3a3a 0%, #151515 100%);
+        border-width: 1px;
+        border-color: #000000;
+    }
+
+    // The spindle, standing on the platter through the record's hole.
+    Rectangle {
+        width: Math.max(5px, root.disc * 0.026);
+        height: self.width;
+        x: root.cx - self.width / 2;
+        y: root.cy - self.height / 2;
+        border-radius: self.width / 2;
+        background: #c8c8c8;
+        border-width: 1px;
+        border-color: #00000060;
+    }
+
+    // The tonearm, pivoting at the top right: clear of the record until
+    // the track plays (and while records are swapped), then down in the
+    // groove `progress` is at. Measured in record diameters from its
+    // centre: the pivot and the arm's length.
+    property <float> pivot-u: 0.56;
+    property <float> pivot-v: -0.4;
+    property <float> reach: 0.7;
+    property <length> pivot-x: root.cx + root.disc * root.pivot-u;
+    property <length> pivot-y: root.cy + root.disc * root.pivot-v;
+    property <length> arm-length: root.disc * root.reach;
+    property <float> lowered: root.is-playing && !root.swapping ? 1 : 0;
+    animate lowered { duration: 700ms; easing: ease-in-out; }
+    // The angle that puts the needle at the groove's radius r: the arm
+    // turns the needle on a circle around the pivot, which crosses the
+    // groove where |pivot + reach * (-sin a, cos a)| = r.
+    property <float> needle-r: Grooves.outer - root.progress * (Grooves.outer - Grooves.inner);
+    property <float> pivot-dist: Math.sqrt(root.pivot-u * root.pivot-u + root.pivot-v * root.pivot-v);
+    property <angle> groove-angle: Math.asin(Math.clamp(
+            (root.pivot-dist * root.pivot-dist + root.reach * root.reach - root.needle-r * root.needle-r)
+                / (2 * root.reach * root.pivot-dist), -1, 1))
+        - Math.atan2(-root.pivot-v, root.pivot-u);
+    property <angle> rest-angle: -4deg;
+    // Lifted over to another song of the album: up for a moment, carried
+    // across, set down again.
+    property <bool> cueing: false;
+    changed cue-serial => {
+        root.cueing = true;
+        cue-timer.stop();
+        cue-timer.start();
+    }
+    cue-timer := Timer {
+        interval: 900ms;
+        running: false;
+        triggered => {
+            self.stop();
+            root.cueing = false;
+        }
+    }
+    property <float> cue-lift: root.cueing || root.arm-held ? 1 : 0;
+    animate cue-lift { duration: 250ms; easing: ease-in-out; }
+    // How high the arm is: casting a wider shadow further off.
+    property <float> arm-lift: Math.max(1 - root.lowered, root.cue-lift);
+    // No record lies perfectly flat and centred: in the groove, the arm
+    // sways a little once a turn, with a slight unevenness on top.
+    property <angle> wobble: (1 - root.cue-lift)
+        * (0.4deg * Math.sin(root.spin) + 0.1deg * Math.sin(root.spin * 3));
+    // Held by the pointer: lifted, and turned to follow it sideways.
+    property <bool> arm-held: false;
+    property <length> grab-x: 0px;
+    property <length> drag-dx: root.arm-held ? arm-touch.mouse-x - root.grab-x : 0px;
+    // Further than this, a press is a drag rather than a click.
+    property <length> drag-threshold: 8px;
+    // Far enough out to reach the rest from the innermost groove.
+    property <angle> drag-angle: Math.clamp(-root.drag-dx / root.arm-length * 1rad, -50deg, 30deg);
+    animate drag-angle { duration: 120ms; }
+    // Never past the rest, out over the deck's edge.
+    property <angle> arm-angle: !root.can-turn ? 0deg
+        : Math.max(root.rest-angle - 2deg,
+            root.rest-angle + root.drag-angle + root.lowered * (root.groove-angle - root.rest-angle + root.wobble));
+
+    // Held off the record, out at the rest, while it plays: after
+    // `park-time`, that pauses -- as on a real turntable, the arm taken off
+    // the record stops the music. Let go sooner, it's an ordinary drag.
+    property <bool> parked: root.arm-held && root.is-playing && root.can-turn
+        && root.arm-angle <= root.rest-angle + 3deg;
+    property <duration> park-time: 1s;
+    // Paused by holding it there: letting go then does nothing more.
+    property <bool> park-paused: false;
+    changed parked => {
+        park-timer.stop();
+        if root.parked {
+            park-timer.start();
+        }
+    }
+    park-timer := Timer {
+        interval: root.park-time;
+        running: false;
+        triggered => {
+            self.stop();
+            if root.parked {
+                root.park-paused = true;
+                root.tonearm-clicked();
+            }
+        }
+    }
+    // How far the hold has got, for the "Hold to pause" bar.
+    property <float> park-progress: root.parked ? 1 : 0;
+    animate park-progress { duration: root.parked ? root.park-time : 150ms; }
+
+    // Whether the pointer is on the arm: its distance from the line from
+    // the pivot to the headshell (counterweight included).
+    property <float> arm-dx: -Math.sin(root.arm-angle);
+    property <float> arm-dy: Math.cos(root.arm-angle);
+    property <float> rel-x: (arm-touch.mouse-x - root.pivot-x) / 1px;
+    property <float> rel-y: (arm-touch.mouse-y - root.pivot-y) / 1px;
+    property <float> along: Math.clamp(root.rel-x * root.arm-dx + root.rel-y * root.arm-dy,
+        -root.disc * 0.1 / 1px, root.arm-length / 1px);
+    property <float> off-x: root.rel-x - root.along * root.arm-dx;
+    property <float> off-y: root.rel-y - root.along * root.arm-dy;
+    property <float> grab: Math.max(9, root.disc * 0.035 / 1px);
+    property <bool> on-arm: root.arm-held || (arm-touch.has-hover
+        && root.off-x * root.off-x + root.off-y * root.off-y <= root.grab * root.grab);
+
+    arm-touch := TouchArea {
+        // A pointing hand over it (Windows has no open hand: its "grab" is
+        // the four-way move arrows), a closed one (or those arrows) held.
+        mouse-cursor: root.arm-held ? MouseCursor.grabbing : root.on-arm ? MouseCursor.pointer : MouseCursor.default;
+        pointer-event(event) => {
+            if event.button != PointerEventButton.left {
+                return;
+            }
+            if event.kind == PointerEventKind.down && root.on-arm {
+                root.arm-held = true;
+                root.park-paused = false;
+                root.grab-x = self.mouse-x;
+            } else if (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) && root.arm-held {
+                let dx = self.mouse-x - root.grab-x;
+                root.arm-held = false;
+                if event.kind == PointerEventKind.cancel || root.park-paused {
+                    return;
+                }
+                if dx < -root.drag-threshold && !root.is-playing {
+                    // Paused: put back on the record, it just plays on.
+                    root.tonearm-clicked();
+                } else if dx > root.drag-threshold || dx < -root.drag-threshold {
+                    // Set down again after the move, like a cue.
+                    root.cueing = true;
+                    cue-timer.stop();
+                    cue-timer.start();
+                    // Left is in towards the label: further on.
+                    root.arm-dragged(dx < 0);
+                } else {
+                    root.tonearm-clicked();
+                }
+            }
+        }
+    }
+
+    // Right-click anywhere: customize this record's look. Left clicks go on
+    // to the tonearm underneath.
+    ContextMenuArea {
+        Menu {
+            MenuItem {
+                title: "Customize Vinyl\u{2026}";
+                enabled: root.has-record;
+                activated => { root.customize-clicked(); }
+            }
+        }
+    }
+
+    // The vintage deck's arm rest, where the lifted arm lies.
+    if root.vintage: Rectangle {
+        property <length> size: root.disc * 0.04;
+        x: root.pivot-x + root.arm-length * Math.sin(-root.rest-angle) - self.size / 2;
+        y: root.pivot-y + root.arm-length * Math.cos(root.rest-angle) * 0.9 - self.size / 2;
+        width: self.size;
+        height: self.size;
+        border-radius: self.width / 2;
+        background: @radial-gradient(circle, #555555 0%, #1c1c1c 100%);
+        border-width: 1px;
+        border-color: #000000;
+    }
+
+    // The tonearm, turning about the pivot.
+    arm := Rectangle {
+        x: root.pivot-x - self.width / 2;
+        y: root.pivot-y;
+        width: Math.max(3px, root.disc * (root.vintage ? 0.018 : 0.014));
+        height: root.arm-length;
+        transform-origin: { x: self.width / 2, y: 0 };
+        transform-rotation: root.arm-angle;
+        // Room round it in the cached layer below: the counterweight above
+        // the pivot, the headshell and its finger lift, the shadow.
+        property <length> room: 16px + root.disc * 0.1;
+
+        // Its look, drawn once and kept, and turned as one: the wobble
+        // turns it every frame, which drew its gradient and shadow anew
+        // each time. (Drawn again only as it's lifted or pointed at.)
+        Rectangle {
+            x: -arm.room;
+            y: -arm.room;
+            width: arm.width + 2 * arm.room;
+            height: arm.height + 2 * arm.room;
+            cache-rendering-hint: true;
+            Rectangle {
+                x: arm.room;
+                y: arm.room;
+                width: arm.width;
+                height: arm.height;
+                border-radius: self.width / 2;
+                background: root.on-arm
+                    ? @linear-gradient(90deg, #a8a8a8 0%, #ffffff 50%, #b4b4b4 100%)
+                    : @linear-gradient(90deg, #8c8c8c 0%, #e0e0e0 50%, #9a9a9a 100%);
+                drop-shadow-blur: 4px + root.arm-lift * 6px;
+                drop-shadow-offset-x: root.arm-lift * 3px;
+                drop-shadow-offset-y: root.arm-lift * 4px;
+                drop-shadow-color: #00000080;
+
+                // The headshell with the cartridge, at the end of the arm.
+                Rectangle {
+                    width: Math.max(8px, root.disc * 0.045);
+                    height: Math.max(12px, root.disc * 0.07);
+                    x: (parent.width - self.width) / 2;
+                    y: parent.height - self.height * 0.6;
+                    border-radius: 2px;
+                    background: #2c2c2c;
+                    border-width: 1px;
+                    border-color: root.on-arm ? Theme.accent : #6a6a6a;
+                    // The vintage headshell's finger lift.
+                    if root.vintage: Rectangle {
+                        x: parent.width - 1px;
+                        y: parent.height * 0.25;
+                        width: parent.width * 0.7;
+                        height: Math.max(2px, root.disc * 0.008);
+                        border-radius: self.height / 2;
+                        background: #c8c8c8;
+                    }
+                }
+                // The counterweight, behind the pivot.
+                Rectangle {
+                    width: Math.max(8px, root.disc * 0.05);
+                    height: Math.max(10px, root.disc * 0.07);
+                    x: (parent.width - self.width) / 2;
+                    y: -self.height * 1.2;
+                    border-radius: 2px;
+                    background: #3a3a3a;
+                    border-width: 1px;
+                    border-color: #707070;
+                }
+            }
+        }
+    }
+    // The tonearm's base, over the end of the arm.
+    Rectangle {
+        width: Math.max(12px, root.disc * 0.085);
+        height: self.width;
+        x: root.pivot-x - self.width / 2;
+        y: root.pivot-y - self.height / 2;
+        border-radius: self.width / 2;
+        background: @radial-gradient(circle, #6a6a6a 0%, #333333 100%);
+        border-width: 1px;
+        border-color: #808080;
+    }
+
+    // The vintage deck's controls, right of the arm: the display (speed and
+    // time played, glowing like the equalizer's) and START/STOP.
+    if root.vintage: Rectangle {
+        x: root.cx + root.disc * 0.74;
+        y: root.cy - root.disc * 0.3;
+        width: root.disc * 0.22;
+        height: root.disc * 0.4;
+
+        Rectangle {
+            y: 0;
+            height: root.disc * 0.17;
+            background: Vfd.glass;
+            border-radius: 3px;
+            border-width: 1px;
+            border-color: #000000;
+            VerticalLayout {
+                alignment: center;
+                spacing: 0;
+                Text {
+                    text: root.has-record ? "33\u{2153}" : "--";
+                    font-size: Math.max(9px, root.disc * 0.05);
+                    font-weight: 700;
+                    color: root.has-record ? Vfd.glow : Vfd.dim;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: root.has-record ? root.time-text : "0:00";
+                    font-size: Math.max(8px, root.disc * 0.034);
+                    color: root.has-record ? Vfd.half : Vfd.dim;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+        Text {
+            y: root.disc * 0.18;
+            width: parent.width;
+            text: "RPM";
+            font-size: Math.max(7px, root.disc * 0.024);
+            color: Vfd.print;
+            horizontal-alignment: center;
+        }
+        HardwareKey {
+            y: root.disc * 0.27;
+            height: Math.max(16px, root.disc * 0.075);
+            glyph: "START \u{00b7} STOP";
+            // Twelve letters: small enough to stay on the key.
+            glyph-size: Math.min(9px, self.width / 9);
+            label: root.is-playing ? "Stop the turntable (pause)" : "Start the turntable (play)";
+            clicked => { root.tonearm-clicked(); }
+        }
+    }
+
+    // While the arm is held at the rest: it's about to pause.
+    if root.parked || root.park-progress > 0.01: Rectangle {
+        width: 116px;
+        height: 24px;
+        x: Math.min(root.width - self.width - 8px, root.pivot-x - self.width / 2);
+        y: root.cy + root.disc * 0.36;
+        border-radius: 6px;
+        background: Theme.bg-raised.transparentize(0.08);
+        border-width: 1px;
+        border-color: Theme.text-muted.transparentize(0.6);
+        clip: true;
+        opacity: root.parked ? 1 : 0;
+        animate opacity { duration: 150ms; }
+        Rectangle {
+            x: 0;
+            y: parent.height - 3px;
+            width: parent.width * root.park-progress;
+            height: 3px;
+            background: Theme.accent;
+        }
+        Text {
+            text: "Hold to pause";
+            font-size: 11px;
+            color: Theme.text-primary;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    // For screen readers: the tonearm as the play/pause button it is.
+    Rectangle {
+        x: root.pivot-x - self.width / 2;
+        y: root.pivot-y - self.height / 2;
+        width: Math.max(12px, root.disc * 0.085);
+        height: self.width;
+        accessible-role: button;
+        accessible-label: root.is-playing ? "Pause (lift the tonearm)" : "Play (lower the tonearm)";
+        accessible-action-default => { root.tonearm-clicked(); }
+    }
+
+    if root.corner-button != "": CornerButton {
+        x: parent.width - 2 * self.width - 6px;
+        y: 4px;
+        icon: @image-url("assets/icons/vintage.svg");
+        label: "Vintage look";
+        active: root.vintage;
+        clicked => { root.vintage-toggled(); }
+    }
+    if root.corner-button != "": CornerButton {
+        x: parent.width - self.width - 4px;
+        y: 4px;
+        icon: root.corner-button == "reduce" ? @image-url("assets/icons/reduce.svg") : @image-url("assets/icons/expand.svg");
+        label: root.corner-button == "reduce" ? "Exit full screen" : "Full screen with lyrics";
+        enabled: root.corner-button-enabled;
+        hint: "No lyrics for this track";
+        clicked => { root.corner-button-clicked(); }
+    }
+}

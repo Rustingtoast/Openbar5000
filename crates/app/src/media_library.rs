@@ -86,11 +86,15 @@ pub fn scan(
     let next = std::sync::atomic::AtomicUsize::new(0);
     let (done_tx, done_rx) = crossbeam_channel::unbounded();
     let mut upserts = Vec::with_capacity(total);
+    let mut spawned = 0;
     std::thread::scope(|scope| {
         for _ in 0..workers {
             let done_tx = done_tx.clone();
             let (next, changed) = (&next, &changed);
-            scope.spawn(move || {
+            // Fewer threads than asked for (the system short of memory, as
+            // with a demanding game running) just read with fewer; none at
+            // all, and this thread reads them below.
+            let worker = std::thread::Builder::new().spawn_scoped(scope, move || {
                 engine::lower_thread_priority();
                 loop {
                     if cancel.load(Ordering::Relaxed) {
@@ -109,6 +113,10 @@ pub fn scan(
                     }
                 }
             });
+            match worker {
+                Ok(_) => spawned += 1,
+                Err(e) => tracing::warn!("scanning with fewer threads: {e}"),
+            }
         }
         drop(done_tx);
         for track in done_rx.iter() {
@@ -116,6 +124,20 @@ pub fn scan(
             progress(upserts.len(), total);
         }
     });
+    if spawned == 0 {
+        for (path, (modified, size)) in &changed {
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
+            upserts.push(LibraryTrack {
+                path: path.clone(),
+                modified: *modified,
+                size: *size,
+                tags: engine::read_library_tags(path),
+            });
+            progress(upserts.len(), total);
+        }
+    }
     if cancel.load(Ordering::Relaxed) {
         return None;
     }
@@ -787,7 +809,16 @@ impl MediaLibrary {
     }
 
     fn add_folder(&self) {
-        let Some(folder) = rfd::FileDialog::new().set_title("Add music folder").pick_folder() else {
+        // Over whichever window it was asked from: Preferences, kept on
+        // top, if it's open, or the player.
+        let dialog = match (self.preferences.upgrade(), self.main.upgrade()) {
+            (Some(preferences), _) if preferences.window().is_visible() => {
+                crate::platform::file_dialog_over(preferences.window())
+            }
+            (_, Some(main)) => crate::platform::file_dialog_over(main.window()),
+            _ => rfd::FileDialog::new(),
+        };
+        let Some(folder) = dialog.set_title("Add music folder").pick_folder() else {
             return;
         };
         {

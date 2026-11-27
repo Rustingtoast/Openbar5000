@@ -376,11 +376,15 @@ pub fn load_metadata_parallel(
     let (done_tx, done_rx) = crossbeam_channel::unbounded();
 
     let mut results: Vec<Option<TrackMetadata>> = vec![None; total];
+    let mut spawned = 0;
     std::thread::scope(|scope| {
         for _ in 0..workers {
             let done_tx = done_tx.clone();
             let next = &next;
-            scope.spawn(move || {
+            // Fewer threads than asked for (the system short of memory, as
+            // with a demanding game running) just read with fewer; none at
+            // all, and this thread reads them below.
+            let worker = std::thread::Builder::new().spawn_scoped(scope, move || {
                 crate::background::lower_thread_priority();
                 loop {
                     let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -390,6 +394,10 @@ pub fn load_metadata_parallel(
                     }
                 }
             });
+            match worker {
+                Ok(_) => spawned += 1,
+                Err(e) => tracing::warn!("reading tags with fewer threads: {e}"),
+            }
         }
         drop(done_tx);
         for (done, (i, metadata)) in done_rx.iter().enumerate() {
@@ -397,6 +405,12 @@ pub fn load_metadata_parallel(
             on_progress(done + 1, total);
         }
     });
+    if spawned == 0 {
+        for (i, path) in paths.iter().enumerate() {
+            results[i] = Some(load_metadata(path));
+            on_progress(i + 1, total);
+        }
+    }
     results
         .into_iter()
         .map(|m| m.expect("every index is loaded exactly once"))

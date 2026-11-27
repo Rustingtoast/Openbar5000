@@ -14,6 +14,73 @@ pub fn desktop_id() -> String {
         .unwrap_or_else(|| "openbar5000".to_string())
 }
 
+/// A file dialog attached to `window`, so it opens over it -- even over a
+/// window kept on top, as Preferences and Properties are, which an
+/// unattached one would open behind.
+pub fn file_dialog_over(window: &slint::Window) -> rfd::FileDialog {
+    rfd::FileDialog::new().set_parent(&window.window_handle())
+}
+
+/// Starts `work` on a thread of its own named `name`. When the system won't
+/// give one -- short of memory or threads, as with a demanding game
+/// running -- says so in the log and returns `false`, for the caller to
+/// carry on without, instead of the app ending.
+pub fn spawn(name: &str, work: impl FnOnce() + Send + 'static) -> bool {
+    match std::thread::Builder::new().name(name.into()).spawn(work) {
+        Ok(_) => true,
+        Err(e) => {
+            tracing::warn!("couldn't start {name}: {e}");
+            false
+        }
+    }
+}
+
+/// Shows `window`, and -- if it was showing already, behind others --
+/// brings it to the front with the keyboard focus. Wayland compositors
+/// don't let a program raise its own window; a window shown anew does get
+/// the focus there, so it's hidden and shown again (keeping what's in it).
+pub fn show_in_front(window: &slint::Window) {
+    use slint::winit_030::WinitWindowAccessor;
+    if !window.is_visible() {
+        if let Err(e) = window.show() {
+            tracing::warn!("couldn't show a window: {e}");
+        }
+        return;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        use slint::winit_030::winit::platform::wayland::WindowExtWayland;
+        let wayland = window.with_winit_window(|winit| winit.xdg_toplevel().is_some()).unwrap_or(false);
+        if wayland {
+            let _ = window.hide();
+            if let Err(e) = window.show() {
+                tracing::warn!("couldn't show a window: {e}");
+            }
+            return;
+        }
+    }
+    window.with_winit_window(|winit| {
+        if winit.is_minimized() == Some(true) {
+            winit.set_minimized(false);
+        }
+        winit.focus_window();
+    });
+}
+
+/// Opens folder `dir` in the file manager (made first if need be).
+pub fn open_folder(dir: &Path) {
+    let _ = std::fs::create_dir_all(dir);
+    #[cfg(target_os = "macos")]
+    let result = Command::new("open").arg(dir).spawn();
+    #[cfg(target_os = "windows")]
+    let result = Command::new("explorer").arg(dir).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let result = Command::new("xdg-open").arg(dir).spawn();
+    if let Err(e) = result {
+        tracing::warn!("couldn't open {}: {e}", dir.display());
+    }
+}
+
 /// Opens `url` in the default browser.
 pub fn open_url(url: &str) {
     if !(url.starts_with("https://") || url.starts_with("http://")) {

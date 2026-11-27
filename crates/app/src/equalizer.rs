@@ -250,6 +250,7 @@ impl Equalizer {
         engine: Rc<PlaybackEngine>,
         store: Rc<Store>,
         settings: Rc<RefCell<Settings>>,
+        color_picker: Rc<crate::color_picker::ColorPicker>,
     ) -> Rc<Self> {
         let current = settings.borrow().equalizer;
         let eq = Rc::new(Self {
@@ -284,6 +285,18 @@ impl Equalizer {
                 if let Some(eq) = weak.upgrade() {
                     eq.set_vfd_color(&crate::theme::color_to_hex(color));
                 }
+            });
+        }
+        {
+            let weak = Rc::downgrade(&eq);
+            window.on_eq_vfd_pick_clicked(move || {
+                let Some(eq) = weak.upgrade() else { return };
+                let weak = Rc::downgrade(&eq);
+                color_picker.open("Display color", eq.window.get_eq_vfd_color(), move |color| {
+                    if let Some(eq) = weak.upgrade() {
+                        eq.set_vfd_color(&crate::theme::color_to_hex(color));
+                    }
+                });
             });
         }
         {
@@ -488,7 +501,7 @@ impl Equalizer {
     }
 
     fn load_preset(&self) {
-        let Some(path) = rfd::FileDialog::new()
+        let Some(path) = crate::platform::file_dialog_over(self.window.window())
             .set_title("Load equalizer preset")
             .add_filter("Equalizer preset", &["feq"])
             .pick_file()
@@ -510,7 +523,7 @@ impl Equalizer {
     }
 
     fn save_preset(&self) {
-        let Some(mut path) = rfd::FileDialog::new()
+        let Some(mut path) = crate::platform::file_dialog_over(self.window.window())
             .set_title("Save equalizer preset")
             .add_filter("Equalizer preset", &["feq"])
             .set_file_name("Preset.feq")

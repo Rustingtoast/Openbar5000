@@ -81,6 +81,22 @@ impl Lyrics {
             .iter()
             .rposition(|line| line.time.is_some_and(|time| time <= position))
     }
+
+    /// How far through line `index` `position` is (0 to 1): from its start
+    /// to the next line's, or to the song's end (`duration`) for the last.
+    pub fn line_progress(&self, index: usize, position: Duration, duration: Duration) -> f32 {
+        let Some(start) = self.lines.get(index).and_then(|line| line.time) else {
+            return 0.0;
+        };
+        let end = self.lines[index + 1..]
+            .iter()
+            .find_map(|line| line.time.filter(|&time| time > start))
+            .unwrap_or(duration);
+        if end <= start {
+            return 1.0;
+        }
+        (position.saturating_sub(start).as_secs_f32() / (end - start).as_secs_f32()).clamp(0.0, 1.0)
+    }
 }
 
 /// An LRC ID tag's inside, like `ar:Artist` or `offset:+100`: letters,
@@ -129,6 +145,28 @@ pub fn sync_line(text: &str, cursor: usize, position: Duration) -> (String, usiz
     let line_end = line.start + stamped.len();
     let next = if line_end < new_text.len() { line_end + 1 } else { line_end };
     (new_text, next)
+}
+
+/// Every timestamp in `text` moved by `delta_ms` (earlier when negative,
+/// never before 0:00) -- for lyrics synced a touch early or late all
+/// through. Lines without one, and `[ar:...]`-style tags, stay as they are.
+pub fn shift_timestamps(text: &str, delta_ms: i64) -> String {
+    text.split('\n')
+        .map(|line| {
+            let mut out = String::with_capacity(line.len());
+            let mut rest = line;
+            while let Some(after) = rest.strip_prefix('[') {
+                let Some(close) = after.find(']') else { break };
+                let Some(time) = parse_timestamp(&after[..close]) else { break };
+                let shifted = (time.as_millis() as i64 + delta_ms).max(0) as u64;
+                out.push_str(&format_timestamp(Duration::from_millis(shifted)));
+                rest = &after[close + 1..];
+            }
+            out.push_str(rest);
+            out
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Removes the timestamps from the line with the cursor; the cursor ends
@@ -242,4 +280,30 @@ mod tests {
         assert_eq!(cursor, 12);
         assert_eq!(format_timestamp(Duration::from_millis(3_723_450)), "[62:03.45]");
     }
+
+    #[test]
+    fn line_progress_runs_from_a_lines_start_to_the_next() {
+        let lyrics = Lyrics::parse("[00:10.00]one\n[00:20.00]two\n[00:20.00]same time\n[00:30.00]three");
+        let at = |s: f32| Duration::from_secs_f32(s);
+        assert_eq!(lyrics.line_progress(0, at(15.0), at(60.0)), 0.5);
+        assert_eq!(lyrics.line_progress(0, at(5.0), at(60.0)), 0.0);
+        // Lines sharing a time run to the next later one.
+        assert_eq!(lyrics.line_progress(1, at(25.0), at(60.0)), 0.5);
+        // The last runs to the song's end.
+        assert_eq!(lyrics.line_progress(3, at(45.0), at(60.0)), 0.5);
+        assert_eq!(lyrics.line_progress(9, at(45.0), at(60.0)), 0.0);
+    }
+
+
+    #[test]
+    fn shifting_moves_every_timestamp_and_nothing_else() {
+        let text = "[ar:Someone]\n[00:01.00]one\n[00:00.05][01:59.95]two\nplain";
+        assert_eq!(
+            shift_timestamps(text, 100),
+            "[ar:Someone]\n[00:01.10]one\n[00:00.15][02:00.05]two\nplain"
+        );
+        // Never before the start.
+        assert_eq!(shift_timestamps("[00:00.05]x", -100), "[00:00.00]x");
+    }
+
 }

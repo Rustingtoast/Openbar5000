@@ -89,7 +89,10 @@ pub fn compute_peaks_cancellable(
                 // The last slice runs to the real end of the stream, in case
                 // the tagged duration is a little short.
                 let end = (i + 1 < workers as u64).then(|| total_frames * (i + 1) / workers as u64);
-                scope.spawn(move || {
+                // A thread the system won't give (short of memory, as with
+                // a demanding game running) fails its slice, which falls
+                // back to decoding on this thread below.
+                std::thread::Builder::new().spawn_scoped(scope, move || {
                     crate::background::lower_thread_priority();
                     peaks_for_slice(path, info.sample_rate, start, end, total_frames, bucket_count, cancel)
                 })
@@ -97,7 +100,7 @@ pub fn compute_peaks_cancellable(
             .collect();
         handles
             .into_iter()
-            .map(|h| h.join().unwrap_or(Err(DecodeError::EndOfStream)))
+            .map(|h| h.ok().and_then(|h| h.join().ok()).unwrap_or(Err(DecodeError::EndOfStream)))
             .collect()
     });
 

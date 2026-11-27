@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Rustingtoast/Openbar5000"
@@ -99,8 +99,11 @@ opt-level = 3
 # made at start-up; in a Flatpak on Wayland there was no clipboard; on
 # Windows a window given its size came out short by its menu bar; and a
 # frame that failed, as after a GPU driver reset, ended the app. And Slint's
-# Skia renderer with one: once the GPU device was lost, it crashed. Remove
-# once Slint ships the fixes.
+# Skia renderer with one: once the GPU device was lost, it crashed. And
+# Slint's core with two: it asked the GPU for a feature wgpu warns about,
+# and a sub-menu with no room on the right was drawn over its parent menu.
+# Remove once Slint ships the fixes.
 [patch.crates-io]
 i-slint-backend-winit = { path = "patches/i-slint-backend-winit" }
 i-slint-renderer-skia = { path = "patches/i-slint-renderer-skia" }
+i-slint-core = { path = "patches/i-slint-core" }

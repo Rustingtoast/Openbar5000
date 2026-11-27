@@ -44,18 +44,25 @@ fi
 cd "$REPO_ROOT"
 mkdir -p "$DIST_DIR"
 
+# The oldest macOS it runs on -- what Info.plist's LSMinimumSystemVersion
+# says below. Set for the compiler too (Rust's and the C/C++ parts'), so a
+# newer Xcode can't raise it by itself and leave older Macs unable to open
+# the app.
+MIN_MACOS="10.15"
+export MACOSX_DEPLOYMENT_TARGET="$MIN_MACOS"
+
 if [ "$UNIVERSAL" = true ]; then
     echo "==> Building universal (x86_64 + arm64) release binary..."
     rustup target add x86_64-apple-darwin aarch64-apple-darwin >/dev/null
-    cargo build --release -p app --target x86_64-apple-darwin
-    cargo build --release -p app --target aarch64-apple-darwin
+    cargo build --release --locked -p app --target x86_64-apple-darwin
+    cargo build --release --locked -p app --target aarch64-apple-darwin
     lipo -create -output "$DIST_DIR/$APP_NAME" \
         "target/x86_64-apple-darwin/release/$APP_NAME" \
         "target/aarch64-apple-darwin/release/$APP_NAME"
     ARCH="universal"
 else
     echo "==> Building release binary for the host architecture..."
-    cargo build --release -p app
+    cargo build --release --locked -p app
     cp "target/release/$APP_NAME" "$DIST_DIR/$APP_NAME"
     ARCH="$(uname -m)"
 fi
@@ -95,7 +102,7 @@ cat > "$BUNDLE_DIR/Contents/Info.plist" <<EOF
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>LSMinimumSystemVersion</key>
-    <string>10.15</string>
+    <string>$MIN_MACOS</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSHumanReadableCopyright</key>

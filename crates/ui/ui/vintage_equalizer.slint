@@ -18,9 +18,12 @@ export global Vfd {
 }
 
 /// A long, flat hardware key.
-component HardwareKey inherits Rectangle {
+export component HardwareKey inherits Rectangle {
     in property <string> glyph;
     in property <string> label;
+    /// The glyph's size: fits a key's height by default; smaller for a
+    /// longer glyph on a narrow key.
+    in property <length> glyph-size: Math.min(9px, root.height * 0.6);
     callback clicked();
 
     accessible-role: button;
@@ -36,7 +39,7 @@ component HardwareKey inherits Rectangle {
 
     Text {
         text: root.glyph;
-        font-size: Math.min(9px, root.height * 0.6);
+        font-size: root.glyph-size;
         color: Vfd.print;
         y: (parent.height - self.height) / 2 + (touch.pressed ? 1px : 0);
     }

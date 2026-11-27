@@ -6,7 +6,7 @@ import { Theme } from "theme.slint";
 /// "Synchronise selected line" stamps the line under the cursor with the
 /// current playback time ([mm:ss.xx], LRC style) and moves to the next.
 export component LyricsEditorWindow inherits Window {
-    title: "Lyrics Editor" + (root.track-title == "" ? "" : " \u{2014} " + root.track-title);
+    title: (root.text != root.original ? "\u{2022} " : "") + "Lyrics Editor" + (root.track-title == "" ? "" : " \u{2014} " + root.track-title);
     icon: Theme.logo;
     preferred-width: 900px;
     preferred-height: 640px;
@@ -25,6 +25,12 @@ export component LyricsEditorWindow inherits Window {
     }
 
     in property <string> track-title;
+    /// "Ctrl+" -- or the Command key's sign on macOS, for the shortcuts.
+    property <string> mod: Platform.os == OperatingSystemType.macos ? "\u{2318}" : "Ctrl+";
+    /// The text as saved, to tell unsaved changes by.
+    in property <string> original;
+    /// The line of `text` being sung right now, if it's synced.
+    in property <string> singing-now;
     /// The lyrics being edited; two-way bound to the text field.
     in-out property <string> text;
     /// UTF-8 byte offset of the text cursor: tells the app which line is
@@ -44,12 +50,41 @@ export component LyricsEditorWindow inherits Window {
     callback remove-timestamp-clicked();
     callback seek-back-clicked();
     callback seek-forward-clicked();
+    /// All timestamps earlier (negative) or later by this many ms.
+    callback shift-clicked(int);
     callback play-pause-clicked();
     callback undo-clicked();
     callback ok-clicked();
     callback apply-clicked();
     callback cancel-clicked();
 
+    // Shortcuts work while typing: syncing a song is one key per line.
+    keys := FocusScope {
+      capture-key-pressed(event) => {
+        if event.modifiers.control && !event.modifiers.shift && event.text == Key.Return {
+            if !root.busy { root.sync-clicked(); }
+            return accept;
+        }
+        if event.modifiers.control && event.modifiers.shift && event.text == Key.Backspace {
+            if !root.busy { root.remove-timestamp-clicked(); }
+            return accept;
+        }
+        // Ctrl+P, not Ctrl+Space: on macOS that's Spotlight's (and Slint
+        // reports Command as Ctrl there).
+        if event.modifiers.control && !event.modifiers.shift && (event.text == "p" || event.text == "P") {
+            root.play-pause-clicked();
+            return accept;
+        }
+        if event.modifiers.alt && event.text == Key.LeftArrow {
+            root.seek-back-clicked();
+            return accept;
+        }
+        if event.modifiers.alt && event.text == Key.RightArrow {
+            root.seek-forward-clicked();
+            return accept;
+        }
+        reject
+      }
     HorizontalLayout {
         padding: 12px;
         spacing: 12px;
@@ -74,10 +109,28 @@ export component LyricsEditorWindow inherits Window {
                         clicked => { root.remove-timestamp-clicked(); input.focus(); }
                     }
                     Text {
-                        text: "Puts the current playback time in front of the line with the cursor, then moves to the next line.";
+                        text: "Stamps the current time on the cursor's line, then moves to the next.\n" + root.mod + "Enter: stamp \u{2022} " + root.mod + "Shift+Backspace: remove";
                         wrap: word-wrap;
                         font-size: 11px;
                         color: Theme.text-muted;
+                    }
+                    Text {
+                        text: "Shift all timestamps";
+                        font-size: 11px;
+                        color: Theme.text-primary;
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Button {
+                            text: "\u{2212}0.1 s";
+                            enabled: !root.busy;
+                            clicked => { root.shift-clicked(-100); input.focus(); }
+                        }
+                        Button {
+                            text: "+0.1 s";
+                            enabled: !root.busy;
+                            clicked => { root.shift-clicked(100); input.focus(); }
+                        }
                     }
                 }
             }
@@ -90,6 +143,12 @@ export component LyricsEditorWindow inherits Window {
                         text: "Playback time: " + root.playback-time;
                         color: Theme.text-primary;
                     }
+                    Text {
+                        text: root.singing-now == "" ? "" : "Singing now: " + root.singing-now;
+                        wrap: word-wrap;
+                        font-size: 11px;
+                        color: Theme.accent;
+                    }
                     HorizontalLayout {
                         spacing: 6px;
                         Button { text: "«"; clicked => { root.seek-back-clicked(); } }
@@ -99,6 +158,12 @@ export component LyricsEditorWindow inherits Window {
                             clicked => { root.play-pause-clicked(); }
                         }
                         Button { text: "»"; clicked => { root.seek-forward-clicked(); } }
+                    }
+                    Text {
+                        text: root.mod + "P: play/pause \u{2022} " + (Platform.os == OperatingSystemType.macos ? "\u{2325}" : "Alt+") + "\u{2190}/\u{2192}: 5 s";
+                        wrap: word-wrap;
+                        font-size: 11px;
+                        color: Theme.text-muted;
                     }
                 }
             }
@@ -159,5 +224,6 @@ export component LyricsEditorWindow inherits Window {
                 Button { text: "OK"; primary: true; enabled: !root.busy; clicked => { root.ok-clicked(); } }
             }
         }
+    }
     }
 }

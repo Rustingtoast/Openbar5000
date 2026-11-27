@@ -87,6 +87,50 @@ const MIGRATIONS: &[&str] = &[
         last_played  INTEGER NOT NULL
     );
     "#,
+    // v5: how records look on the VNL panel (issue #40, see
+    // `vinyl_style`): one row per album, or per song that has its own.
+    // `color` is "#rrggbb", `design` a `vinyl_style::Design` id.
+    r#"
+    CREATE TABLE vinyl_styles (
+        key    TEXT PRIMARY KEY,
+        color  TEXT NOT NULL,
+        design TEXT NOT NULL
+    );
+    "#,
+    // v6: the record's label (issue #40): its colour ("#rrggbb", or NULL
+    // for the theme's accent) and whether the cover art is printed on it.
+    r#"
+    ALTER TABLE vinyl_styles ADD COLUMN label TEXT;
+    ALTER TABLE vinyl_styles ADD COLUMN label_art INTEGER NOT NULL DEFAULT 1;
+    "#,
+    // v7: how see-through the record is (issue #40): `clarity`, 0 to 1, of
+    // the translucent and texture designs (NULL: the default), and
+    // `label_clarity` of the label (NULL: opaque); and the texture design's
+    // image, a file in `vinyl_style::texture_dir`. The "clear" label becomes
+    // the accent, fully clear -- as it looked.
+    r#"
+    ALTER TABLE vinyl_styles ADD COLUMN clarity REAL;
+    ALTER TABLE vinyl_styles ADD COLUMN texture TEXT;
+    ALTER TABLE vinyl_styles ADD COLUMN label_clarity REAL;
+    UPDATE vinyl_styles SET label = NULL, label_clarity = 1.0 WHERE label = 'clear';
+    "#,
+    // v8: every counted play, for the statistics and the year in review
+    // (see `stats`): when (Unix seconds), what -- its tags as they were then,
+    // so a later edit or a deleted file doesn't change the past -- and how
+    // long it was listened to.
+    r#"
+    CREATE TABLE play_log (
+        id        INTEGER PRIMARY KEY,
+        played_at INTEGER NOT NULL,
+        path      TEXT NOT NULL,
+        title     TEXT NOT NULL,
+        artist    TEXT NOT NULL,
+        album     TEXT NOT NULL,
+        genre     TEXT NOT NULL,
+        seconds   INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX play_log_played_at ON play_log (played_at);
+    "#,
 ];
 
 /// The playlist every database starts with (migration v1).
@@ -106,12 +150,16 @@ impl Store {
         Self::from_connection(conn)
     }
 
-    #[cfg(test)]
+    /// A database that lives only as long as the app: for tests, and to run
+    /// at all when the real one can't be opened.
     pub(crate) fn open_in_memory() -> rusqlite::Result<Self> {
         Self::from_connection(Connection::open_in_memory()?)
     }
 
     fn from_connection(conn: Connection) -> rusqlite::Result<Self> {
+        // Another instance (or a backup program) holding it a moment: wait
+        // for it rather than fail the write.
+        conn.busy_timeout(std::time::Duration::from_secs(3))?;
         conn.pragma_update(None, "foreign_keys", true)?;
         run_migrations(&conn)?;
         Ok(Self { conn })
@@ -232,6 +280,13 @@ impl Store {
     }
 
     /// Upserts every pair in one transaction.
+    /// Whether anything was ever saved: a database from an earlier start.
+    pub fn has_settings(&self) -> bool {
+        self.conn
+            .query_row("SELECT EXISTS (SELECT 1 FROM settings)", [], |row| row.get(0))
+            .unwrap_or(false)
+    }
+
     pub fn set_settings(&self, pairs: &[(&str, String)]) {
         let result = (|| -> rusqlite::Result<()> {
             let tx = self.conn.unchecked_transaction()?;
@@ -333,6 +388,70 @@ impl Store {
         }
     }
 
+    /// Logs a play (see `stats`); its id, to add the time listened to it.
+    pub fn log_play(&self, play: &crate::stats::Play) -> Option<i64> {
+        let logged = self.conn.execute(
+            "INSERT INTO play_log (played_at, path, title, artist, album, genre, seconds)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![play.played_at, play.path, play.title, play.artist, play.album, play.genre, play.seconds],
+        );
+        match logged {
+            Ok(_) => Some(self.conn.last_insert_rowid()),
+            Err(e) => {
+                tracing::warn!("failed to log a play: {e}");
+                None
+            }
+        }
+    }
+
+    /// How long play `id` has been listened to so far.
+    pub fn set_play_seconds(&self, id: i64, seconds: i64) {
+        if let Err(e) = self.conn.execute("UPDATE play_log SET seconds = ?2 WHERE id = ?1", params![id, seconds]) {
+            tracing::warn!("failed to update a play: {e}");
+        }
+    }
+
+    /// The plays logged from `from` up to (not including) `to`, Unix
+    /// seconds, oldest first.
+    pub fn plays_between(&self, from: i64, to: i64) -> Vec<crate::stats::Play> {
+        let read = || -> rusqlite::Result<Vec<crate::stats::Play>> {
+            let mut statement = self.conn.prepare(
+                "SELECT played_at, path, title, artist, album, genre, seconds FROM play_log
+                 WHERE played_at >= ?1 AND played_at < ?2 ORDER BY played_at",
+            )?;
+            let rows = statement.query_map(params![from, to], |row| {
+                Ok(crate::stats::Play {
+                    played_at: row.get(0)?,
+                    path: row.get(1)?,
+                    title: row.get(2)?,
+                    artist: row.get(3)?,
+                    album: row.get(4)?,
+                    genre: row.get(5)?,
+                    seconds: row.get(6)?,
+                })
+            })?;
+            rows.collect()
+        };
+        read().unwrap_or_else(|e| {
+            tracing::warn!("failed to read the play log: {e}");
+            Vec::new()
+        })
+    }
+
+    /// When listening was first recorded at all (Unix seconds): the play
+    /// log's first, or the per-song counts' first from before it.
+    pub fn listening_since(&self) -> Option<i64> {
+        self.conn
+            .query_row(
+                "SELECT MIN(t) FROM (SELECT MIN(played_at) AS t FROM play_log
+                                     UNION ALL SELECT MIN(first_played) FROM play_stats)",
+                [],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .ok()
+            .flatten()
+    }
+
     pub fn play_stats(&self, path: &Path) -> Option<PlayStats> {
         self.conn
             .query_row(
@@ -342,6 +461,59 @@ impl Store {
             )
             .optional()
             .unwrap_or(None)
+    }
+
+    // --- record looks for the VNL panel (issue #40) ---------------------
+
+    /// The look stored under `key` (see `vinyl_style`).
+    pub fn vinyl_style(&self, key: &str) -> Option<StoredVinylStyle> {
+        self.conn
+            .query_row(
+                "SELECT color, design, label, label_art, clarity, label_clarity, texture FROM vinyl_styles WHERE key = ?1",
+                params![key],
+                |row| {
+                    Ok(StoredVinylStyle {
+                        color: row.get(0)?,
+                        design: row.get(1)?,
+                        label: row.get(2)?,
+                        label_art: row.get(3)?,
+                        clarity: row.get(4)?,
+                        label_clarity: row.get(5)?,
+                        texture: row.get(6)?,
+                    })
+                },
+            )
+            .optional()
+            .unwrap_or(None)
+    }
+
+    pub fn set_vinyl_style(&self, key: &str, style: &StoredVinylStyle) {
+        if let Err(e) = self.conn.execute(
+            "INSERT INTO vinyl_styles (key, color, design, label, label_art, clarity, label_clarity, texture)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(key) DO UPDATE SET color = excluded.color, design = excluded.design,
+                 label = excluded.label, label_art = excluded.label_art,
+                 clarity = excluded.clarity, label_clarity = excluded.label_clarity,
+                 texture = excluded.texture",
+            params![
+                key,
+                style.color,
+                style.design,
+                style.label,
+                style.label_art,
+                style.clarity,
+                style.label_clarity,
+                style.texture
+            ],
+        ) {
+            tracing::warn!("failed to save a vinyl style: {e}");
+        }
+    }
+
+    pub fn remove_vinyl_style(&self, key: &str) {
+        if let Err(e) = self.conn.execute("DELETE FROM vinyl_styles WHERE key = ?1", params![key]) {
+            tracing::warn!("failed to remove a vinyl style: {e}");
+        }
     }
 
     // --- playlists: named, ordered lists of paths (issue #33) ----------
@@ -449,6 +621,23 @@ pub struct PlayStats {
     pub count: u64,
     pub first_played: i64,
     pub last_played: i64,
+}
+
+/// A row of `vinyl_styles`, as stored (see `vinyl_style::VinylStyle`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredVinylStyle {
+    pub color: String,
+    pub design: String,
+    /// `None`: the theme's accent.
+    pub label: Option<String>,
+    pub label_art: bool,
+    /// How see-through a translucent record is, 0 to 1; `None`: the
+    /// default.
+    pub clarity: Option<f64>,
+    /// How see-through the label is, 0 to 1; `None`: not at all.
+    pub label_clarity: Option<f64>,
+    /// The texture design's image file, in `vinyl_style::texture_dir`.
+    pub texture: Option<String>,
 }
 
 /// A playlist as the Playlist Manager lists it.
@@ -620,6 +809,37 @@ mod tests {
         // Closed first: Windows won't delete a file that's open.
         drop(store);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn v7_makes_a_clear_label_the_accent_fully_clear() {
+        let conn = Connection::open_in_memory().unwrap();
+        for migration in &MIGRATIONS[..6] {
+            conn.execute_batch(migration).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 6).unwrap();
+        conn.execute(
+            "INSERT INTO vinyl_styles (key, color, design, label, label_art) VALUES
+             ('a', '#161616', 'classic', 'clear', 1), ('b', '#161616', 'classic', 'match', 1)",
+            [],
+        )
+        .unwrap();
+        let store = Store::from_connection(conn).unwrap();
+        let clear = store.vinyl_style("a").unwrap();
+        assert_eq!(
+            (
+                clear.label,
+                clear.label_clarity,
+                clear.clarity,
+                clear.texture
+            ),
+            (None, Some(1.0), None, None)
+        );
+        let matched = store.vinyl_style("b").unwrap();
+        assert_eq!(
+            (matched.label.as_deref(), matched.label_clarity),
+            (Some("match"), None)
+        );
     }
 
     #[test]

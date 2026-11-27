@@ -1,0 +1,462 @@
+// The main window's modal overlays (see `app::wiring`, "Overlays"): the
+// first-start welcome, what's new in a release, and the year in review
+// with its announcement. One shows at a time; each closes with Esc or a
+// click outside it, and the next waiting takes its place.
+
+import { Button } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { StatRow } from "stats_window.slint";
+
+/// The year in review's figures (see `app::stats`).
+export struct YearReview {
+    year: int,
+    minutes: string,
+    plays: string,
+    songs: string,
+    artists: string,
+    top-song: string,
+    top-song-by: string,
+    top-song-plays: string,
+    top-artist: string,
+    top-artist-plays: string,
+    genres: [StatRow],
+    top-songs: [StatRow],
+    mood: string,
+    busiest-day: string,
+    busiest-month: string,
+}
+
+/// What's new in a release: a feature and a line or two about it.
+export struct WhatsNewItem {
+    title: string,
+    text: string,
+}
+
+/// A small holographic card with a sparkle: the year in review.
+export component ShinyCard inherits Rectangle {
+    in property <bool> hover;
+    width: 18px;
+    height: 24px;
+    border-radius: 3px;
+    transform-rotation: root.hover ? -4deg : -10deg;
+    animate transform-rotation { duration: 160ms; easing: ease-out; }
+    background: @linear-gradient(135deg, #ff9be6 0%, #ffd36e 30%, #8ef5d0 55%, #7fb6ff 78%, #c79bff 100%);
+    border-width: 1px;
+    border-color: #ffffffcc;
+    drop-shadow-blur: root.hover ? 6px : 3px;
+    drop-shadow-color: #c79bff90;
+    // A sheen across it.
+    Rectangle {
+        border-radius: 3px;
+        background: @linear-gradient(160deg, #ffffff00 30%, #ffffffaa 48%, #ffffff00 62%);
+    }
+    // The sparkle.
+    Path {
+        x: parent.width * 0.52;
+        y: parent.height * 0.12;
+        width: parent.width * 0.38;
+        height: self.width;
+        viewbox-width: 10;
+        viewbox-height: 10;
+        fill: white;
+        commands: "M5 0 L6.2 3.8 L10 5 L6.2 6.2 L5 10 L3.8 6.2 L0 5 L3.8 3.8 Z";
+    }
+}
+
+/// The dimmed backdrop and the card on it, for every overlay: a click on
+/// the backdrop or Esc closes it.
+component Modal inherits Rectangle {
+    callback dismissed();
+    /// Keys other than Esc, for the overlay to use.
+    callback key(KeyEvent) -> EventResult;
+    in property <length> card-width: 440px;
+    in property <length> card-height: 520px;
+    in property <brush> card-background: Theme.bg-raised;
+    in property <length> card-radius: 16px;
+
+    background: #000000a0;
+    // The backdrop: clicking it closes.
+    TouchArea {
+        clicked => { root.dismissed(); }
+        scroll-event(event) => { return accept; }
+    }
+    keys := FocusScope {
+        capture-key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.dismissed();
+                return accept;
+            }
+            reject
+        }
+        key-pressed(event) => { return root.key(event); }
+    }
+    init => { keys.focus(); }
+
+    card := Rectangle {
+        width: Math.min(root.card-width, root.width - 24px);
+        height: Math.min(root.card-height, root.height - 24px);
+        border-radius: root.card-radius;
+        background: root.card-background;
+        clip: true;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #00000080;
+        // Clicks on the card stay on it.
+        TouchArea {}
+        @children
+    }
+}
+
+/// Year in review: one slide after another, Wrapped-style. Click (or →)
+/// for the next, ← for the one before.
+export component YearReviewOverlay inherits Rectangle {
+    in property <YearReview> review;
+    callback closed();
+
+    property <int> slide: 0;
+    property <int> slides: 7;
+    property <[brush]> backgrounds: [
+        @linear-gradient(160deg, #3a1c71 0%, #d76d77 55%, #ffaf7b 100%),
+        @linear-gradient(160deg, #0f2027 0%, #2c5364 55%, #1db954 100%),
+        @linear-gradient(160deg, #42275a 0%, #734b6d 50%, #ff6f91 100%),
+        @linear-gradient(160deg, #141e30 0%, #243b55 50%, #6dd5ed 100%),
+        @linear-gradient(160deg, #1f1c2c 0%, #928dab 100%),
+        @linear-gradient(160deg, #0b486b 0%, #f56217 100%),
+        @linear-gradient(160deg, #3a1c71 0%, #c79bff 50%, #ffd36e 100%),
+    ];
+    function next() {
+        if root.slide + 1 < root.slides { root.slide += 1; } else { root.closed(); }
+    }
+    function back() {
+        if root.slide > 0 { root.slide -= 1; }
+    }
+
+    modal := Modal {
+        card-width: 400px;
+        card-height: 600px;
+        card-background: root.backgrounds[root.slide];
+        dismissed => { root.closed(); }
+        key(event) => {
+            if event.text == Key.RightArrow || event.text == " " || event.text == Key.Return { root.next(); return accept; }
+            if event.text == Key.LeftArrow { root.back(); return accept; }
+            return reject;
+        }
+
+        // Thirds to click: the left one back, the rest on.
+        TouchArea {
+            clicked => {
+                if self.mouse-x < self.width / 3 { root.back(); } else { root.next(); }
+            }
+        }
+
+        // Progress, as stories show it.
+        HorizontalLayout {
+            y: 12px;
+            height: 4px;
+            padding-left: 14px;
+            padding-right: 14px;
+            spacing: 4px;
+            for i in root.slides: Rectangle {
+                border-radius: 2px;
+                background: i <= root.slide ? #ffffffee : #ffffff55;
+            }
+        }
+
+        VerticalLayout {
+            padding: 28px;
+            padding-top: 40px;
+            spacing: 14px;
+            alignment: center;
+
+            if root.slide == 0: VerticalLayout {
+                spacing: 10px;
+                Text { text: "Your"; font-size: 26px; color: #ffffffcc; font-weight: 600; }
+                Text { text: root.review.year; font-size: 72px; font-weight: 900; color: white; }
+                Text { text: "in music"; font-size: 30px; font-weight: 800; color: white; }
+                Rectangle { height: 18px; }
+                Text { text: root.review.minutes; font-size: 44px; font-weight: 900; color: #ffe08a; wrap: word-wrap; }
+                Text { text: "minutes of music, over " + root.review.plays + " plays."; font-size: 16px; color: white; wrap: word-wrap; }
+            }
+            if root.slide == 1: VerticalLayout {
+                spacing: 10px;
+                Text { text: "Your song of the year"; font-size: 18px; color: #ffffffcc; font-weight: 600; }
+                Text { text: root.review.top-song; font-size: 34px; font-weight: 900; color: white; wrap: word-wrap; }
+                Text { text: root.review.top-song-by; font-size: 18px; color: white; wrap: word-wrap; }
+                Rectangle { height: 10px; }
+                Text { text: root.review.top-song-plays; font-size: 16px; color: #b6ffcf; wrap: word-wrap; }
+            }
+            if root.slide == 2: VerticalLayout {
+                spacing: 10px;
+                Text { text: "Your artist of the year"; font-size: 18px; color: #ffffffcc; font-weight: 600; }
+                Text { text: root.review.top-artist; font-size: 38px; font-weight: 900; color: white; wrap: word-wrap; }
+                Text { text: root.review.top-artist-plays; font-size: 16px; color: white; wrap: word-wrap; }
+                Rectangle { height: 10px; }
+                Text { text: "Out of " + root.review.artists + " artists you listened to."; font-size: 15px; color: #ffd6e3; wrap: word-wrap; }
+            }
+            if root.slide == 3: VerticalLayout {
+                spacing: 10px;
+                Text { text: "Your sound"; font-size: 30px; font-weight: 900; color: white; }
+                if root.review.genres.length == 0: Text {
+                    text: "Your songs don't have their genres tagged -- add them in Properties, and next year shows your sound.";
+                    color: white;
+                    wrap: word-wrap;
+                }
+                for genre[i] in root.review.genres: VerticalLayout {
+                    spacing: 3px;
+                    HorizontalLayout {
+                        Text { text: (i + 1) + ". " + genre.name; font-size: 17px; font-weight: 700; color: white; horizontal-stretch: 1; overflow: elide; }
+                        Text { text: genre.value; font-size: 13px; color: #ffffffcc; }
+                    }
+                    Rectangle {
+                        height: 6px;
+                        border-radius: 3px;
+                        background: #ffffff33;
+                        Rectangle { x: 0; width: parent.width * genre.share; border-radius: 3px; background: #6dd5ed; }
+                    }
+                }
+            }
+            if root.slide == 4: VerticalLayout {
+                spacing: 10px;
+                Text { text: "Your top 5"; font-size: 30px; font-weight: 900; color: white; }
+                for song[i] in root.review.top-songs: HorizontalLayout {
+                    spacing: 10px;
+                    Text { text: i + 1; font-size: 26px; font-weight: 900; color: #ffffffaa; width: 26px; }
+                    VerticalLayout {
+                        alignment: center;
+                        Text { text: song.name; font-size: 16px; font-weight: 700; color: white; overflow: elide; }
+                        Text { text: song.by; font-size: 12px; color: #ffffffcc; overflow: elide; }
+                    }
+                }
+            }
+            if root.slide == 5: VerticalLayout {
+                spacing: 10px;
+                Text { text: "You're a"; font-size: 20px; color: #ffffffcc; font-weight: 600; }
+                Text { text: root.review.mood; font-size: 40px; font-weight: 900; color: white; wrap: word-wrap; }
+                Rectangle { height: 10px; }
+                Text { text: root.review.busiest-month; font-size: 16px; color: white; wrap: word-wrap; }
+                Text { text: root.review.busiest-day; font-size: 16px; color: white; wrap: word-wrap; }
+            }
+            if root.slide == 6: VerticalLayout {
+                spacing: 12px;
+                HorizontalLayout { alignment: center; ShinyCard { width: 72px; height: 96px; } }
+                Rectangle { height: 8px; }
+                Text { text: "Thanks for listening"; font-size: 30px; font-weight: 900; color: white; horizontal-alignment: center; wrap: word-wrap; }
+                Text {
+                    text: root.review.songs + " songs, " + root.review.artists + " artists, " + root.review.minutes + " minutes. Here's to next year's.";
+                    font-size: 15px;
+                    color: white;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    alignment: center;
+                    Button { text: "Close"; clicked => { root.closed(); } }
+                }
+            }
+        }
+
+        Text {
+            x: parent.width - self.preferred-width - 14px;
+            y: parent.height - self.preferred-height - 12px;
+            text: root.slide + 1 < root.slides ? "Click for more \u{203a}" : "";
+            font-size: 11px;
+            color: #ffffffaa;
+        }
+    }
+}
+
+/// Telling the year in review is ready, and where to find it again.
+export component ReviewAnnounceOverlay inherits Rectangle {
+    in property <int> year;
+    callback see-it();
+    callback closed();
+
+    Modal {
+        card-width: 420px;
+        card-height: 380px;
+        dismissed => { root.closed(); }
+        VerticalLayout {
+            padding: 24px;
+            spacing: 12px;
+            alignment: center;
+            HorizontalLayout { alignment: center; ShinyCard { width: 60px; height: 80px; } }
+            Text {
+                text: "Your " + root.year + " in music is ready";
+                font-size: 22px;
+                font-weight: 800;
+                color: Theme.text-primary;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+            Text {
+                text: "Your most played songs, artists and genres of the year, and more.";
+                color: Theme.text-muted;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+            Text {
+                text: "See it again any time until the end of January: click the shiny card by the playback buttons, or View \u{203a} Year in Review.";
+                font-size: 12px;
+                color: Theme.text-muted;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: center;
+                Button { text: "Later"; clicked => { root.closed(); } }
+                Button { text: "See it now"; primary: true; clicked => { root.see-it(); } }
+            }
+        }
+    }
+}
+
+/// What's new in this release, shown once after updating to it.
+export component WhatsNewOverlay inherits Rectangle {
+    in property <string> version;
+    in property <[WhatsNewItem]> items;
+    callback closed();
+
+    Modal {
+        card-width: 520px;
+        // As tall as the notes need, up to a point (then they scroll).
+        card-height: Math.min(720px, 150px + root.items.length * 62px);
+        dismissed => { root.closed(); }
+        VerticalLayout {
+            padding: 22px;
+            spacing: 12px;
+            Text { text: "New in " + root.version; font-size: 22px; font-weight: 800; color: Theme.text-primary; }
+            Flickable {
+                vertical-stretch: 1;
+                content-height: list.preferred-height;
+                list := VerticalLayout {
+                    width: parent.width;
+                    spacing: 12px;
+                    alignment: start;
+                    for item in root.items: HorizontalLayout {
+                        spacing: 10px;
+                        Rectangle {
+                            width: 8px;
+                            height: 8px;
+                            y: 6px;
+                            border-radius: 4px;
+                            background: Theme.accent;
+                        }
+                        VerticalLayout {
+                            spacing: 2px;
+                            Text { text: item.title; font-weight: 700; color: Theme.text-primary; wrap: word-wrap; }
+                            Text { text: item.text; color: Theme.text-muted; wrap: word-wrap; font-size: 12px; }
+                        }
+                    }
+                }
+            }
+            HorizontalLayout {
+                alignment: end;
+                Button { text: "Got it"; primary: true; clicked => { root.closed(); } }
+            }
+        }
+    }
+}
+
+/// The first start: what the app does, page by page, with a picture of
+/// each. Skip (top right) ends it at once.
+export component WelcomeOverlay inherits Rectangle {
+    callback closed();
+
+    property <int> page: 0;
+    property <[{title: string, text: string, image: image}]> pages: [
+        {
+            title: "Welcome to Openbar5000",
+            text: "A music player for your own files: playlists, a library, lyrics, a turning record and a lot more to make it yours. Here's a quick look around.",
+            image: @image-url("assets/welcome/player.jpg"),
+        },
+        {
+            title: "Your music, your way",
+            text: "Drop files or folders in, or add your music folders under Preferences \u{203a} Media Library -- they're kept up to date. Playlists live in the playlist manager; right-click a song for much more.",
+            image: @image-url("assets/welcome/playlist.jpg"),
+        },
+        {
+            title: "Records and lyrics",
+            text: "The VNL panel puts the album on a turntable -- give each record its own colour or picture under Customize Vinyl. The LYR panel follows the song, with a scroll look if you like.",
+            image: @image-url("assets/welcome/vinyl.jpg"),
+        },
+        {
+            title: "Arrange it all",
+            text: "View \u{203a} Edit Layout: move, split, resize and swap panels -- the spectrum, waveform, equalizer, artist info and more. Panels you don't use cost nothing.",
+            image: @image-url("assets/welcome/layout.jpg"),
+        },
+        {
+            title: "Make it yours",
+            text: "Themes (or your own, as CSS), app icons with holiday looks, and your listening stats with a year in review each December. All in Preferences and the View menu.",
+            image: @image-url("assets/welcome/themes.jpg"),
+        },
+    ];
+
+    Modal {
+        card-width: 640px;
+        card-height: 560px;
+        dismissed => { root.closed(); }
+        VerticalLayout {
+            padding: 20px;
+            spacing: 12px;
+            HorizontalLayout {
+                Text {
+                    text: (root.page + 1) + " / " + root.pages.length;
+                    color: Theme.text-muted;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                Button { text: "Skip"; clicked => { root.closed(); } }
+            }
+            Rectangle {
+                vertical-stretch: 1;
+                min-height: 120px;
+                border-radius: 10px;
+                background: Theme.bg-sunken;
+                clip: true;
+                Image {
+                    width: parent.width - 16px;
+                    height: parent.height - 16px;
+                    source: root.pages[root.page].image;
+                    image-fit: contain;
+                }
+            }
+            Text {
+                text: root.pages[root.page].title;
+                font-size: 20px;
+                font-weight: 800;
+                color: Theme.text-primary;
+                wrap: word-wrap;
+            }
+            Text {
+                text: root.pages[root.page].text;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                HorizontalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 6px;
+                    alignment: start;
+                    for i in root.pages.length: Rectangle {
+                        y: (parent.height - self.height) / 2;
+                        width: i == root.page ? 18px : 8px;
+                        height: 8px;
+                        border-radius: 4px;
+                        background: i == root.page ? Theme.accent : Theme.text-muted.transparentize(0.6);
+                        animate width { duration: 150ms; }
+                    }
+                }
+                if root.page > 0: Button { text: "Back"; clicked => { root.page -= 1; } }
+                Button {
+                    text: root.page + 1 < root.pages.length ? "Next" : "Get started";
+                    primary: true;
+                    clicked => {
+                        if root.page + 1 < root.pages.length { root.page += 1; } else { root.closed(); }
+                    }
+                }
+            }
+        }
+    }
+}

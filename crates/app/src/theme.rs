@@ -1,8 +1,8 @@
 use crate::store::Store;
 use slint::ComponentHandle;
 use ui::{
-    AboutWindow, LyricsEditorWindow, PlaylistManagerWindow, MainWindow, PropertiesWindow, SettingsWindow, Theme,
-    ThemeEditorWindow,
+    AboutWindow, ColorPickerWindow, LogoPreviewWindow, StatsWindow, LyricsEditorWindow, PlaylistManagerWindow, MainWindow, PropertiesWindow,
+    SettingsWindow, Theme, ThemeEditorWindow,
 };
 
 /// The semantic color tokens every window reads via the `Theme` Slint
@@ -74,7 +74,9 @@ fn rgb(r: u8, g: u8, b: u8) -> slint::Color {
 
 pub fn parse_hex_color(input: &str) -> Option<slint::Color> {
     let hex = input.trim().trim_start_matches('#');
-    if hex.len() != 6 {
+    // Hex digits only: they're single bytes, so slicing by byte below can't
+    // land inside a character ("a€bc" is six bytes too).
+    if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
@@ -170,12 +172,12 @@ fn builtin_entries() -> Vec<ThemeEntry> {
                 spectrum_bar: rgb(0x50, 0xfa, 0x7b),
             },
         },
-        // Stellaris, from the game's planet view: dark teal-green panels,
-        // off-white text, and the mint-teal of its bars, arrows and
-        // selected buttons -- quiet spectrum bars dim teal, loud ones mint.
+        // Sci-Fi: dark teal-green panels, off-white text, and a mint-teal
+        // for bars, arrows and selections -- quiet spectrum bars dim teal,
+        // loud ones mint.
         ThemeEntry {
             id: "stellaris".into(),
-            label: "Stellaris".into(),
+            label: "Sci-Fi".into(),
             is_custom: false,
             colors: ThemeColors {
                 bg_base: rgb(0x0f, 0x1c, 0x19),
@@ -317,12 +319,13 @@ fn builtin_entries() -> Vec<ThemeEntry> {
                 spectrum_bar: rgb(0x3f, 0xb9, 0x50),
             },
         },
-        // Clair Obscur: Expedition 33: Belle Époque/Art Deco -- warm
-        // near-black, ivory text, gold ornament, and the Paintress's crimson
-        // in the spectrum, flaring into gold as it gets loud.
+        // Fantasy: Belle Époque/Art Deco -- warm near-black, ivory text,
+        // gold ornament, and a crimson spectrum flaring into gold as it
+        // gets loud. (Its id is from its earlier name, kept so a saved
+        // choice still finds it.)
         ThemeEntry {
             id: "clair_obscur".into(),
-            label: "Clair Obscur: Expedition 33".into(),
+            label: "Fantasy".into(),
             is_custom: false,
             colors: ThemeColors {
                 bg_base: rgb(0x0d, 0x0b, 0x0a),
@@ -336,11 +339,11 @@ fn builtin_entries() -> Vec<ThemeEntry> {
                 spectrum_bar: rgb(0x8e, 0x1f, 0x26),
             },
         },
-        // Fallout's Pip-Boy: everything in one green phosphor on a dark CRT,
+        // Terminal: everything in one green phosphor on a dark CRT,
         // brighter where it matters.
         ThemeEntry {
             id: "pip_boy".into(),
-            label: "Pip-Boy".into(),
+            label: "Terminal".into(),
             is_custom: false,
             colors: ThemeColors {
                 bg_base: rgb(0x07, 0x12, 0x0a),
@@ -354,13 +357,12 @@ fn builtin_entries() -> Vec<ThemeEntry> {
                 spectrum_bar: rgb(0x1b, 0x5c, 0x30),
             },
         },
-        // Cyberpunk: Edgerunners, from the series' key visuals: the electric
-        // blue/indigo night (#0327d2, #010c60 in the posters), the city's
-        // neon pink (#f26cfc), and Lucy's lavender-white hair (#ddbcee) for
-        // text. The spectrum glows blue and flares into pink when loud.
+        // Cyberpunk: an electric blue/indigo night, neon pink, and
+        // lavender-white text. The spectrum glows blue and flares into pink
+        // when loud.
         ThemeEntry {
             id: "cyberpunk".into(),
-            label: "Cyberpunk: Edgerunners".into(),
+            label: "Cyberpunk".into(),
             is_custom: false,
             colors: ThemeColors {
                 bg_base: rgb(0x0a, 0x0a, 0x33),
@@ -372,6 +374,25 @@ fn builtin_entries() -> Vec<ThemeEntry> {
                 accent_text: rgb(0x0a, 0x0a, 0x33),
                 waveform_unplayed: rgb(0x2a, 0x24, 0x70),
                 spectrum_bar: rgb(0x03, 0x27, 0xd2),
+            },
+        },
+        // High contrast, for low vision and bright rooms: white on black,
+        // a bright yellow accent with black text on it, and muted text and
+        // the waveform still well apart from the background.
+        ThemeEntry {
+            id: "high_contrast".into(),
+            label: "High Contrast".into(),
+            is_custom: false,
+            colors: ThemeColors {
+                bg_base: rgb(0x00, 0x00, 0x00),
+                bg_raised: rgb(0x00, 0x00, 0x00),
+                bg_sunken: rgb(0x1a, 0x1a, 0x1a),
+                text_primary: rgb(0xff, 0xff, 0xff),
+                text_muted: rgb(0xd0, 0xd0, 0xd0),
+                accent: rgb(0xff, 0xd4, 0x00),
+                accent_text: rgb(0x00, 0x00, 0x00),
+                waveform_unplayed: rgb(0x9a, 0x9a, 0x9a),
+                spectrum_bar: rgb(0x00, 0xe5, 0xff),
             },
         },
     ]
@@ -388,13 +409,33 @@ fn is_dark_background(color: slint::Color) -> bool {
 
 pub struct ThemeRegistry {
     pub entries: Vec<ThemeEntry>,
+    /// The themes folder's file for each custom theme from it, by id.
+    files: std::collections::HashMap<String, std::path::PathBuf>,
 }
 
 impl ThemeRegistry {
     pub fn load(store: &Store) -> Self {
         let mut entries = builtin_entries();
         entries.extend(store.load_custom_themes());
-        Self { entries }
+        // Themes dropped into the themes folder as CSS, besides those saved.
+        let base = entries[0].colors;
+        let mut registry = Self { entries, files: std::collections::HashMap::new() };
+        for (name, colors, path) in crate::theme_css::load_folder(&crate::theme_css::themes_dir(), &base) {
+            let id = format!("custom:{}", slugify(&name));
+            // Its own copy of a saved theme (an import keeps one): its file.
+            if registry.find(&id).is_some_and(|e| e.is_custom) {
+                registry.files.insert(id, path);
+                continue;
+            }
+            // One theme to a name: a file named like another is left out.
+            if registry.name_taken(&name) {
+                tracing::warn!("skipping theme {}: a theme called {name:?} is there already", path.display());
+                continue;
+            }
+            registry.entries.push(ThemeEntry { id: id.clone(), label: name, colors, is_custom: true });
+            registry.files.insert(id, path);
+        }
+        registry
     }
 
     pub fn find(&self, id: &str) -> Option<&ThemeEntry> {
@@ -427,9 +468,28 @@ impl ThemeRegistry {
         id
     }
 
+    /// Whether a theme -- built in or custom -- already goes by `name`
+    /// (ignoring case and spacing), or would be saved under the same id.
+    pub fn name_taken(&self, name: &str) -> bool {
+        let wanted = name.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+        let id = format!("custom:{}", slugify(name));
+        self.entries.iter().any(|entry| {
+            entry.id == id || entry.label.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase() == wanted
+        })
+    }
+
     pub fn remove_custom(&mut self, store: &Store, id: &str) {
+        let label = self.find(id).map(|e| e.label.clone());
         self.entries.retain(|e| e.id != id);
         self.save_custom(store);
+        // Its file in the themes folder too, or it would come back: the one
+        // it was read from, and the one an import would have written.
+        if let Some(path) = self.files.remove(id) {
+            let _ = std::fs::remove_file(path);
+        }
+        if let Some(label) = label {
+            let _ = std::fs::remove_file(crate::theme_css::themes_dir().join(crate::theme_css::file_name(&label)));
+        }
     }
 
     fn save_custom(&self, store: &Store) {
@@ -479,9 +539,14 @@ pub struct ThemedWindows {
     theme_editor: slint::Weak<ThemeEditorWindow>,
     lyrics_editor: slint::Weak<LyricsEditorWindow>,
     playlist_manager: slint::Weak<PlaylistManagerWindow>,
+    color_picker: slint::Weak<ColorPickerWindow>,
+    logo_preview: slint::Weak<LogoPreviewWindow>,
+    stats: slint::Weak<StatsWindow>,
 }
 
 impl ThemedWindows {
+    // One per window the app has.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         main: &MainWindow,
         properties: &PropertiesWindow,
@@ -490,6 +555,9 @@ impl ThemedWindows {
         theme_editor: &ThemeEditorWindow,
         lyrics_editor: &LyricsEditorWindow,
         playlist_manager: &PlaylistManagerWindow,
+        color_picker: &ColorPickerWindow,
+        logo_preview: &LogoPreviewWindow,
+        stats: &StatsWindow,
     ) -> Self {
         Self {
             main: main.as_weak(),
@@ -499,6 +567,9 @@ impl ThemedWindows {
             theme_editor: theme_editor.as_weak(),
             lyrics_editor: lyrics_editor.as_weak(),
             playlist_manager: playlist_manager.as_weak(),
+            color_picker: color_picker.as_weak(),
+            logo_preview: logo_preview.as_weak(),
+            stats: stats.as_weak(),
         }
     }
 
@@ -512,7 +583,7 @@ impl ThemedWindows {
                 }
             )*};
         }
-        apply_to!(main, properties, about, settings, theme_editor, lyrics_editor, playlist_manager);
+        apply_to!(main, properties, about, settings, theme_editor, lyrics_editor, playlist_manager, color_picker, logo_preview, stats);
     }
 
     /// Shows `logo` in every window (title bar, now-playing bar, About).
@@ -524,13 +595,22 @@ impl ThemedWindows {
                 }
             )*};
         }
-        apply_to!(main, properties, about, settings, theme_editor, lyrics_editor, playlist_manager);
+        apply_to!(main, properties, about, settings, theme_editor, lyrics_editor, playlist_manager, color_picker, logo_preview, stats);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hex_colors_parse_and_anything_else_is_refused() {
+        assert_eq!(parse_hex_color("#b3202a"), Some(rgb(0xb3, 0x20, 0x2a)));
+        assert_eq!(parse_hex_color(" B3202A "), Some(rgb(0xb3, 0x20, 0x2a)));
+        for bad in ["#a\u{20ac}bc", "#\u{e9}\u{e9}\u{e9}", "#12345", "#1234567", "#12345g", "+12345", ""] {
+            assert_eq!(parse_hex_color(bad), None, "{bad:?}");
+        }
+    }
 
     #[test]
     fn builtin_themes_have_unique_ids_and_readable_text() {
@@ -572,11 +652,25 @@ mod tests {
     }
 
     #[test]
+    fn names_already_in_use_are_taken_whatever_their_case() {
+        let mut registry = ThemeRegistry { entries: builtin_entries(), files: Default::default() };
+        assert!(registry.name_taken("dark"));
+        assert!(registry.name_taken("  High   Contrast "));
+        assert!(!registry.name_taken("Midnight"));
+        registry.upsert_custom("Midnight", builtin_entries()[0].colors);
+        assert!(registry.name_taken("MIDNIGHT"));
+        // A name that would be saved under the same id is taken too.
+        registry.upsert_custom("My Theme", builtin_entries()[0].colors);
+        assert!(registry.name_taken("my-theme"));
+    }
+
+    #[test]
     fn upsert_custom_replaces_an_existing_theme_with_the_same_name_instead_of_duplicating() {
         // Exercises the in-memory half of `add_custom` only, so this test
         // never touches a real database.
         let mut registry = ThemeRegistry {
             entries: builtin_entries(),
+            files: Default::default(),
         };
         let builtin_count = registry.entries.len();
 

@@ -1,0 +1,277 @@
+import { Button, ComboBox, Palette, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+/// One entry of a top list (see `app::stats`): what, by whom, how much,
+/// and its share of the list's first (0 to 1) for its bar.
+export struct StatRow {
+    name: string,
+    by: string,
+    value: string,
+    share: float,
+}
+
+/// One bar of a chart: its label, height (0 to 1) and what it stands for.
+export struct StatBar {
+    label: string,
+    value: float,
+    text: string,
+}
+
+/// A figure in a card: "128" over "plays".
+component StatCard inherits Rectangle {
+    in property <string> value;
+    in property <string> label;
+    border-radius: 10px;
+    background: Theme.bg-sunken;
+    min-width: 110px;
+    height: 74px;
+    VerticalLayout {
+        padding: 12px;
+        spacing: 2px;
+        alignment: center;
+        Text {
+            text: root.value;
+            font-size: 22px;
+            font-weight: 800;
+            color: Theme.accent;
+            overflow: elide;
+        }
+        Text {
+            text: root.label;
+            font-size: 12px;
+            color: Theme.text-muted;
+            overflow: elide;
+        }
+    }
+}
+
+/// A titled top list: rank, name over who, a bar for its share, the count.
+component TopList inherits Rectangle {
+    in property <string> title;
+    in property <[StatRow]> rows;
+    in property <string> empty: "Nothing yet";
+    border-radius: 10px;
+    background: Theme.bg-sunken;
+    VerticalLayout {
+        padding: 12px;
+        spacing: 6px;
+        alignment: start;
+        Text { text: root.title; font-weight: 700; color: Theme.text-primary; }
+        if root.rows.length == 0: Text { text: root.empty; color: Theme.text-muted; font-size: 12px; }
+        for row[i] in root.rows: HorizontalLayout {
+            spacing: 8px;
+            height: 36px;
+            Text {
+                width: 18px;
+                text: i + 1;
+                color: i == 0 ? Theme.accent : Theme.text-muted;
+                font-weight: 700;
+                vertical-alignment: center;
+                horizontal-alignment: right;
+            }
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                spacing: 2px;
+                Text { text: row.name; color: Theme.text-primary; overflow: elide; font-size: 13px; }
+                if row.by != "": Text { text: row.by; color: Theme.text-muted; overflow: elide; font-size: 11px; }
+                Rectangle {
+                    height: 3px;
+                    border-radius: 1.5px;
+                    background: Theme.text-muted.transparentize(0.85);
+                    Rectangle {
+                        x: 0;
+                        width: parent.width * Math.clamp(row.share, 0, 1);
+                        border-radius: 1.5px;
+                        background: Theme.accent;
+                    }
+                }
+            }
+            Text {
+                text: row.value;
+                color: Theme.text-muted;
+                font-size: 12px;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+/// A bar chart: one bar per entry, labelled underneath where there's room.
+component BarChart inherits Rectangle {
+    in property <string> title;
+    in property <[StatBar]> bars;
+    /// Label only every n-th bar (hours: every third).
+    in property <int> label-every: 1;
+    border-radius: 10px;
+    background: Theme.bg-sunken;
+    height: 170px;
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+        Text { text: root.title; font-weight: 700; color: Theme.text-primary; }
+        Rectangle {
+            vertical-stretch: 1;
+            for bar[i] in root.bars: Rectangle {
+                property <length> slot: parent.width / Math.max(1, root.bars.length);
+                x: i * self.slot + self.slot * 0.15;
+                width: self.slot * 0.7;
+                y: parent.height - 16px - self.height;
+                height: Math.max(2px, (parent.height - 18px) * Math.clamp(bar.value, 0, 1));
+                border-radius: 2px;
+                background: bar.value >= 0.999 ? Theme.accent : Theme.accent.transparentize(0.45);
+                accessible-role: text;
+                accessible-label: bar.label + ": " + bar.text;
+                touch := TouchArea {}
+                if touch.has-hover: Text {
+                    y: -16px;
+                    x: (parent.width - self.preferred-width) / 2;
+                    text: bar.text;
+                    font-size: 10px;
+                    color: Theme.text-primary;
+                }
+            }
+            for bar[i] in root.bars: Text {
+                property <length> slot: parent.width / Math.max(1, root.bars.length);
+                visible: Math.mod(i, root.label-every) == 0;
+                x: i * self.slot;
+                width: self.slot * root.label-every;
+                y: parent.height - 14px;
+                text: bar.label;
+                font-size: 10px;
+                color: Theme.text-muted;
+                horizontal-alignment: left;
+                overflow: clip;
+            }
+        }
+    }
+}
+
+/// View > Statistics: what has been listened to, over all time, this year
+/// or the last 30 days (see `app::stats`). Stays on top; Esc closes it.
+export component StatsWindow inherits Window {
+    title: "Listening Statistics";
+    icon: Theme.logo;
+    always-on-top: true;
+    preferred-width: 860px;
+    preferred-height: 720px;
+    min-width: 420px;
+    min-height: 360px;
+    background: Theme.bg-raised;
+
+    in property <bool> theme-is-dark: true;
+    init => {
+        Palette.color-scheme = root.theme-is-dark ? ColorScheme.dark : ColorScheme.light;
+    }
+    changed theme-is-dark => {
+        Palette.color-scheme = root.theme-is-dark ? ColorScheme.dark : ColorScheme.light;
+    }
+
+    in-out property <int> period-index: 0;
+    in property <[string]> periods: ["All time", "This year", "Last 30 days"];
+    in property <string> plays: "0";
+    in property <string> listening: "0 s";
+    in property <string> songs: "0";
+    in property <string> artists: "0";
+    in property <[StatRow]> top-songs;
+    in property <[StatRow]> top-artists;
+    in property <[StatRow]> top-genres;
+    in property <[StatRow]> top-albums;
+    in property <[StatBar]> by-hour;
+    in property <[StatBar]> by-month;
+    /// "Busiest day: 3 March 2026, 14 plays" and the like, line by line.
+    in property <string> facts;
+    /// "Counting since 2 February 2026" -- or how it's counted, before any.
+    in property <string> since;
+    callback period-changed(int);
+    callback close-clicked();
+
+    property <bool> wide: root.width >= 720px;
+
+    keys := FocusScope {
+        capture-key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.close-clicked();
+                return accept;
+            }
+            reject
+        }
+
+        VerticalLayout {
+            HorizontalLayout {
+                padding: 16px;
+                padding-bottom: 8px;
+                spacing: 12px;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 2px;
+                    Text { text: "Listening statistics"; font-size: 20px; font-weight: 800; color: Theme.text-primary; }
+                    Text { text: root.since; font-size: 11px; color: Theme.text-muted; wrap: word-wrap; }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    ComboBox {
+                        model: root.periods;
+                        current-index <=> root.period-index;
+                        selected => { root.period-changed(self.current-index); }
+                    }
+                }
+            }
+
+            ScrollView {
+                vertical-stretch: 1;
+                content := VerticalLayout {
+                    padding: 16px;
+                    padding-top: 4px;
+                    spacing: 12px;
+
+                    HorizontalLayout {
+                        spacing: 10px;
+                        StatCard { value: root.plays; label: "plays"; }
+                        StatCard { value: root.listening; label: "listened"; }
+                        StatCard { value: root.songs; label: "songs"; }
+                        StatCard { value: root.artists; label: "artists"; }
+                    }
+
+                    if root.facts != "": Text {
+                        text: root.facts;
+                        color: Theme.text-muted;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+
+                    if root.wide: HorizontalLayout {
+                        spacing: 12px;
+                        TopList { title: "Top songs"; rows: root.top-songs; }
+                        TopList { title: "Top artists"; rows: root.top-artists; }
+                    }
+                    if root.wide: HorizontalLayout {
+                        spacing: 12px;
+                        TopList { title: "Top genres"; rows: root.top-genres; empty: "No genres tagged yet"; }
+                        TopList { title: "Top albums"; rows: root.top-albums; }
+                    }
+                    if !root.wide: TopList { title: "Top songs"; rows: root.top-songs; }
+                    if !root.wide: TopList { title: "Top artists"; rows: root.top-artists; }
+                    if !root.wide: TopList { title: "Top genres"; rows: root.top-genres; empty: "No genres tagged yet"; }
+                    if !root.wide: TopList { title: "Top albums"; rows: root.top-albums; }
+
+                    BarChart { title: "By hour of the day"; bars: root.by-hour; label-every: 3; }
+                    BarChart { title: "By month"; bars: root.by-month; }
+                }
+            }
+
+            HorizontalLayout {
+                padding: 12px;
+                alignment: end;
+                Button {
+                    text: "Close";
+                    clicked => { root.close-clicked(); }
+                }
+            }
+        }
+    }
+
+    public function focus-keys() {
+        keys.focus();
+    }
+}

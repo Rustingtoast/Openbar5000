@@ -150,3 +150,36 @@ crashes it.
 Skia's context when the wgpu device is lost, copy the new release here and
 re-apply the change; otherwise delete this folder and its
 `[patch.crates-io]` entry. Keep the version in step with `slint`'s.
+
+## `i-slint-core` 1.18.1
+
+**What (1):** `graphics/wgpu_30.rs`, `default_device_descriptor`. The GPU
+device is asked for every feature the adapter has except
+`MAPPABLE_PRIMARY_BUFFERS` (as before, not the experimental ones either).
+
+**Why:** upstream asks for all of them. On a discrete GPU wgpu then warns
+at every start ("Feature MAPPABLE_PRIMARY_BUFFERS enabled on a discrete
+gpu. This is a massive performance footgun"), as the feature makes buffers
+the CPU can map slow on such GPUs. Nothing in Slint, its Skia renderer or
+the app maps a wgpu buffer, so nothing needs it.
+
+**Effect** (Linux, Radeon RX 9070 XT, Vulkan): the warning is gone; drawing
+is unchanged.
+
+**What (2):** `window/popup.rs`, the new `place_popup_beside`, and
+`window.rs`, the new `child_popup_rect`, used where a popup drawn inside the
+window is placed (`show_popup`, `update_popup_properties`). A popup opened
+from another one -- a sub-menu -- that doesn't fit to the parent's right
+opens on its left, beside it.
+
+**Why:** upstream opens a sub-menu at its parent's right edge and, where it
+doesn't fit, only pushes it back inside the window: over the parent menu,
+covering the items below the one it opened from.
+
+**Effect:** the playlist's right-click "Send to playlist" sub-menu, near the
+window's right edge, no longer hides "Customize Vinyl…" and "Properties".
+
+**Updating Slint:** if a newer `i-slint-core` still asks for every adapter
+feature in `default_device_descriptor`, or still only clamps sub-menus into
+the window, copy the new release here and re-apply what's still needed;
+otherwise delete this folder and its `[patch.crates-io]` entry. Keep the version in step with `slint`'s.

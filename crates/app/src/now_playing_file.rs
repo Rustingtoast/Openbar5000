@@ -66,9 +66,11 @@ impl NowPlayingFile {
         let choose = {
             let settings = settings.clone();
             let apply = apply.clone();
+            let preferences = preferences.as_weak();
             move || {
+                let Some(preferences) = preferences.upgrade() else { return };
                 let current = PathBuf::from(&settings.borrow().now_playing_file_path);
-                let mut dialog = rfd::FileDialog::new()
+                let mut dialog = crate::platform::file_dialog_over(preferences.window())
                     .set_title("Now playing file")
                     .add_filter("JSON", &["json"])
                     .set_file_name("nowplaying.json");

@@ -5,24 +5,34 @@
 
 mod artist_info;
 mod audio_output;
+mod color_picker;
 mod crash_report;
 mod discord_presence;
 mod display_power;
 mod equalizer;
 mod holiday;
+mod logo_files;
+mod logo_preview;
 mod layout;
+mod load_guard;
 mod lyrics;
-mod media_library;
 mod media_keys;
+mod media_library;
 mod now_playing_file;
 mod platform;
 mod playlist_rows;
 mod playlists;
 mod properties;
+mod release_notes;
+mod resources;
 mod settings;
 mod spectrum_bars;
+mod stats;
+mod stats_view;
 mod store;
 mod theme;
+mod theme_css;
+mod vinyl_style;
 mod window_placement;
 mod wiring;
 
@@ -55,7 +65,7 @@ fn main() {
         tracing::info!("crash reports are off: OPENBAR5000_NO_CRASH_REPORTS is set");
     }
 
-    let store = Rc::new(Store::open().expect("failed to open app database"));
+    let store = Rc::new(open_store());
     let placement = WindowPlacement::load(&store);
     select_backend(
         &placement,
@@ -72,9 +82,35 @@ fn main() {
 
     // Kept alive for the duration of `run()` below -- see wiring::wire.
     let _ui_handles = wiring::wire(&window, engine, store.clone());
+    // For trying the layout at a given size: `OPENBAR5000_WINDOW_SIZE=760x500`.
+    if let Some((width, height)) = std::env::var("OPENBAR5000_WINDOW_SIZE")
+        .ok()
+        .and_then(|size| size.split_once('x').map(|(w, h)| (w.parse::<f32>(), h.parse::<f32>())))
+        .and_then(|(w, h)| Some((w.ok()?, h.ok()?)))
+    {
+        window.window().set_size(slint::LogicalSize::new(width, height));
+    }
 
     window.run().expect("UI event loop failed");
     placement.save();
+}
+
+/// The app's database. Should it not open (another program holding it, the
+/// disk full), it's tried again a moment later; failing that, the app runs
+/// on one in memory -- nothing saved this time, but running.
+fn open_store() -> Store {
+    match Store::open() {
+        Ok(store) => return store,
+        Err(e) => tracing::warn!("couldn't open the database, trying again: {e}"),
+    }
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    match Store::open() {
+        Ok(store) => store,
+        Err(e) => {
+            tracing::error!("couldn't open the database, so nothing is saved this time: {e}");
+            Store::open_in_memory().expect("an in-memory database always opens")
+        }
+    }
 }
 
 /// The token a launcher (the app menu, the task bar) started the app with,
@@ -84,8 +120,13 @@ fn main() {
 /// browser, the file manager) don't present it as their own.
 #[cfg(all(unix, not(target_os = "macos")))]
 fn take_startup_token() -> Option<String> {
-    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("WAYLAND_SOCKET").is_some();
-    let name = if wayland { "XDG_ACTIVATION_TOKEN" } else { "DESKTOP_STARTUP_ID" };
+    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some()
+        || std::env::var_os("WAYLAND_SOCKET").is_some();
+    let name = if wayland {
+        "XDG_ACTIVATION_TOKEN"
+    } else {
+        "DESKTOP_STARTUP_ID"
+    };
     let token = std::env::var(name).ok().filter(|token| !token.is_empty());
     std::env::remove_var("XDG_ACTIVATION_TOKEN");
     std::env::remove_var("DESKTOP_STARTUP_ID");
@@ -106,7 +147,8 @@ fn select_backend(
     placement: &Rc<WindowPlacement>,
     #[cfg(all(unix, not(target_os = "macos")))] startup_token: Option<String>,
 ) {
-    let selector = slint::BackendSelector::new().with_winit_custom_application_handler(placement.handler());
+    let selector =
+        slint::BackendSelector::new().with_winit_custom_application_handler(placement.handler());
     #[cfg(all(unix, not(target_os = "macos")))]
     let selector = {
         use slint::winit_030::winit::platform::startup_notify::WindowAttributesExtStartupNotify;
@@ -133,7 +175,9 @@ fn select_backend(
 /// to go, and is left there.
 #[cfg(windows)]
 fn attach_parent_console() {
-    use windows::Win32::System::Console::{AttachConsole, GetStdHandle, ATTACH_PARENT_PROCESS, STD_OUTPUT_HANDLE};
+    use windows::Win32::System::Console::{
+        AttachConsole, GetStdHandle, ATTACH_PARENT_PROCESS, STD_OUTPUT_HANDLE,
+    };
     // SAFETY: plain calls; without a parent console, attaching just fails.
     unsafe {
         if GetStdHandle(STD_OUTPUT_HANDLE).is_err() {
@@ -149,13 +193,15 @@ fn attach_parent_console() {
 #[cfg(windows)]
 fn quiet_error_dialogs() {
     use windows::Win32::System::Diagnostics::Debug::{
-        GetErrorMode, SetErrorMode, SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SEM_NOOPENFILEERRORBOX,
-        THREAD_ERROR_MODE,
+        GetErrorMode, SetErrorMode, SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX,
+        SEM_NOOPENFILEERRORBOX, THREAD_ERROR_MODE,
     };
     // SAFETY: plain calls.
     unsafe {
         let mode = THREAD_ERROR_MODE(GetErrorMode());
-        SetErrorMode(mode | SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+        SetErrorMode(
+            mode | SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX,
+        );
     }
 }
 
@@ -179,6 +225,10 @@ fn init_logging(crash_reports: bool) {
             Targets::new()
                 .with_default(tracing::Level::INFO)
                 .with_target("lofty", tracing::Level::ERROR)
+                // Symphonia's tag reader warns about tags it skips, like a
+                // too-long MusicBrainz file ID ("ufid indentifier exceeds 64
+                // bytes"): the rest of the tags, and the audio, read fine.
+                .with_target("symphonia_metadata", tracing::Level::ERROR)
                 // MP3 decoders note "using xing header" on every open and
                 // "invalid main_data_begin" for the first frame or two after
                 // starting mid-file (waveform slices, seeks): those frames

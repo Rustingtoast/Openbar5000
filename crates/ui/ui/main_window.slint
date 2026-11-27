@@ -7,9 +7,11 @@ import { StatusBar } from "status_bar.slint";
 import { WaveformSeekbar } from "waveform_seekbar.slint";
 import { SpectrumView, SpectrumNote, SpectrumPlot } from "spectrum_view.slint";
 import { NowPlayingBar, AlbumArtView } from "now_playing.slint";
+import { VinylView } from "vinyl_view.slint";
 import { PropertiesWindow, PropertyField, DetailRow, ArtworkRow } from "properties_window.slint";
 import { AboutWindow } from "about_window.slint";
-import { SettingsWindow, ThemeListEntry } from "settings_window.slint";
+import { SettingsWindow, ThemeListEntry, LogoOption } from "settings_window.slint";
+import { LogoPreviewWindow, LogoVersion } from "logo_preview_window.slint";
 import { ThemeEditorWindow } from "theme_editor_window.slint";
 import { LyricsEditorWindow } from "lyrics_editor_window.slint";
 import { VintageEqualizer, Vfd } from "vintage_equalizer.slint";
@@ -17,6 +19,9 @@ import { LibraryView, LibraryRow } from "library_view.slint";
 import { LoadingOverlay } from "loading_overlay.slint";
 import { PlaylistManagerWindow, PlaylistManagerRow } from "playlist_manager_window.slint";
 import { CrashReportWindow } from "crash_report_window.slint";
+import { ColorPickerWindow } from "color_picker_window.slint";
+import { StatsWindow, StatRow, StatBar } from "stats_window.slint";
+import { YearReviewOverlay, ReviewAnnounceOverlay, WhatsNewOverlay, WelcomeOverlay, YearReview, WhatsNewItem } from "overlays.slint";
 
 /// One placed panel (see `app::layout`): which panel to draw and where,
 /// relative to the panel area below the menu bar.
@@ -38,6 +43,17 @@ export struct PanelSlot {
 export struct DropPreview {
     visible: bool,
     label: string,
+    x: length,
+    y: length,
+    width: length,
+    height: length,
+}
+
+/// Where the vinyl goes full screen (issue #40), with the lyrics beside it:
+/// the row holding its panel, e.g. the tabs and the playlist. Not
+/// `visible` while no vinyl panel is shown.
+export struct ExpandArea {
+    visible: bool,
     x: length,
     y: length,
     width: length,
@@ -80,7 +96,7 @@ export struct PanelChoice {
     label: string,
 }
 
-export { Vfd, PropertyField, DetailRow, ArtworkRow, LibraryRow, PlaylistManagerWindow, PlaylistManagerRow, PlaylistRow, PropertiesWindow, AboutWindow, SettingsWindow, ThemeListEntry, ThemeEditorWindow, LyricsEditorWindow, CrashReportWindow, Theme }
+export { Vfd, PropertyField, DetailRow, ArtworkRow, LibraryRow, PlaylistManagerWindow, PlaylistManagerRow, PlaylistRow, PropertiesWindow, AboutWindow, SettingsWindow, ThemeListEntry, ThemeEditorWindow, LyricsEditorWindow, CrashReportWindow, ColorPickerWindow, LogoPreviewWindow, LogoVersion, LogoOption, StatsWindow, StatRow, StatBar, YearReview, WhatsNewItem, Theme }
 
 export component MainWindow inherits Window {
     // Set from Cargo.toml's version at startup (see `app::wiring`).
@@ -123,6 +139,8 @@ export component MainWindow inherits Window {
     in property <string> remaining-text: "-0:00";
     in property <string> duration-text: "0:00";
     in property <float> volume: 1.0;
+    /// Muted with the speaker icon by the volume slider.
+    in property <bool> volume-muted;
     in property <bool> shuffle-active: false;
     in property <bool> loop-active: false;
     in property <bool> repeat-one-active: false;
@@ -143,6 +161,24 @@ export component MainWindow inherits Window {
     in property <[LyricLine]> lyric-lines: [];
     in property <int> lyric-active-line: -1;
     in property <bool> lyrics-synced: false;
+    /// How far through the song and through the line being sung (0-1),
+    /// and the scroll look: see `LyricsView`.
+    in property <float> lyric-progress: 0;
+    in property <float> lyric-line-progress: 0;
+    in property <bool> lyrics-vintage: false;
+    callback lyrics-vintage-toggled();
+    /// The overlay showing ("" for none): "welcome", "whats-new",
+    /// "review-announce" or "year-review"; closing one says which.
+    in property <string> modal;
+    callback modal-closed(string);
+    in property <YearReview> year-review;
+    in property <string> whats-new-version;
+    in property <[WhatsNewItem]> whats-new-items;
+    /// The year in review's card by the playback buttons (its season, with
+    /// enough listened).
+    in property <bool> review-card-visible;
+    callback review-card-clicked();
+    callback statistics-clicked();
     in property <string> lyric-status: "Nothing playing";
     // "Add lyrics…" / "Edit lyrics…" in the LYR panel (needs a track).
     in property <bool> lyrics-editable: false;
@@ -166,10 +202,85 @@ export component MainWindow inherits Window {
     callback artist-none-of-these-clicked();
     in property <bool> layout-editing: false;
     // Escape leaves the layout editor: the key handler below takes focus
-    // whenever editing starts.
+    // whenever editing starts. The full-screen vinyl would hide the panels
+    // being edited, so it closes.
     changed layout-editing => {
         if root.layout-editing {
+            root.vinyl-expanded = false;
             layout-keys.focus();
+        }
+    }
+
+    // The vinyl full screen with the lyrics (issue #40): opened from the
+    // VNL panel's corner button while the track has lyrics, closed by the
+    // same button or Escape.
+    in property <ExpandArea> vinyl-area;
+    in-out property <bool> vinyl-expanded: false;
+    // Closed: the keyboard focus goes back to the window, instead of
+    // staying with the full screen view that's gone.
+    changed vinyl-expanded => {
+        if !root.vinyl-expanded {
+            layout-keys.focus();
+        }
+    }
+    // The record swap when the album changes (see `VinylView`): bumped by
+    // the app, with the cover of the record taken off.
+    in property <int> vinyl-swap-serial: 0;
+    in property <image> vinyl-outgoing-art;
+    in property <bool> vinyl-outgoing-has-art: false;
+    in property <bool> vinyl-swap-has-outgoing: false;
+    // A record is on the turntable: not until a song is picked.
+    in property <bool> vinyl-has-record: false;
+    // The renderer can turn things (not Slint's software one).
+    in property <bool> vinyl-can-turn: true;
+    // How often the turning record is drawn (120: every display frame),
+    // and the clock it's drawn by below that (see `VinylView.clock`).
+    in property <int> vinyl-fps: 120;
+    in property <float> vinyl-clock: 0;
+    // The record on a 1980s deck, like the Vintage Equalizer (remembered).
+    in property <bool> vinyl-vintage: false;
+    callback vinyl-vintage-toggled();
+    // The whole album is on the record (see `app::playlist_rows::
+    // VinylRecord`): the gaps between its tracks, the playing time before
+    // this track and in all; and the record taken off's gaps in a swap.
+    in property <[float]> vinyl-track-marks: [];
+    in property <[float]> vinyl-outgoing-marks: [];
+    in property <float> vinyl-album-offset-seconds: 0;
+    in property <float> vinyl-album-total-seconds: 0;
+    // Bumped when the tonearm is lifted over to another song of the album.
+    in property <int> vinyl-cue-serial: 0;
+    // The record's look (see `app::vinyl_style`), and the one taken off's.
+    in property <color> vinyl-color: #161616;
+    in property <color> vinyl-contrast: #eeece6;
+    in property <string> vinyl-design: "classic";
+    in property <color> vinyl-outgoing-color: #161616;
+    in property <color> vinyl-outgoing-contrast: #eeece6;
+    in property <string> vinyl-outgoing-design: "classic";
+    in property <string> vinyl-label-kind: "accent";
+    in property <color> vinyl-label-color;
+    in property <bool> vinyl-label-art: true;
+    in property <string> vinyl-outgoing-label-kind: "accent";
+    in property <color> vinyl-outgoing-label-color;
+    in property <bool> vinyl-outgoing-label-art: true;
+    in property <float> vinyl-clarity: 0.5;
+    in property <float> vinyl-label-clarity: 0;
+    in property <float> vinyl-outgoing-clarity: 0.5;
+    in property <float> vinyl-outgoing-label-clarity: 0;
+    in property <image> vinyl-texture;
+    in property <image> vinyl-outgoing-texture;
+    // "Customize Vinyl…": from the vinyl panel (the playing track) or a
+    // playlist row; Properties opens on its Vinyl tab.
+    callback vinyl-customize-clicked();
+    callback row-vinyl-clicked(int);
+    callback row-share-album-clicked(int);
+    // The tonearm dragged: inwards (true) on to another song of the record,
+    // outwards back.
+    callback vinyl-arm-dragged(bool);
+    // Its panel gone (e.g. Reset Layout): closed, not opening again by
+    // itself when a vinyl panel comes back.
+    changed vinyl-area => {
+        if !root.vinyl-area.visible {
+            root.vinyl-expanded = false;
         }
     }
     in property <[string]> waveform-paths: [];
@@ -195,6 +306,7 @@ export component MainWindow inherits Window {
     callback random-clicked();
     callback seek-requested(float);
     callback volume-changed(float);
+    callback volume-mute-clicked();
     callback shuffle-clicked();
     callback loop-clicked();
     callback row-clicked(int);
@@ -382,6 +494,9 @@ export component MainWindow inherits Window {
             }
             MenuItem { title: "Reset Layout"; activated => { root.layout-reset-clicked(); } }
             MenuSeparator {}
+            MenuItem { title: "Statistics\u{2026}"; activated => { root.statistics-clicked(); } }
+            if root.review-card-visible: MenuItem { title: "Year in Review\u{2026}"; activated => { root.review-card-clicked(); } }
+            MenuSeparator {}
             MenuItem { title: "Preferences..."; activated => { root.settings-clicked(); } }
         }
         Menu {
@@ -407,7 +522,8 @@ export component MainWindow inherits Window {
             // change every frame -- for those a layer is only extra work.
             cache-rendering-hint: slot.kind != "waveform" && slot.kind != "spectrum"
                 && slot.kind != "transport" && slot.kind != "seek-bar"
-                && slot.kind != "seek-slider" && slot.kind != "equalizer";
+                && slot.kind != "seek-slider" && slot.kind != "equalizer"
+                && slot.kind != "vinyl";
 
             if slot.kind == "playlist": PlaylistView {
                 width: parent.width;
@@ -428,6 +544,8 @@ export component MainWindow inherits Window {
                 scroll-y: root.playlist-scroll-y;
                 row-clicked(i) => { root.row-clicked(i); }
                 row-properties-clicked(i) => { root.row-properties-clicked(i); }
+                row-vinyl-clicked(i) => { root.row-vinyl-clicked(i); }
+                row-share-album-clicked(i) => { root.row-share-album-clicked(i); }
                 row-open-folder-clicked(i) => { root.row-open-folder-clicked(i); }
                 row-remove-clicked(i) => { root.row-remove-clicked(i); }
                 row-cut-clicked(i) => { root.row-cut-clicked(i); }
@@ -470,6 +588,7 @@ export component MainWindow inherits Window {
                 remaining-text: root.remaining-text;
                 duration-text: root.duration-text;
                 volume: root.volume;
+                muted: root.volume-muted || root.volume <= 0;
                 shuffle-active: root.shuffle-active;
                 loop-active: root.loop-active;
                 repeat-one-active: root.repeat-one-active;
@@ -480,6 +599,7 @@ export component MainWindow inherits Window {
                 random-clicked => { root.random-clicked(); }
                 seek-requested(pos) => { root.seek-requested(pos); }
                 volume-changed(v) => { root.volume-changed(v); }
+                mute-clicked => { root.volume-mute-clicked(); }
                 shuffle-clicked => { root.shuffle-clicked(); }
                 loop-clicked => { root.loop-clicked(); }
             }
@@ -495,6 +615,58 @@ export component MainWindow inherits Window {
                 has-art: root.has-album-art;
                 loading: root.album-art-loading;
             }
+            if slot.kind == "vinyl": VinylView {
+                width: parent.width;
+                height: parent.height;
+                // Under the full-screen one: not turning twice.
+                visible: !root.vinyl-expanded;
+                art: root.album-art;
+                has-art: root.has-album-art;
+                art-loading: root.album-art-loading;
+                is-playing: root.is-playing;
+                position-seconds: root.position-seconds;
+                duration-seconds: root.duration-seconds;
+                marks: root.vinyl-track-marks;
+                outgoing-marks: root.vinyl-outgoing-marks;
+                album-offset-seconds: root.vinyl-album-offset-seconds;
+                album-total-seconds: root.vinyl-album-total-seconds;
+                cue-serial: root.vinyl-cue-serial;
+                vinyl: root.vinyl-color;
+                contrast: root.vinyl-contrast;
+                design: root.vinyl-design;
+                outgoing-vinyl: root.vinyl-outgoing-color;
+                outgoing-contrast: root.vinyl-outgoing-contrast;
+                outgoing-design: root.vinyl-outgoing-design;
+                label-kind: root.vinyl-label-kind;
+                label-color: root.vinyl-label-color;
+                label-art: root.vinyl-label-art;
+                outgoing-label-kind: root.vinyl-outgoing-label-kind;
+                outgoing-label-color: root.vinyl-outgoing-label-color;
+                outgoing-label-art: root.vinyl-outgoing-label-art;
+                clarity: root.vinyl-clarity;
+                label-clarity: root.vinyl-label-clarity;
+                outgoing-clarity: root.vinyl-outgoing-clarity;
+                outgoing-label-clarity: root.vinyl-outgoing-label-clarity;
+                texture: root.vinyl-texture;
+                outgoing-texture: root.vinyl-outgoing-texture;
+                customize-clicked => { root.vinyl-customize-clicked(); }
+                swap-serial: root.vinyl-swap-serial;
+                outgoing-art: root.vinyl-outgoing-art;
+                outgoing-has-art: root.vinyl-outgoing-has-art;
+                swap-has-outgoing: root.vinyl-swap-has-outgoing;
+                has-record: root.vinyl-has-record;
+                can-turn: root.vinyl-can-turn;
+                fps: root.vinyl-fps;
+                clock: root.vinyl-clock;
+                vintage: root.vinyl-vintage;
+                time-text: root.position-text;
+                vintage-toggled => { root.vinyl-vintage-toggled(); }
+                tonearm-clicked => { root.play-pause-clicked(); }
+                arm-dragged(forward) => { root.vinyl-arm-dragged(forward); }
+                corner-button: root.layout-editing ? "" : "expand";
+                corner-button-enabled: root.lyric-lines.length > 0;
+                corner-button-clicked => { root.vinyl-expanded = true; }
+            }
             if slot.kind == "playback-buttons": PlaybackButtons {
                 width: parent.width;
                 height: parent.height;
@@ -506,6 +678,8 @@ export component MainWindow inherits Window {
                 random-clicked => { root.random-clicked(); }
                 open-files-clicked => { root.open-files-clicked(); }
                 open-folder-clicked => { root.open-folder-clicked(); }
+                review-card: root.review-card-visible;
+                review-card-clicked => { root.review-card-clicked(); }
             }
             if slot.kind == "seek-bar": SeekBar {
                 width: parent.width;
@@ -515,11 +689,13 @@ export component MainWindow inherits Window {
                 position-text: root.position-text;
                 remaining-text: root.remaining-text;
                 volume: root.volume;
+                muted: root.volume-muted || root.volume <= 0;
                 shuffle-active: root.shuffle-active;
                 loop-active: root.loop-active;
                 repeat-one-active: root.repeat-one-active;
                 seek-requested(pos) => { root.seek-requested(pos); }
                 volume-changed(v) => { root.volume-changed(v); }
+                mute-clicked => { root.volume-mute-clicked(); }
                 shuffle-clicked => { root.shuffle-clicked(); }
                 loop-clicked => { root.loop-clicked(); }
             }
@@ -536,10 +712,12 @@ export component MainWindow inherits Window {
                 position-text: root.position-text;
                 remaining-text: root.remaining-text;
                 volume: root.volume;
+                muted: root.volume-muted || root.volume <= 0;
                 shuffle-active: root.shuffle-active;
                 loop-active: root.loop-active;
                 repeat-one-active: root.repeat-one-active;
                 volume-changed(v) => { root.volume-changed(v); }
+                mute-clicked => { root.volume-mute-clicked(); }
                 shuffle-clicked => { root.shuffle-clicked(); }
                 loop-clicked => { root.loop-clicked(); }
             }
@@ -556,6 +734,10 @@ export component MainWindow inherits Window {
                 synced: root.lyrics-synced;
                 status: root.lyric-status;
                 editable: root.lyrics-editable;
+                progress: root.lyric-progress;
+                line-progress: root.lyric-line-progress;
+                vintage: root.lyrics-vintage;
+                vintage-toggled => { root.lyrics-vintage-toggled(); }
                 edit-clicked => { root.edit-lyrics-clicked(); }
             }
             if slot.kind == "biography": ArtistView {
@@ -769,6 +951,94 @@ export component MainWindow inherits Window {
         }
     }
 
+    // The vinyl full screen, over its row of panels: the record at the
+    // left, the lyrics at the right. Takes the keyboard focus, for Escape.
+    if root.vinyl-expanded && root.vinyl-area.visible: FocusScope {
+        x: panel-area.x + root.vinyl-area.x;
+        y: panel-area.y + root.vinyl-area.y;
+        width: root.vinyl-area.width;
+        height: root.vinyl-area.height;
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.vinyl-expanded = false;
+                return accept;
+            }
+            reject
+        }
+
+        Rectangle {
+            background: Theme.bg-base;
+            HorizontalLayout {
+                VinylView {
+                    horizontal-stretch: 1;
+                    art: root.album-art;
+                    has-art: root.has-album-art;
+                    art-loading: root.album-art-loading;
+                    is-playing: root.is-playing;
+                    position-seconds: root.position-seconds;
+                    duration-seconds: root.duration-seconds;
+                    marks: root.vinyl-track-marks;
+                    outgoing-marks: root.vinyl-outgoing-marks;
+                    album-offset-seconds: root.vinyl-album-offset-seconds;
+                    album-total-seconds: root.vinyl-album-total-seconds;
+                    cue-serial: root.vinyl-cue-serial;
+                    vinyl: root.vinyl-color;
+                    contrast: root.vinyl-contrast;
+                    design: root.vinyl-design;
+                    outgoing-vinyl: root.vinyl-outgoing-color;
+                    outgoing-contrast: root.vinyl-outgoing-contrast;
+                    outgoing-design: root.vinyl-outgoing-design;
+                    label-kind: root.vinyl-label-kind;
+                    label-color: root.vinyl-label-color;
+                    label-art: root.vinyl-label-art;
+                    outgoing-label-kind: root.vinyl-outgoing-label-kind;
+                    outgoing-label-color: root.vinyl-outgoing-label-color;
+                    outgoing-label-art: root.vinyl-outgoing-label-art;
+                clarity: root.vinyl-clarity;
+                label-clarity: root.vinyl-label-clarity;
+                outgoing-clarity: root.vinyl-outgoing-clarity;
+                outgoing-label-clarity: root.vinyl-outgoing-label-clarity;
+                texture: root.vinyl-texture;
+                outgoing-texture: root.vinyl-outgoing-texture;
+                    customize-clicked => { root.vinyl-customize-clicked(); }
+                    swap-serial: root.vinyl-swap-serial;
+                    outgoing-art: root.vinyl-outgoing-art;
+                    outgoing-has-art: root.vinyl-outgoing-has-art;
+                    swap-has-outgoing: root.vinyl-swap-has-outgoing;
+                    has-record: root.vinyl-has-record;
+                    can-turn: root.vinyl-can-turn;
+                    fps: root.vinyl-fps;
+                    clock: root.vinyl-clock;
+                    vintage: root.vinyl-vintage;
+                    time-text: root.position-text;
+                    vintage-toggled => { root.vinyl-vintage-toggled(); }
+                    tonearm-clicked => { root.play-pause-clicked(); }
+                    arm-dragged(forward) => { root.vinyl-arm-dragged(forward); }
+                    corner-button: "reduce";
+                    corner-button-clicked => { root.vinyl-expanded = false; }
+                }
+                Rectangle {
+                    width: 1px;
+                    background: Theme.text-muted.transparentize(0.7);
+                }
+                LyricsView {
+                    horizontal-stretch: 1;
+                    lines: root.lyric-lines;
+                    active-line: root.lyric-active-line;
+                    synced: root.lyrics-synced;
+                    status: root.lyric-status;
+                    editable: root.lyrics-editable;
+                    progress: root.lyric-progress;
+                    line-progress: root.lyric-line-progress;
+                    vintage: root.lyrics-vintage;
+                    vintage-toggled => { root.lyrics-vintage-toggled(); }
+                    edit-clicked => { root.edit-lyrics-clicked(); }
+                }
+            }
+        }
+    }
+
     layout-keys := FocusScope {
         width: 0;
         height: 0;
@@ -797,5 +1067,32 @@ export component MainWindow inherits Window {
         title: root.loading-title;
         done: root.loading-done;
         total: root.loading-total;
+    }
+
+    // Over everything, one at a time (see `app::wiring`, "Overlays").
+    if root.modal == "welcome": WelcomeOverlay {
+        width: root.width;
+        height: root.height;
+        closed => { root.modal-closed("welcome"); }
+    }
+    if root.modal == "whats-new": WhatsNewOverlay {
+        width: root.width;
+        height: root.height;
+        version: root.whats-new-version;
+        items: root.whats-new-items;
+        closed => { root.modal-closed("whats-new"); }
+    }
+    if root.modal == "review-announce": ReviewAnnounceOverlay {
+        width: root.width;
+        height: root.height;
+        year: root.year-review.year;
+        closed => { root.modal-closed("review-announce"); }
+        see-it => { root.modal-closed("review-announce"); root.review-card-clicked(); }
+    }
+    if root.modal == "year-review": YearReviewOverlay {
+        width: root.width;
+        height: root.height;
+        review: root.year-review;
+        closed => { root.modal-closed("year-review"); }
     }
 }
