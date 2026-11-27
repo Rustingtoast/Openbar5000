@@ -14,8 +14,8 @@ use crate::lyrics::Lyrics;
 use crate::media_keys::{MediaAction, MediaKeys};
 use crate::platform;
 use crate::playlist_rows::{
-    all_group_keys, build_grouped_rows, build_list_rows, current_rows, group_key_of, smart_order, sort_order,
-    sorted_order, CoverCache, PlaylistGrouping, PlaylistSort, SortMode,
+    all_group_keys, build_grouped_rows, build_list_rows, current_rows, group_key_of, search_results, smart_order,
+    sort_order, sorted_order, CoverCache, PlaylistGrouping, PlaylistSort, SortMode,
 };
 use crate::settings::{
     note_from_name, note_name, normalize_fps, FPS_CHOICES, valid_note_range, Settings, A4_MAX_HZ, A4_MIN_HZ,
@@ -1361,6 +1361,18 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     {
         let engine = engine.clone();
         window.on_previous_clicked(move || engine.send(EngineCommand::Previous));
+    }
+    {
+        let engine = engine.clone();
+        let playlist_view_state = playlist_view_state.clone();
+        window.on_random_clicked(move || {
+            // Only what the playlist shows: a search can hide tracks.
+            let among = {
+                let state = playlist_view_state.borrow();
+                search_results(&state.tracks, &state.search_query)
+            };
+            engine.send(EngineCommand::PlayRandom { among });
+        });
     }
     // OS media keys (registered below), told about seeks here.
     let media_keys: Rc<RefCell<Option<MediaKeys>>> = Rc::new(RefCell::new(None));

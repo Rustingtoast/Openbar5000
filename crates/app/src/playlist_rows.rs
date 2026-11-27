@@ -443,13 +443,8 @@ pub fn build_grouped_rows(
     collapsed: &HashSet<String>,
     covers: &mut CoverCache,
 ) -> Vec<PlaylistRow> {
-    let query = query.trim().to_lowercase();
-    let matches = |track: &Track| {
-        query.is_empty()
-            || track.metadata.title.to_lowercase().contains(&query)
-            || track.metadata.artist.to_lowercase().contains(&query)
-            || track.metadata.album.to_lowercase().contains(&query)
-    };
+    let query = search_query(query);
+    let matches = |track: &Track| matches_search(track, &query);
     let blank_cover = covers.placeholder();
     let context = smart.then(|| SmartContext::new(tracks));
     let context = context.as_ref();
@@ -536,6 +531,32 @@ pub fn current_rows(rows: &[PlaylistRow], track_count: usize) -> Vec<Option<usiz
     current_rows
 }
 
+/// The playlist search box's text, as matched: trimmed, lowercase.
+fn search_query(query: &str) -> String {
+    query.trim().to_lowercase()
+}
+
+/// Whether the playlist search (see `search_query`) shows `track`: its
+/// title, artist or album contains the text. An empty search shows all.
+fn matches_search(track: &Track, query: &str) -> bool {
+    query.is_empty()
+        || track.metadata.title.to_lowercase().contains(query)
+        || track.metadata.artist.to_lowercase().contains(query)
+        || track.metadata.album.to_lowercase().contains(query)
+}
+
+/// The tracks a playlist search leaves showing (indices into `tracks`), or
+/// `None` when there's no search and every track shows -- what the Random
+/// button picks from.
+pub fn search_results(tracks: &[Track], query: &str) -> Option<Vec<usize>> {
+    let query = search_query(query);
+    (!query.is_empty()).then(|| {
+        (0..tracks.len())
+            .filter(|&i| matches_search(&tracks[i], &query))
+            .collect()
+    })
+}
+
 /// List view: every matching track as a plain row, numbered by playlist
 /// position, with no album headers.
 pub fn build_list_rows(
@@ -544,17 +565,12 @@ pub fn build_list_rows(
     query: &str,
     covers: &mut CoverCache,
 ) -> Vec<PlaylistRow> {
-    let query = query.trim().to_lowercase();
+    let query = search_query(query);
     let blank_cover = covers.placeholder();
     tracks
         .iter()
         .enumerate()
-        .filter(|(_, track)| {
-            query.is_empty()
-                || track.metadata.title.to_lowercase().contains(&query)
-                || track.metadata.artist.to_lowercase().contains(&query)
-                || track.metadata.album.to_lowercase().contains(&query)
-        })
+        .filter(|(_, track)| matches_search(track, &query))
         .map(|(i, _)| {
             let mut row = track_row(tracks, i, 0, "", current_index, &blank_cover);
             row.track_number = (i + 1).to_string().into();
@@ -755,6 +771,24 @@ mod tests {
             track("/m/a/1.flac", "Alpha", "One", "Yankee", 1),
             track("/m/b/1.flac", "Beta", "Two", "xray", 1),
         ]
+    }
+
+    #[test]
+    fn search_results_are_what_the_search_shows() {
+        let t = tracks();
+        assert_eq!(search_results(&t, ""), None);
+        assert_eq!(search_results(&t, "   "), None);
+        // Title, artist or album, case and surrounding spaces ignored.
+        assert_eq!(search_results(&t, " BETA "), Some(vec![0, 2]));
+        assert_eq!(search_results(&t, "yankee"), Some(vec![1]));
+        assert_eq!(search_results(&t, "one"), Some(vec![1]));
+        assert_eq!(search_results(&t, "nothing like it"), Some(vec![]));
+        // The same tracks the list view shows.
+        let shown: Vec<usize> = build_list_rows(&t, None, "beta", &mut CoverCache::default())
+            .iter()
+            .map(|row| row.track_index as usize)
+            .collect();
+        assert_eq!(Some(shown), search_results(&t, "beta"));
     }
 
     #[test]

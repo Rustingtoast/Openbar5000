@@ -304,11 +304,13 @@ export component PlaylistView inherits Rectangle {
                 }
             }
         }
+        // Room for the whole search box: the LineEdit is at least 32px
+        // tall, and anything less cuts its bottom off.
         Rectangle {
-            height: 28px;
+            height: 38px;
             background: Theme.bg-raised;
             HorizontalLayout {
-                padding: 2px;
+                padding: 3px;
                 LineEdit {
                     placeholder-text: "Type a search query and press Enter";
                     font-size: 12px;
