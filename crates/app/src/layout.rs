@@ -20,7 +20,7 @@ const DEFAULT_ALBUM_ART_SIZE: f32 = 64.0;
 pub const DIVIDER_THICKNESS: f32 = 6.0;
 /// Saved with a layout: one saved by an older build is brought up to date
 /// as it's loaded (see `Layout::upgrade`).
-const LAYOUT_VERSION: u32 = 1;
+const LAYOUT_VERSION: u32 = 2;
 
 /// Every panel type the window knows how to draw. This is the panel
 /// registry: a new panel is a new variant here (with its id, label and
@@ -35,6 +35,9 @@ pub enum PanelKind {
     StatusBar,
     /// The current track's cover art (issue #10).
     AlbumArt,
+    /// The current track as a spinning record, its cover as the label
+    /// (issue #40).
+    Vinyl,
     /// One line: track number, title, length, artist, album (issue #10).
     NowPlaying,
     /// Stop / previous / play-pause / next / open, as one compact strip.
@@ -62,10 +65,11 @@ pub enum PanelKind {
 
 impl PanelKind {
     /// Panels offered in "Replace with…", in menu order.
-    pub const ALL: [PanelKind; 17] = [
+    pub const ALL: [PanelKind; 18] = [
         PanelKind::Playlist,
         PanelKind::NowPlaying,
         PanelKind::AlbumArt,
+        PanelKind::Vinyl,
         PanelKind::Info,
         PanelKind::Lyrics,
         PanelKind::Biography,
@@ -91,6 +95,7 @@ impl PanelKind {
             Self::Transport => "transport",
             Self::StatusBar => "status-bar",
             Self::AlbumArt => "album-art",
+            Self::Vinyl => "vinyl",
             Self::NowPlaying => "now-playing",
             Self::PlaybackButtons => "playback-buttons",
             Self::SeekBar => "seek-bar",
@@ -117,6 +122,7 @@ impl PanelKind {
             Self::Transport => "Playback controls",
             Self::StatusBar => "Status bar",
             Self::AlbumArt => "Album art",
+            Self::Vinyl => "Vinyl",
             Self::NowPlaying => "Now playing",
             Self::PlaybackButtons => "Playback buttons",
             Self::SeekBar => "Seek bar (with controls)",
@@ -139,6 +145,7 @@ impl PanelKind {
             Self::Biography => "BIO",
             Self::Lyrics => "LYR",
             Self::AlbumArt => "ART",
+            Self::Vinyl => "VNL",
             Self::Library => "LIB",
             Self::Playlist => "PLS",
             Self::NowPlaying => "NOW",
@@ -169,6 +176,7 @@ impl PanelKind {
             Self::SeekSlider | Self::PlaybackOptions => Some(22.0),
             Self::Playlist
             | Self::AlbumArt
+            | Self::Vinyl
             | Self::Info
             | Self::Lyrics
             | Self::Biography
@@ -267,6 +275,29 @@ pub struct Placement {
     pub tab_strips: Vec<TabStrip>,
 }
 
+impl Placement {
+    /// The area covered by everything placed under `prefix`: its panels
+    /// and tab strips.
+    fn bounds(&self, prefix: &[usize]) -> Option<Rect> {
+        let rects = self
+            .slots
+            .iter()
+            .map(|slot| (&slot.path, slot.rect))
+            .chain(self.tab_strips.iter().map(|strip| (&strip.path, strip.rect)))
+            .filter(|(path, _)| path.starts_with(prefix))
+            .map(|(_, rect)| rect);
+        rects.reduce(|a, b| {
+            let (x, y) = (a.x.min(b.x), a.y.min(b.y));
+            Rect {
+                x,
+                y,
+                width: (a.x + a.width).max(b.x + b.width) - x,
+                height: (a.y + a.height).max(b.y + b.height) - y,
+            }
+        })
+    }
+}
+
 /// The whole-window layout.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Layout {
@@ -281,7 +312,8 @@ impl Layout {
     /// The default window, following the reference screenshots (issues #1
     /// and #10), top to bottom:
     /// - now-playing line, playback buttons at its right;
-    /// - a tab group (INF / BIO / LYR / ART / LIB) beside the playlist;
+    /// - a tab group (INF / BIO / LYR / ART / VNL / LIB) beside the
+    ///   playlist;
     /// - seek slider over waveform over spectrum, with the playback options
     ///   over the album art to their right;
     /// - the status bar.
@@ -351,6 +383,7 @@ impl Layout {
                 PanelKind::Biography,
                 PanelKind::Lyrics,
                 PanelKind::AlbumArt,
+                PanelKind::Vinyl,
                 PanelKind::Library,
             ]
             .into_iter()
@@ -403,11 +436,18 @@ impl Layout {
         if self.version < 1 {
             upgrade_seek_row(&mut self.root);
         }
+        if self.version < 2 && !self.has(PanelKind::Vinyl) {
+            add_vinyl_tab(&mut self.root);
+        }
         self.version = self.version.max(LAYOUT_VERSION);
     }
 
     #[cfg(test)]
     pub fn contains(&self, kind: PanelKind) -> bool {
+        self.has(kind)
+    }
+
+    fn has(&self, kind: PanelKind) -> bool {
         fn walk(node: &Node, kind: PanelKind) -> bool {
             match node {
                 Node::Panel(k) => *k == kind,
@@ -416,6 +456,20 @@ impl Layout {
             }
         }
         walk(&self.root, kind)
+    }
+
+    /// Where the panel at `path` goes full screen (the vinyl with the
+    /// lyrics, issue #40): over the side-by-side row holding it -- in the
+    /// default layout, the tabs and the playlist beside them -- or over
+    /// everything when it isn't in one.
+    pub fn expanded_rect(&self, placement: &Placement, path: &[usize]) -> Option<Rect> {
+        let mut prefix = path.to_vec();
+        while prefix.pop().is_some() {
+            if matches!(self.node(&prefix), Some(Node::Split { axis: Axis::Horizontal, children }) if children.len() > 1) {
+                return placement.bounds(&prefix);
+            }
+        }
+        placement.bounds(&[])
     }
 
     /// Places every panel and divider inside a `width` x `height` area.
@@ -762,6 +816,25 @@ impl Layout {
         };
         if let Some(node) = self.node_mut(&marker) {
             *node = Node::Split { axis, children };
+        }
+    }
+}
+
+/// Version 2 (issue #40): the VNL tab, after the ART tab of a tab group
+/// that has one.
+fn add_vinyl_tab(node: &mut Node) -> bool {
+    match node {
+        Node::Panel(_) => false,
+        Node::Split { children, .. } => children.iter_mut().any(|child| add_vinyl_tab(&mut child.node)),
+        Node::Tabs { tabs, active } => {
+            if let Some(art) = tabs.iter().position(|tab| *tab == Node::Panel(PanelKind::AlbumArt)) {
+                tabs.insert(art + 1, Node::Panel(PanelKind::Vinyl));
+                if *active > art {
+                    *active += 1;
+                }
+                return true;
+            }
+            tabs.iter_mut().any(add_vinyl_tab)
         }
     }
 }
@@ -1139,7 +1212,7 @@ mod tests {
         assert_eq!((buttons.x + buttons.width, buttons.y), (1400.0, 0.0));
         // Tabs (strip + lyrics) on the left half, playlist on the right.
         let strip = &placed.tab_strips[0];
-        assert_eq!(strip.labels, ["INF", "BIO", "LYR", "ART", "LIB"]);
+        assert_eq!(strip.labels, ["INF", "BIO", "LYR", "ART", "VNL", "LIB"]);
         assert_eq!(strip.active, 2);
         assert_eq!(rect(PanelKind::Lyrics).y, 28.0 + TAB_STRIP_HEIGHT);
         assert_eq!(rect(PanelKind::Playlist).x, 700.0);
@@ -1176,23 +1249,23 @@ mod tests {
         // Add a tab after it: empty and shown.
         layout.add_tab(&[1, 0, 1]);
         let placed = layout.place(1400.0, 700.0);
-        assert_eq!(placed.tab_strips[0].labels.len(), 6);
+        assert_eq!(placed.tab_strips[0].labels.len(), 7);
         assert_eq!(placed.slots[2].kind, PanelKind::Empty);
         // Remove it again: the tab before it shows.
         layout.remove(&[1, 0, 2]);
         let placed = layout.place(1400.0, 700.0);
-        assert_eq!(placed.tab_strips[0].labels.len(), 5);
+        assert_eq!(placed.tab_strips[0].labels.len(), 6);
         assert_eq!(placed.slots[2].kind, PanelKind::Info);
         // Dragging tabs reorders them; the dragged tab shows.
         let mut dragged = Layout::default_with(true, true);
         dragged.move_tab(&tabs_path, 0, 3); // INF to before ART
         let placed = dragged.place(1400.0, 700.0);
-        assert_eq!(placed.tab_strips[0].labels, ["BIO", "LYR", "INF", "ART", "LIB"]);
+        assert_eq!(placed.tab_strips[0].labels, ["BIO", "LYR", "INF", "ART", "VNL", "LIB"]);
         assert_eq!(placed.tab_strips[0].active, 2);
-        dragged.move_tab(&tabs_path, 4, 0); // LIB to the front
+        dragged.move_tab(&tabs_path, 5, 0); // LIB to the front
         assert_eq!(dragged.place(1400.0, 700.0).tab_strips[0].labels[0], "LIB");
-        dragged.move_tab(&tabs_path, 1, 5); // BIO to the end
-        assert_eq!(dragged.place(1400.0, 700.0).tab_strips[0].labels[4], "BIO");
+        dragged.move_tab(&tabs_path, 1, 6); // BIO to the end
+        assert_eq!(dragged.place(1400.0, 700.0).tab_strips[0].labels[5], "BIO");
 
         // "Add Tab" on a plain panel turns it into a tab group.
         layout.add_tab(&[1, 1]);
@@ -1421,6 +1494,56 @@ mod tests {
         // Only once: arranged so again on purpose, it stays.
         let chosen = Layout { version: LAYOUT_VERSION, ..old_default() };
         assert_eq!(Layout::from_json(&chosen.to_json()), Some(chosen));
+    }
+
+    #[test]
+    fn a_layout_from_before_the_vinyl_gets_its_tab_after_art() {
+        // The default as version 1 saved it: no VNL, with LIB showing.
+        let mut saved = Layout::default_with(true, true);
+        let Some(Node::Tabs { tabs, active }) = saved.node_mut(&[1, 0]) else {
+            panic!("the default has its tab group there");
+        };
+        tabs.retain(|tab| *tab != Node::Panel(PanelKind::Vinyl));
+        *active = 4;
+        saved.version = 1;
+        let upgraded = Layout::from_json(&saved.to_json()).unwrap();
+        let placed = upgraded.place(1400.0, 700.0);
+        assert_eq!(placed.tab_strips[0].labels, ["INF", "BIO", "LYR", "ART", "VNL", "LIB"]);
+        // Still on LIB.
+        assert_eq!(placed.tab_strips[0].active, 5);
+
+        // Only once: closed on purpose, it stays closed.
+        let mut removed = Layout::default_with(true, true);
+        removed.remove(&[1, 0, 4]);
+        assert_eq!(Layout::from_json(&removed.to_json()), Some(removed));
+    }
+
+    #[test]
+    fn the_full_screen_vinyl_covers_the_tabs_and_the_playlist() {
+        let mut layout = Layout::default_with(true, true);
+        layout.set_active_tab(&[1, 0], 4);
+        let placed = layout.place(1400.0, 700.0);
+        let vinyl = placed.slots.iter().find(|s| s.kind == PanelKind::Vinyl).unwrap();
+        let playlist = placed.slots.iter().find(|s| s.kind == PanelKind::Playlist).unwrap();
+        assert_eq!(
+            layout.expanded_rect(&placed, &vinyl.path),
+            Some(Rect {
+                x: 0.0,
+                y: 28.0,
+                width: 1400.0,
+                height: playlist.rect.height,
+            })
+        );
+        // On its own, it covers everything.
+        let alone = Layout {
+            root: Node::Panel(PanelKind::Vinyl),
+            version: LAYOUT_VERSION,
+        };
+        let placed = alone.place(800.0, 600.0);
+        assert_eq!(
+            alone.expanded_rect(&placed, &placed.slots[0].path),
+            Some(Rect { x: 0.0, y: 0.0, width: 800.0, height: 600.0 })
+        );
     }
 
     #[test]

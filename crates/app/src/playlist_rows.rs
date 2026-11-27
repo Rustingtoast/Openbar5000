@@ -1,7 +1,7 @@
 use engine::Track;
 use rand::seq::SliceRandom;
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use ui::{cover_image_from_rgba, format_duration, placeholder_cover_image, PlaylistRow};
 
@@ -200,6 +200,209 @@ impl SmartContext {
         } else {
             album
         }
+    }
+}
+
+/// The record a track is on in the VNL panel (issue #40): its whole album,
+/// as far as the playlist has it, in disc and track-number order -- as on
+/// a real LP, the next song of the album is further in on the same record.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VinylRecord {
+    /// Which album: with smart grouping, the same loose match the playlist
+    /// groups by; without, the album and album artist exactly as tagged.
+    pub key: String,
+    /// The track's place among the album's.
+    pub position: usize,
+    /// The album's tracks' lengths, files and places in the playlist, in
+    /// record order. (A file in the playlist twice is on the record twice:
+    /// the places tell the two apart.)
+    pub lengths: Vec<Duration>,
+    pub paths: Vec<PathBuf>,
+    pub indices: Vec<usize>,
+    /// The albums (as `vinyl_style_key` names them) on the record: one,
+    /// or with smart grouping, every tagging it gathered.
+    pub style_keys: Vec<String>,
+}
+
+impl VinylRecord {
+    /// A record with just `track` on it.
+    pub fn single(track: &Track) -> Self {
+        Self {
+            key: strict_album_key(track),
+            position: 0,
+            lengths: vec![track.metadata.duration],
+            paths: vec![track.path.clone()],
+            indices: Vec::new(),
+            style_keys: vec![vinyl_style_key(track)],
+        }
+    }
+
+    /// The song before this one on the record (its place on it); `None`
+    /// for its first.
+    pub fn previous(&self) -> Option<usize> {
+        self.position.checked_sub(1)
+    }
+
+    /// The song after this one on the record; `None` for its last.
+    pub fn next(&self) -> Option<usize> {
+        Some(self.position + 1).filter(|&next| next < self.paths.len())
+    }
+
+    /// Any other song on the record, picked at random; `None` when it has
+    /// no other.
+    pub fn random_other(&self) -> Option<usize> {
+        use rand::RngExt;
+        let others = self.paths.len().checked_sub(1).filter(|&n| n > 0)?;
+        // One of the others: skip over this one.
+        let pick = rand::rng().random_range(0..others);
+        Some(if pick >= self.position { pick + 1 } else { pick })
+    }
+
+    /// The playlist index of the record's song at `place`: where it was,
+    /// if the same file is still there, else where that file is now.
+    pub fn playlist_index(&self, place: usize, tracks: &[Track]) -> Option<usize> {
+        let path = self.paths.get(place)?;
+        self.indices
+            .get(place)
+            .copied()
+            .filter(|&i| tracks.get(i).is_some_and(|t| &t.path == path))
+            .or_else(|| tracks.iter().position(|t| &t.path == path))
+    }
+
+    /// Playing time on the record before the track.
+    pub fn offset(&self) -> Duration {
+        self.lengths[..self.position].iter().sum()
+    }
+
+    pub fn total(&self) -> Duration {
+        self.lengths.iter().sum()
+    }
+
+    /// Where one track ends and the next begins, as fractions of the
+    /// record's playing time: the gaps drawn between its tracks.
+    pub fn track_marks(&self) -> Vec<f32> {
+        let total = self.total().as_secs_f32();
+        if total <= 0.0 {
+            return Vec::new();
+        }
+        let mut played = Duration::ZERO;
+        self.lengths[..self.lengths.len().saturating_sub(1)]
+            .iter()
+            .map(|length| {
+                played += *length;
+                played.as_secs_f32() / total
+            })
+            .collect()
+    }
+}
+
+/// An album exactly as tagged (with the album artist, so two "Greatest
+/// Hits" differ). A file without an album tag is a record of its own.
+fn strict_album_key(track: &Track) -> String {
+    let m = &track.metadata;
+    album_key_from(&m.album_artist, &m.artist, &m.album, &track.path)
+}
+
+/// `strict_album_key` from the tags themselves (as the Properties window
+/// has them after editing).
+pub fn album_key_from(album_artist: &str, artist: &str, album: &str, path: &Path) -> String {
+    let album = album.trim();
+    if album.is_empty() {
+        return format!("file:{}", path.display());
+    }
+    let artist = if album_artist.trim().is_empty() { artist.trim() } else { album_artist.trim() };
+    format!("{artist}\u{1f}{album}")
+}
+
+/// The album a record's look is kept for (see `vinyl_style`): exactly as
+/// tagged. A look for a whole record is kept under each such album on it
+/// (`VinylRecord::style_keys`), so with smart grouping it covers what that
+/// gathers into one album.
+pub fn vinyl_style_key(track: &Track) -> String {
+    strict_album_key(track)
+}
+
+/// Which record each track is on: its album as smart grouping matches it,
+/// or exactly as tagged. `None` for a file without an album tag: a record
+/// of its own, not one with every untagged file in its folder.
+fn record_keys(tracks: &[Track], smart: bool) -> Vec<Option<String>> {
+    let context = smart.then(|| SmartContext::new(tracks));
+    tracks
+        .iter()
+        .map(|t| {
+            if t.metadata.album.trim().is_empty() {
+                return None;
+            }
+            Some(match &context {
+                Some(context) => context.album_key(t),
+                None => strict_album_key(t),
+            })
+        })
+        .collect()
+}
+
+/// The record playlist track `index` is on (see `VinylRecord`).
+pub fn vinyl_record(tracks: &[Track], index: usize, smart: bool) -> Option<VinylRecord> {
+    let track = tracks.get(index)?;
+    let keys = record_keys(tracks, smart);
+    let Some(key) = keys[index].clone() else {
+        return Some(VinylRecord { indices: vec![index], ..VinylRecord::single(track) });
+    };
+    let mut on_record: Vec<usize> = (0..tracks.len()).filter(|&i| keys[i].as_ref() == Some(&key)).collect();
+    on_record.sort_by_key(|&i| {
+        let m = &tracks[i].metadata;
+        (m.disc_number.unwrap_or(1), m.track_number.unwrap_or(u32::MAX), i)
+    });
+    let position = on_record.iter().position(|&i| i == index)?;
+    Some(VinylRecord {
+        key,
+        position,
+        lengths: on_record.iter().map(|&i| tracks[i].metadata.duration).collect(),
+        paths: on_record.iter().map(|&i| tracks[i].path.clone()).collect(),
+        indices: on_record.clone(),
+        style_keys: style_keys_of(on_record.iter().map(|&i| &tracks[i])),
+    })
+}
+
+fn style_keys_of<'a>(tracks: impl Iterator<Item = &'a Track>) -> Vec<String> {
+    let mut keys: Vec<String> = tracks.map(vinyl_style_key).collect();
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
+/// The albums on each track's record (`VinylRecord::style_keys`) for many
+/// tracks at once -- worked out once for the whole playlist, where
+/// `vinyl_record` would go over it again for each.
+pub struct RecordAlbums {
+    keys: Vec<Option<String>>,
+    albums: HashMap<String, Vec<String>>,
+}
+
+impl RecordAlbums {
+    pub fn new(tracks: &[Track], smart: bool) -> Self {
+        let keys = record_keys(tracks, smart);
+        let mut members: HashMap<&str, Vec<&Track>> = HashMap::new();
+        for (track, key) in tracks.iter().zip(&keys) {
+            if let Some(key) = key {
+                members.entry(key).or_default().push(track);
+            }
+        }
+        let albums = members
+            .into_iter()
+            .map(|(key, tracks)| (key.to_string(), style_keys_of(tracks.into_iter())))
+            .collect();
+        Self { keys, albums }
+    }
+
+    /// For playlist track `index` (`track`).
+    pub fn of(&self, index: usize, track: &Track) -> Vec<String> {
+        self.keys
+            .get(index)
+            .and_then(Option::as_ref)
+            .and_then(|key| self.albums.get(key))
+            .cloned()
+            .unwrap_or_else(|| vec![vinyl_style_key(track)])
     }
 }
 
@@ -771,6 +974,70 @@ mod tests {
             track("/m/a/1.flac", "Alpha", "One", "Yankee", 1),
             track("/m/b/1.flac", "Beta", "Two", "xray", 1),
         ]
+    }
+
+    #[test]
+    fn a_track_is_on_its_whole_albums_record() {
+        let minutes = |m: u64| Duration::from_secs(m * 60);
+        let mut t = vec![
+            track("/m/b/3.flac", "Beta", "Two (Disc 1)", "c", 3),
+            track("/m/a/1.flac", "Alpha", "One", "a", 1),
+            track("/m/b/1.flac", "Beta", "Two", "a", 1),
+            track("/m/b/2.flac", "beta", "two", "b", 2),
+        ];
+        for (track, length) in t.iter_mut().zip([4, 9, 3, 5]) {
+            track.metadata.duration = minutes(length);
+        }
+        // Exactly as tagged: "Two (Disc 1)" and "two" are other albums.
+        let strict = vinyl_record(&t, 2, false).unwrap();
+        assert_eq!((strict.position, strict.lengths.len()), (0, 1));
+        // Smart grouping matches them, in track-number order.
+        let smart = vinyl_record(&t, 0, true).unwrap();
+        assert_eq!(smart.lengths, [minutes(3), minutes(5), minutes(4)]);
+        assert_eq!(smart.position, 2);
+        assert_eq!(smart.offset(), minutes(8));
+        assert_eq!(smart.total(), minutes(12));
+        assert_eq!(smart.track_marks(), [3.0 / 12.0, 8.0 / 12.0]);
+        let index_of = |record: &VinylRecord, place: Option<usize>| place.and_then(|p| record.playlist_index(p, &t));
+        assert_eq!(index_of(&smart, smart.previous()), Some(3));
+        assert_eq!(vinyl_record(&t, 2, true).unwrap().previous(), None);
+        assert_eq!(smart.next(), None);
+        // Its look is kept for all three taggings of the album.
+        assert_eq!(smart.style_keys.len(), 3);
+        assert_eq!(strict.style_keys, [vinyl_style_key(&t[2])]);
+        let first = vinyl_record(&t, 2, true).unwrap();
+        assert_eq!(index_of(&first, first.next()), Some(3));
+        // Shuffled: never the song already playing.
+        for _ in 0..20 {
+            assert_ne!(smart.random_other(), Some(smart.position));
+            assert!(smart.random_other().is_some());
+        }
+        assert_eq!(VinylRecord::single(&t[1]).random_other(), None);
+
+        // The same file twice: the copies are told apart by their places.
+        let mut twice = t.clone();
+        twice.push(t[2].clone());
+        let copy = vinyl_record(&twice, 4, true).unwrap();
+        let next = copy.next().and_then(|p| copy.playlist_index(p, &twice));
+        assert_ne!(next, Some(4));
+        assert!(next.is_some());
+        assert_eq!(vinyl_record(&t, 3, true).unwrap().key, smart.key);
+        assert_ne!(vinyl_record(&t, 1, true).unwrap().key, smart.key);
+        // A track alone: no gaps to draw.
+        assert!(VinylRecord::single(&t[1]).track_marks().is_empty());
+        // Worked out for many tracks at once: the same albums.
+        let all = RecordAlbums::new(&t, true);
+        assert_eq!(all.of(0, &t[0]), smart.style_keys);
+        assert_eq!(all.of(1, &t[1]), vinyl_record(&t, 1, true).unwrap().style_keys);
+
+        // Files without an album tag in one folder: each a record of its
+        // own, not one record of the whole folder.
+        let loose = vec![track("/dl/a.mp3", "A", "", "a", 1), track("/dl/b.mp3", "B", "", "b", 1)];
+        for smart in [false, true] {
+            let record = vinyl_record(&loose, 0, smart).unwrap();
+            assert_eq!(record.paths, [PathBuf::from("/dl/a.mp3")]);
+            assert_ne!(record.style_keys, vinyl_record(&loose, 1, smart).unwrap().style_keys);
+        }
     }
 
     #[test]

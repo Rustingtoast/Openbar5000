@@ -150,3 +150,23 @@ crashes it.
 Skia's context when the wgpu device is lost, copy the new release here and
 re-apply the change; otherwise delete this folder and its
 `[patch.crates-io]` entry. Keep the version in step with `slint`'s.
+
+## `i-slint-core` 1.18.1
+
+**What (1):** `graphics/wgpu_30.rs`, `default_device_descriptor`. The GPU
+device is asked for every feature the adapter has except
+`MAPPABLE_PRIMARY_BUFFERS` (as before, not the experimental ones either).
+
+**Why:** upstream asks for all of them. On a discrete GPU wgpu then warns
+at every start ("Feature MAPPABLE_PRIMARY_BUFFERS enabled on a discrete
+gpu. This is a massive performance footgun"), as the feature makes buffers
+the CPU can map slow on such GPUs. Nothing in Slint, its Skia renderer or
+the app maps a wgpu buffer, so nothing needs it.
+
+**Effect** (Linux, Radeon RX 9070 XT, Vulkan): the warning is gone; drawing
+is unchanged.
+
+**Updating Slint:** if a newer `i-slint-core` still asks for every adapter
+feature in `default_device_descriptor`, copy the new release here and
+re-apply the change; otherwise delete this folder and its
+`[patch.crates-io]` entry. Keep the version in step with `slint`'s.

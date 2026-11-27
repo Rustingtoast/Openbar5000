@@ -9,16 +9,16 @@ use crate::equalizer::Equalizer;
 use crate::media_library::MediaLibrary;
 use crate::now_playing_file::{self, NowPlayingFile};
 use crate::playlists::Playlists;
-use crate::properties::PropertiesEditor;
+use crate::properties::{PropertiesEditor, PropertiesTrack};
 use crate::lyrics::Lyrics;
 use crate::media_keys::{MediaAction, MediaKeys};
 use crate::platform;
 use crate::playlist_rows::{
     all_group_keys, build_grouped_rows, build_list_rows, current_rows, group_key_of, search_results, smart_order,
-    sort_order, sorted_order, CoverCache, PlaylistGrouping, PlaylistSort, SortMode,
+    sort_order, sorted_order, vinyl_record, vinyl_style_key, CoverCache, RecordAlbums, PlaylistGrouping, PlaylistSort, SortMode, VinylRecord,
 };
 use crate::settings::{
-    note_from_name, note_name, normalize_fps, FPS_CHOICES, valid_note_range, Settings, A4_MAX_HZ, A4_MIN_HZ,
+    note_from_name, note_name, normalize_fps, PerformancePreset, FPS_CHOICES, VINYL_FPS_CHOICES, valid_note_range, Settings, A4_MAX_HZ, A4_MIN_HZ,
     HIGHEST_NOTE, LOWEST_NOTE,
 };
 use crate::spectrum_bars;
@@ -37,7 +37,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use ui::{
-    cover_image_from_rgba, format_duration, AboutWindow, ArtistCandidate, DropPreview, InfoRow, LayoutDivider, LyricLine, SpectrumNote, TabStripSlot, MainWindow, PanelChoice, PanelSlot, PlaylistRow, PropertiesWindow, SettingsWindow,
+    cover_image_from_rgba, format_duration, AboutWindow, ArtistCandidate, DropPreview, ExpandArea, InfoRow, LayoutDivider, LyricLine, SpectrumNote, TabStripSlot, MainWindow, PanelChoice, PanelSlot, PlaylistRow, PropertiesWindow, SettingsWindow,
     LyricsEditorWindow, PlaylistManagerWindow, SortChoice, ThemeEditorWindow, ThemeListEntry,
 };
 
@@ -62,6 +62,12 @@ pub(crate) fn display_version(version: &str) -> String {
 /// seekbar only change when they are, is also their redraw rate.
 fn poll_interval(fps: u32) -> Duration {
     Duration::from_millis(1000 / normalize_fps(fps) as u64)
+}
+
+/// The event poll's interval at `fps` ticks a second, any rate (the vinyl's
+/// 45 included).
+fn tick_interval(fps: u32) -> Duration {
+    Duration::from_micros(1_000_000 / u64::from(fps.max(1)))
 }
 
 /// The event poll's interval while the window can't be seen.
@@ -100,6 +106,9 @@ pub struct UiHandles {
 struct PlaylistViewState {
     tracks: Vec<Track>,
     current_index: Option<usize>,
+    /// The playing track's record (the VNL panel's) needs working out
+    /// again: smart grouping was switched, which may not reorder anything.
+    record_stale: bool,
     search_query: String,
     grouping: PlaylistGrouping,
     /// Group keys (see `PlaylistGrouping`) the user collapsed; reset when
@@ -147,6 +156,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         grouping: PlaylistGrouping::default(),
         list_view: false,
         smart_grouping: false,
+        record_stale: false,
         collapsed: HashSet::new(),
         covers: CoverCache::default(),
         selected: HashSet::new(),
@@ -195,6 +205,8 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     let theme_registry = Rc::new(RefCell::new(ThemeRegistry::load(&store)));
     // The theme being built in the (initially hidden) editor window, reset
     // each time "New Theme..." is clicked.
+    // The colours it started from: what each colour's Reset goes back to.
+    let draft_start: Rc<Cell<Option<ThemeColors>>> = Rc::new(Cell::new(None));
     let draft_colors: Rc<RefCell<ThemeColors>> = Rc::new(RefCell::new(
         theme_registry
             .borrow()
@@ -322,6 +334,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                 state.smart_grouping = on;
                 // Group keys mean something else now.
                 state.collapsed.clear();
+                state.record_stale = true;
             }
             refresh_playlist_rows(&playlist_model, &playlist_view_state);
             let state = playlist_view_state.borrow();
@@ -404,6 +417,16 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     );
 
     let track_panels = Rc::new(TrackPanels::new(window, store.clone(), settings.clone()));
+    {
+        // A record look changed in Properties: shown at once.
+        let track_panels = track_panels.clone();
+        let window_weak = window.as_weak();
+        properties_editor.on_vinyl_saved(move || {
+            if let Some(window) = window_weak.upgrade() {
+                track_panels.show_vinyl_style(&window);
+            }
+        });
+    }
     {
         let track_panels = track_panels.clone();
         let window_weak = window.as_weak();
@@ -691,6 +714,8 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             // Devices may have come and gone since it was last open.
             audio_output.refresh();
             if let Some(window) = settings_window_weak.upgrade() {
+                // Advanced frame rates: seen only when opened on purpose.
+                window.set_performance_advanced_open(false);
                 window.show().expect("failed to show settings window");
             }
         });
@@ -704,15 +729,86 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             .position(|&fps| fps == normalize_fps(settings.borrow().visualization_fps))
             .unwrap_or(1) as i32,
     );
+    window.set_vinyl_vintage(settings.borrow().vinyl_vintage);
     {
         let settings = settings.clone();
         let store = store.clone();
-        let event_poll_timer = event_poll_timer.clone();
+        let window_weak = window.as_weak();
+        window.on_vinyl_vintage_toggled(move || {
+            let vintage = !settings.borrow().vinyl_vintage;
+            settings.borrow_mut().vinyl_vintage = vintage;
+            settings.borrow().save(&store);
+            if let Some(window) = window_weak.upgrade() {
+                window.set_vinyl_vintage(vintage);
+            }
+        });
+    }
+    // The frame rates: a preset, or set by hand under Advanced (Custom).
+    let apply_rates = {
+        let settings = settings.clone();
+        let window_weak = window.as_weak();
+        let settings_window_weak = settings_window.as_weak();
+        Rc::new(move || {
+            let settings = settings.borrow();
+            // (The event poll picks its rate from these at its next tick.)
+            if let Some(window) = window_weak.upgrade() {
+                window.set_vinyl_fps(settings.vinyl_fps as i32);
+            }
+            if let Some(settings_window) = settings_window_weak.upgrade() {
+                show_performance(&settings_window, &settings);
+            }
+        })
+    };
+    apply_rates();
+    {
+        let settings = settings.clone();
+        let store = store.clone();
+        let apply_rates = apply_rates.clone();
+        settings_window.on_performance_preset_chosen(move |index| {
+            let Some(&preset) = usize::try_from(index).ok().and_then(|i| PerformancePreset::ALL.get(i)) else {
+                return;
+            };
+            {
+                let mut settings = settings.borrow_mut();
+                // Custom: the pair last set by hand (none yet: as it is).
+                let rates = preset.rates().or(settings.custom_fps);
+                if let Some((visualizations, vinyl)) = rates {
+                    settings.visualization_fps = visualizations;
+                    settings.vinyl_fps = vinyl;
+                }
+                settings.performance_preset = preset;
+                settings.save(&store);
+            }
+            apply_rates();
+        });
+    }
+    // Set by hand: Custom, remembered -- the one Custom, replaced each time.
+    let set_by_hand = {
+        let settings = settings.clone();
+        let store = store.clone();
+        let apply_rates = apply_rates.clone();
+        Rc::new(move |change: &dyn Fn(&mut Settings)| {
+            {
+                let mut settings = settings.borrow_mut();
+                change(&mut settings);
+                settings.performance_preset = PerformancePreset::Custom;
+                settings.custom_fps = Some((settings.visualization_fps, settings.vinyl_fps));
+                settings.save(&store);
+            }
+            apply_rates();
+        })
+    };
+    {
+        let set_by_hand = set_by_hand.clone();
         settings_window.on_visualization_fps_changed(move |label| {
             let fps = normalize_fps(label.trim_end_matches(" fps").parse().unwrap_or(60));
-            settings.borrow_mut().visualization_fps = fps;
-            settings.borrow().save(&store);
-            event_poll_timer.set_interval(poll_interval(fps));
+            set_by_hand(&|settings| settings.visualization_fps = fps);
+        });
+    }
+    {
+        settings_window.on_vinyl_fps_changed(move |index| {
+            let fps = usize::try_from(index).ok().and_then(|i| VINYL_FPS_CHOICES.get(i)).copied().unwrap_or(45);
+            set_by_hand(&|settings| settings.vinyl_fps = fps);
         });
     }
 
@@ -883,6 +979,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         let theme_registry = theme_registry.clone();
         let settings = settings.clone();
         let draft_colors = draft_colors.clone();
+        let draft_start = draft_start.clone();
         let draft_name = draft_name.clone();
         let theme_editor_window_weak = theme_editor_window.as_weak();
         settings_window.on_new_theme_clicked(move || {
@@ -896,6 +993,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                     .expect("dark builtin theme must exist")
             };
             *draft_colors.borrow_mut() = colors;
+            draft_start.set(Some(colors));
             *draft_name.borrow_mut() = String::new();
 
             let Some(editor) = theme_editor_window_weak.upgrade() else {
@@ -922,6 +1020,20 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             draft_colors.borrow_mut().set(&key, color);
             if let Some(editor) = theme_editor_window_weak.upgrade() {
                 set_editor_swatch(&editor, &key, color);
+            }
+        });
+    }
+    {
+        let draft_colors = draft_colors.clone();
+        let theme_editor_window_weak = theme_editor_window.as_weak();
+        theme_editor_window.on_field_reset(move |key| {
+            let Some(color) = draft_start.get().and_then(|start| start.get(&key)) else {
+                return;
+            };
+            draft_colors.borrow_mut().set(&key, color);
+            if let Some(editor) = theme_editor_window_weak.upgrade() {
+                set_editor_swatch(&editor, &key, color);
+                set_editor_value(&editor, &key, theme::color_to_hex(color));
             }
         });
     }
@@ -1064,11 +1176,41 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     {
         let current_track = current_track.clone();
         let properties_editor = properties_editor.clone();
+        let playlist_view_state = playlist_view_state.clone();
         window.on_properties_clicked(move || {
             let Some(track) = current_track.borrow().clone() else {
                 return;
             };
-            properties_editor.open(vec![(track.path, track.metadata.title)]);
+            let state = playlist_view_state.borrow();
+            let index = state.current_index.filter(|&i| state.tracks.get(i).is_some_and(|t| t.path == track.path));
+            let record_albums = record_for(&state, index, &track).style_keys;
+            drop(state);
+            properties_editor.open(vec![properties_track(&track, record_albums)]);
+        });
+    }
+    {
+        // "Customize Vinyl…" on the vinyl panel: the playing track's.
+        let current_track = current_track.clone();
+        let properties_editor = properties_editor.clone();
+        let playlist_view_state = playlist_view_state.clone();
+        window.on_vinyl_customize_clicked(move || {
+            let Some(track) = current_track.borrow().clone() else {
+                return;
+            };
+            let state = playlist_view_state.borrow();
+            let record_albums = record_for(&state, state.current_index, &track).style_keys;
+            drop(state);
+            properties_editor.open_vinyl(vec![properties_track(&track, record_albums)]);
+        });
+    }
+    {
+        // "Customize Vinyl…" on a playlist row: that track's (or the
+        // selection's, if it's in it).
+        let playlist_view_state = playlist_view_state.clone();
+        let properties_editor = properties_editor.clone();
+        window.on_row_vinyl_clicked(move |index| {
+            let tracks = properties_tracks(&playlist_view_state.borrow(), index as usize);
+            properties_editor.open_vinyl(tracks);
         });
     }
 
@@ -1077,15 +1219,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         let playlist_view_state = playlist_view_state.clone();
         let properties_editor = properties_editor.clone();
         window.on_row_properties_clicked(move |index| {
-            let tracks: Vec<(PathBuf, String)> = {
-                let state = playlist_view_state.borrow();
-                state
-                    .targets(index as usize)
-                    .iter()
-                    .filter_map(|&i| state.tracks.get(i))
-                    .map(|t| (t.path.clone(), t.metadata.title.clone()))
-                    .collect()
-            };
+            let tracks = properties_tracks(&playlist_view_state.borrow(), index as usize);
             properties_editor.open(tracks);
         });
     }
@@ -1362,6 +1496,42 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         let engine = engine.clone();
         window.on_previous_clicked(move || engine.send(EngineCommand::Previous));
     }
+    // The VNL panel's tonearm dragged outwards (right): back to the song's
+    // start, or from there to the song before it on the record. Dragged
+    // inwards (left): the next song on the record, or with shuffle on, any
+    // other one. Never off the record, into another album.
+    {
+        let engine = engine.clone();
+        let track_panels = track_panels.clone();
+        let playlist_view_state = playlist_view_state.clone();
+        let window_weak = window.as_weak();
+        window.on_vinyl_arm_dragged(move |forward| {
+            let Some(window) = window_weak.upgrade() else {
+                return;
+            };
+            let shuffle = window.get_shuffle_active();
+            let back_to_previous = window.get_position_seconds() < VINYL_BACK_TO_PREVIOUS_WITHIN;
+            let song = {
+                let record = track_panels.vinyl_record.borrow();
+                record.as_ref().and_then(|record| {
+                    let place = match (forward, shuffle) {
+                        (true, true) => record.random_other(),
+                        (true, false) => record.next(),
+                        (false, _) if back_to_previous => record.previous(),
+                        (false, _) => None,
+                    }?;
+                    record.playlist_index(place, &playlist_view_state.borrow().tracks)
+                })
+            };
+            match song {
+                Some(index) => engine.send(EngineCommand::PlayIndex(index)),
+                // Back, at the record's first song or mid-song: its start.
+                None if !forward => window.invoke_seek_requested(0.0),
+                // On, past the record's last song: it stays where it is.
+                None => {}
+            }
+        });
+    }
     {
         let engine = engine.clone();
         let playlist_view_state = playlist_view_state.clone();
@@ -1509,7 +1679,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
 
     // Whether frames still reach the screen (see `FrameWatch`).
     let frames = Rc::new(FrameWatch::default());
-    report_renderer(window, &settings_window, frames.clone());
+    report_renderer(window, &settings_window, &properties_editor, frames.clone());
     // Playback statistics (issue #34): a play counts once the song reaches
     // half its length or four minutes, whichever is first -- the usual
     // scrobbling rule -- once per time it's started.
@@ -1546,6 +1716,9 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
 
     let clock = engine.clock().clone();
     let shown_position = Cell::new(Duration::ZERO);
+    // When the visualizations are next due: the poll may tick faster, for
+    // the vinyl (see the poll below).
+    let next_visualization_tick: Cell<Option<std::time::Instant>> = Cell::new(None);
     let playback_state = Cell::new(PlaybackState::Stopped);
 
     let window_weak = window.as_weak();
@@ -1598,6 +1771,24 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                 }
             }
         }
+        // The playing track's record follows the playlist: the rest of its
+        // album added or removed, tags refreshed, smart grouping switched.
+        let record_stale = std::mem::take(&mut playlist_view_state.borrow_mut().record_stale);
+        if playlist_changed || record_stale {
+            if let Some(track) = current_track.borrow().as_ref() {
+                let state = playlist_view_state.borrow();
+                let index = state.current_index.filter(|&i| state.tracks.get(i).is_some_and(|t| t.path == track.path));
+                let record = record_for(&state, index, track);
+                // Its tags as the playlist has them now (refreshed after
+                // Properties saved them, say): the album may be renamed.
+                let album = index.and_then(|i| state.tracks.get(i)).map(vinyl_style_key);
+                drop(state);
+                track_panels.refresh_record(&window, record);
+                if let Some(album) = album {
+                    track_panels.refresh_style_album(&window, album);
+                }
+            }
+        }
         // Tracks added or loaded: put them where the kept sort says. The
         // reorder comes back as one more update, already in order.
         if playlist_changed {
@@ -1647,7 +1838,35 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         // frame asked for, which a Wayland compositor answers once the
         // window is in sight again.)
         let unseen = occluded.get() || out_of_sight.get(&window) || display_power.is_off();
-        if !unseen && position != shown_position.replace(position) {
+        // The VNL panel's record, below the display's own rate, turns by
+        // this tick too (see `VinylClock`): it then comes at the higher of
+        // the two rates, and the visualizations update only at theirs --
+        // one rhythm, so their frames and the record's are the same frames.
+        let (visualization_fps, vinyl_fps) = {
+            let settings = settings.borrow();
+            (settings.visualization_fps, settings.vinyl_fps)
+        };
+        let vinyl_ticks = vinyl_fps < 120
+            && playback_state.get() == PlaybackState::Playing
+            && window.get_panel_slots().iter().any(|slot| slot.kind == "vinyl");
+        let tick_fps = if vinyl_ticks { visualization_fps.max(vinyl_fps) } else { visualization_fps };
+        let now = std::time::Instant::now();
+        // Half a tick early still counts: the tick after would be later.
+        let visualizations_due = next_visualization_tick.get().is_none_or(|due| now + tick_interval(tick_fps) / 2 >= due);
+        if visualizations_due {
+            // Due again an interval after it was due, not after now: on
+            // average at their rate, even where the ticks don't divide into
+            // it (30 fps on 45 fps ticks: two of every three). Not from
+            // further back than an interval ago, after a stall.
+            let interval = poll_interval(visualization_fps);
+            let floor = now.checked_sub(interval).unwrap_or(now);
+            let from = next_visualization_tick.get().map_or(now, |due| due.max(floor));
+            next_visualization_tick.set(Some(from + interval));
+        }
+        if vinyl_ticks && !unseen {
+            track_panels.vinyl_clock.tick();
+        }
+        if visualizations_due && !unseen && position != shown_position.replace(position) {
             apply_position(&window, &track_panels, position, clock.duration());
             frames.changed();
         }
@@ -1660,15 +1879,11 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         if spectrum_requested.replace(Some(want_spectrum)) != Some(want_spectrum) {
             engine.send(EngineCommand::SetSpectrumEnabled(want_spectrum));
         }
-        let interval = if hidden {
-            HIDDEN_POLL_INTERVAL
-        } else {
-            poll_interval(settings.borrow().visualization_fps)
-        };
+        let interval = if hidden { HIDDEN_POLL_INTERVAL } else { tick_interval(tick_fps) };
         if poll_timer.interval() != interval {
             poll_timer.set_interval(interval);
         }
-        if let Some((bars, peaks)) = latest_spectrum.filter(|_| !hidden) {
+        if let Some((bars, peaks)) = latest_spectrum.filter(|_| !hidden && visualizations_due) {
             spectrum.show(bars, peaks);
         }
         track_panels.poll(&window);
@@ -1744,6 +1959,108 @@ fn show_remaining(window: &MainWindow) {
     window.set_remaining_text(format!("-{}:{:02}", left / 60, left % 60).into());
 }
 
+/// Plays the VNL panel's record swap: the record on the turntable now (if
+/// `had_record`) taken off with its cover and look, then whatever
+/// `vinyl-has-record` says put on -- the next record, or none.
+fn swap_records(window: &MainWindow, had_record: bool) {
+    window.set_vinyl_outgoing_art(if had_record { window.get_album_art() } else { slint::Image::default() });
+    window.set_vinyl_outgoing_has_art(had_record && window.get_has_album_art());
+    window.set_vinyl_outgoing_marks(window.get_vinyl_track_marks());
+    window.set_vinyl_outgoing_color(window.get_vinyl_color());
+    window.set_vinyl_outgoing_contrast(window.get_vinyl_contrast());
+    window.set_vinyl_outgoing_design(window.get_vinyl_design());
+    window.set_vinyl_outgoing_label_kind(window.get_vinyl_label_kind());
+    window.set_vinyl_outgoing_label_color(window.get_vinyl_label_color());
+    window.set_vinyl_outgoing_label_art(window.get_vinyl_label_art());
+    window.set_vinyl_swap_has_outgoing(had_record);
+    window.set_vinyl_swap_serial(window.get_vinyl_swap_serial().wrapping_add(1));
+}
+
+/// The tracks a playlist row's Properties (or "Customize Vinyl…") is for:
+/// the selection, if the row is in it, else the row's track.
+fn properties_tracks(state: &PlaylistViewState, index: usize) -> Vec<PropertiesTrack> {
+    let mut record_albums = None;
+    state
+        .targets(index)
+        .iter()
+        .filter_map(|&i| {
+            let track = state.tracks.get(i)?;
+            // Once for the whole selection, not again for each.
+            let albums = record_albums.get_or_insert_with(|| RecordAlbums::new(&state.tracks, state.smart_grouping));
+            Some(properties_track(track, albums.of(i, track)))
+        })
+        .collect()
+}
+
+/// `track` for the Properties window, with the albums on its record as
+/// the VNL panel has it -- by smart grouping when that's on.
+fn properties_track(track: &Track, record_albums: Vec<String>) -> PropertiesTrack {
+    PropertiesTrack {
+        path: track.path.clone(),
+        title: track.metadata.title.clone(),
+        vinyl_album: vinyl_style_key(track),
+        vinyl_record_albums: record_albums,
+    }
+}
+
+/// The record `track` is on (the VNL panel's), from the playlist as the UI
+/// has it: by its index there -- or, when the engine's index and the UI's
+/// playlist are out of step (just reordered), by its file.
+fn record_for(state: &PlaylistViewState, index: Option<usize>, track: &Track) -> VinylRecord {
+    index
+        .filter(|&i| state.tracks.get(i).is_some_and(|t| t.path == track.path))
+        .or_else(|| state.tracks.iter().position(|t| t.path == track.path))
+        .and_then(|i| vinyl_record(&state.tracks, i, state.smart_grouping))
+        .unwrap_or_else(|| VinylRecord::single(track))
+}
+
+/// Shows the frame rates in Preferences: the preset, what it sets, and the
+/// Advanced choices.
+fn show_performance(settings_window: &SettingsWindow, settings: &Settings) {
+    let index_of = |choices: &[u32], fps: u32| choices.iter().position(|&c| c == fps).unwrap_or(0) as i32;
+    settings_window.set_performance_preset_index(
+        PerformancePreset::ALL.iter().position(|&p| p == settings.performance_preset).unwrap_or(2) as i32,
+    );
+    settings_window.set_visualization_fps_index(index_of(&FPS_CHOICES, settings.visualization_fps));
+    settings_window.set_vinyl_fps_index(index_of(&VINYL_FPS_CHOICES, settings.vinyl_fps));
+    settings_window.set_performance_summary(
+        format!(
+            "Spectrum & waveform {} fps \u{00b7} Vinyl {} fps",
+            settings.visualization_fps, settings.vinyl_fps
+        )
+        .into(),
+    );
+}
+
+/// Turns the VNL panel's record below the display's own frame rate (see
+/// `VinylView.clock`): ticked by the event poll at the vinyl's rate while
+/// playing, with the real time gone by, as seconds wrapping every whole
+/// turn (1.8 s at 33⅓ RPM). At 120 fps and over, the record follows the
+/// display's clock itself.
+struct VinylClock {
+    window: slint::Weak<MainWindow>,
+    origin: std::time::Instant,
+}
+
+impl VinylClock {
+    /// One turn at 33⅓ RPM.
+    const TURN: f64 = 1.8;
+
+    fn new(window: &MainWindow) -> Self {
+        Self { window: window.as_weak(), origin: std::time::Instant::now() }
+    }
+
+    fn tick(&self) {
+        if let Some(window) = self.window.upgrade() {
+            window.set_vinyl_clock((self.origin.elapsed().as_secs_f64() % Self::TURN) as f32);
+        }
+    }
+}
+
+/// Seconds into a song within which dragging the VNL panel's tonearm back
+/// goes to the song before, rather than to this one's start.
+const VINYL_BACK_TO_PREVIOUS_WITHIN: f32 = 3.0;
+
 /// UI-thread state for the panel layout (see `crate::layout`).
 struct LayoutState {
     /// Size of the panel area, as last reported by Slint.
@@ -1774,6 +2091,15 @@ type ArtistResult = (String, String, Result<Outcome, String>);
 /// the Info table, lyrics and artist information.
 struct TrackPanels {
     album_art: AlbumArtLoader,
+    /// The record on the VNL panel's turntable and the track's place on
+    /// it (see `VinylRecord`); `None` after a stop, when the next record
+    /// goes on an empty platter.
+    vinyl_record: RefCell<Option<VinylRecord>>,
+    /// The playing track's album as its record's look is kept for (see
+    /// `vinyl_style`).
+    vinyl_style_album: RefCell<String>,
+    /// What turns the record below the display's own frame rate.
+    vinyl_clock: VinylClock,
     lyrics: RefCell<Option<Lyrics>>,
     lyric_line: Cell<i32>,
     /// The playing track's file, and its lyrics exactly as stored (what
@@ -1809,6 +2135,9 @@ impl TrackPanels {
     fn new(window: &MainWindow, store: Rc<Store>, settings: Rc<RefCell<Settings>>) -> Self {
         Self {
             album_art: AlbumArtLoader::new(window),
+            vinyl_record: RefCell::new(None),
+            vinyl_style_album: RefCell::new(String::new()),
+            vinyl_clock: VinylClock::new(window),
             lyrics: RefCell::new(None),
             lyric_line: Cell::new(-1),
             track_path: RefCell::new(None),
@@ -1828,9 +2157,14 @@ impl TrackPanels {
         }
     }
 
-    fn track_changed(&self, window: &MainWindow, track: &Track) {
+    fn track_changed(&self, window: &MainWindow, track: &Track, record: VinylRecord) {
         window.set_now_playing_text(now_playing_text(track).into());
         window.set_track_info(ModelRc::from(Rc::new(VecModel::from(track_info_rows(track)))));
+        // Before the new cover is asked for: the old one is still shown.
+        self.show_record(window, record);
+        *self.vinyl_style_album.borrow_mut() = vinyl_style_key(track);
+        *self.track_path.borrow_mut() = Some(track.path.clone());
+        self.show_vinyl_style(window);
         self.album_art.show_track(Some(track.path.clone()));
         let artist = track.metadata.artist.trim();
         let artist = (!artist.is_empty()).then(|| artist.to_string());
@@ -1840,7 +2174,6 @@ impl TrackPanels {
         self.show_artist(window);
         // Read the file's own lyrics in the background (its tags include
         // the cover art, which can be large); `poll` shows them.
-        *self.track_path.borrow_mut() = Some(track.path.clone());
         *self.lyrics_text.borrow_mut() = None;
         self.set_lyrics(window, None, "");
         window.set_lyrics_editable(true);
@@ -1855,7 +2188,78 @@ impl TrackPanels {
             .expect("failed to spawn lyrics thread");
     }
 
+    /// Puts the track's record on the VNL panel's turntable. A new album
+    /// swaps records, the record taken off keeping the cover shown until
+    /// now; another song of the same album only moves the tonearm to it,
+    /// lifting it unless the record just plays on into it.
+    fn show_record(&self, window: &MainWindow, record: VinylRecord) {
+        let previous = self.vinyl_record.replace(Some(record.clone()));
+        match previous {
+            Some(previous) if previous.key == record.key => {
+                if record.position != previous.position + 1 {
+                    window.set_vinyl_cue_serial(window.get_vinyl_cue_serial().wrapping_add(1));
+                }
+            }
+            previous => swap_records(window, previous.is_some()),
+        }
+        window.set_vinyl_has_record(true);
+        window.set_vinyl_track_marks(ModelRc::from(Rc::new(VecModel::from(record.track_marks()))));
+        window.set_vinyl_album_offset_seconds(record.offset().as_secs_f32());
+        window.set_vinyl_album_total_seconds(record.total().as_secs_f32());
+    }
+
+    /// The playing track's record worked out again after the playlist
+    /// changed: its tracks, gaps and the needle's place, with no swap --
+    /// it's the same record. Nothing while the turntable is empty.
+    fn refresh_record(&self, window: &MainWindow, record: VinylRecord) {
+        let mut current = self.vinyl_record.borrow_mut();
+        if current.is_none() || current.as_ref() == Some(&record) {
+            return;
+        }
+        window.set_vinyl_track_marks(ModelRc::from(Rc::new(VecModel::from(record.track_marks()))));
+        window.set_vinyl_album_offset_seconds(record.offset().as_secs_f32());
+        window.set_vinyl_album_total_seconds(record.total().as_secs_f32());
+        *current = Some(record);
+    }
+
+    /// The playing track's album renamed: its record shown in the look
+    /// kept for the new name.
+    fn refresh_style_album(&self, window: &MainWindow, album: String) {
+        if self.vinyl_record.borrow().is_none() || *self.vinyl_style_album.borrow() == album {
+            return;
+        }
+        *self.vinyl_style_album.borrow_mut() = album;
+        self.show_vinyl_style(window);
+    }
+
+    /// The playing track's record in its look: its album's, or its own
+    /// (see `vinyl_style`). Again after Properties changes it.
+    fn show_vinyl_style(&self, window: &MainWindow) {
+        let Some(path) = self.track_path.borrow().clone() else {
+            return;
+        };
+        let (style, _) = crate::vinyl_style::style_for(&self.store, &path, &self.vinyl_style_album.borrow());
+        window.set_vinyl_color(style.color);
+        window.set_vinyl_contrast(style.contrast());
+        window.set_vinyl_design(style.design.id().into());
+        window.set_vinyl_label_kind(style.label.kind().into());
+        window.set_vinyl_label_color(style.label.color().unwrap_or_default());
+        window.set_vinyl_label_art(style.label_art);
+    }
+
+    /// Whether a stop cleared the track's panels (and nothing has shown a
+    /// track since).
+    fn cleared_by_stop(&self) -> bool {
+        self.track_path.borrow().is_none()
+    }
+
     fn stopped(&self, window: &MainWindow) {
+        // The record comes off (while its cover is still there to show),
+        // leaving the platter empty until the next song.
+        if self.vinyl_record.take().is_some() {
+            window.set_vinyl_has_record(false);
+            swap_records(window, true);
+        }
         window.set_now_playing_text("".into());
         window.set_track_info(ModelRc::default());
         self.album_art.show_track(None);
@@ -2435,7 +2839,12 @@ fn show_sort_choices(window: &MainWindow, selected: SortMode) {
 /// the CPU -- and should a setup still come, it corrects the report.
 ///
 /// The same notifier tells `frames` about every frame drawn.
-fn report_renderer(window: &MainWindow, settings_window: &SettingsWindow, frames: Rc<FrameWatch>) {
+fn report_renderer(
+    window: &MainWindow,
+    settings_window: &SettingsWindow,
+    properties: &Rc<PropertiesEditor>,
+    frames: Rc<FrameWatch>,
+) {
     let gpu_reported = Rc::new(Cell::new(false));
     let settings_window_weak = settings_window.as_weak();
     let reported = gpu_reported.clone();
@@ -2502,10 +2911,15 @@ fn report_renderer(window: &MainWindow, settings_window: &SettingsWindow, frames
         // Slint's own software renderer, which takes no notifier at all.
         tracing::warn!("renderer: {software_label}");
         settings_window.set_renderer_info(software_label.into());
+        // It can't turn things: the VNL panel's record stands still, and
+        // the Properties preview's.
+        window.set_vinyl_can_turn(false);
+        properties.set_vinyl_can_turn(false);
         return;
     }
     let window_weak = window.as_weak();
     let settings_window_weak = settings_window.as_weak();
+    let properties = properties.clone();
     Timer::single_shot(Duration::from_secs(5), move || {
         let (Some(window), Some(settings_window)) = (window_weak.upgrade(), settings_window_weak.upgrade())
         else {
@@ -2515,6 +2929,8 @@ fn report_renderer(window: &MainWindow, settings_window: &SettingsWindow, frames
         if shown && !gpu_reported.get() {
             tracing::warn!("renderer: {software_label}");
             settings_window.set_renderer_info(software_label.into());
+            window.set_vinyl_can_turn(false);
+            properties.set_vinyl_can_turn(false);
         }
     });
 }
@@ -2788,7 +3204,8 @@ fn wire_layout(
             // whether the window can be seen at all.)
             let (waveform, album_art, biography) = (
                 visible(PanelKind::Waveform),
-                visible(PanelKind::AlbumArt),
+                // The vinyl's label is the cover too.
+                visible(PanelKind::AlbumArt) || visible(PanelKind::Vinyl),
                 visible(PanelKind::Biography),
             );
             if state.waveform_enabled != Some(waveform) {
@@ -2798,6 +3215,19 @@ fn wire_layout(
             track_panels.album_art.set_enabled(album_art);
             if let Some(window) = window_weak.upgrade() {
                 track_panels.set_biography_visible(&window, biography);
+                let vinyl_area = state
+                    .placement
+                    .slots
+                    .iter()
+                    .find(|slot| slot.kind == PanelKind::Vinyl)
+                    .and_then(|slot| layout.expanded_rect(&state.placement, &slot.path));
+                window.set_vinyl_area(vinyl_area.map_or_else(ExpandArea::default, |rect| ExpandArea {
+                    visible: true,
+                    x: rect.x,
+                    y: rect.y,
+                    width: rect.width,
+                    height: rect.height,
+                }));
             }
         })
     };
@@ -3519,7 +3949,8 @@ fn apply_event(
 ) {
     match event {
         EngineEvent::TrackChanged { index, track } => {
-            track_panels.track_changed(window, &track);
+            let record = record_for(&playlist_view_state.borrow(), Some(index), &track);
+            track_panels.track_changed(window, &track, record);
             window.set_duration_seconds(track.metadata.duration.as_secs_f32());
             window.set_duration_text(format_duration(track.metadata.duration).into());
             // "Artist - Title - Album", as in the reference status bar.
@@ -3549,12 +3980,28 @@ fn apply_event(
         }
         EngineEvent::PlaybackStateChanged(state) => {
             window.set_is_playing(state == PlaybackState::Playing);
+            // Now, before the record starts turning from it.
+            if state == PlaybackState::Playing {
+                track_panels.vinyl_clock.tick();
+            }
             match state {
                 PlaybackState::Stopped => {
                     presence.send(PresenceCommand::Cleared);
                     track_panels.stopped(window);
                 }
                 PlaybackState::Playing | PlaybackState::Paused => {
+                    // Played again after a stop: the same track, so no
+                    // track change comes -- show it again (its record put
+                    // back on, its title, info, lyrics and cover).
+                    if track_panels.cleared_by_stop() {
+                        if let Some(track) = current_track.borrow().clone() {
+                            let record = {
+                                let state = playlist_view_state.borrow();
+                                record_for(&state, state.current_index, &track)
+                            };
+                            track_panels.track_changed(window, &track, record);
+                        }
+                    }
                     if let Some(track) = current_track.borrow().clone() {
                         send_presence_for_track(
                             presence,

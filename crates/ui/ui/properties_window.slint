@@ -1,5 +1,127 @@
-import { Button, LineEdit, ListView, Palette, TabWidget } from "std-widgets.slint";
+import { Button, CheckBox, ComboBox, LineEdit, ListView, Palette, TabWidget } from "std-widgets.slint";
 import { Theme } from "theme.slint";
+import { VinylDisc, Platter } from "vinyl_view.slint";
+
+/// A color offered for the record on the Vinyl tab.
+export struct VinylSwatch {
+    name: string,
+    hex: string,
+    color: color,
+}
+
+/// One swatch: a round chip, ringed when it's the record's color.
+component SwatchChip inherits Rectangle {
+    in property <VinylSwatch> swatch;
+    in property <bool> chosen;
+    callback clicked();
+
+    width: 26px;
+    height: 26px;
+    border-radius: self.width / 2;
+    background: root.swatch.color;
+    border-width: root.chosen ? 3px : 1px;
+    border-color: root.chosen ? Theme.accent : touch.has-hover ? Theme.text-primary : Theme.text-muted.transparentize(0.5);
+    accessible-role: button;
+    accessible-label: root.swatch.name;
+    accessible-checked: root.chosen;
+    accessible-action-default => { root.clicked(); }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+/// "Clear": a see-through chip -- a checkerboard, as image editors show
+/// transparency.
+component ClearChip inherits Rectangle {
+    in property <bool> chosen;
+    callback clicked();
+
+    width: 26px;
+    height: 26px;
+    border-radius: self.width / 2;
+    clip: true;
+    background: #e6e6e6;
+    accessible-role: button;
+    accessible-label: "Clear";
+    accessible-checked: root.chosen;
+    accessible-action-default => { root.clicked(); }
+    for i in 4: Rectangle {
+        x: Math.mod(i, 2) * parent.width / 2;
+        y: Math.floor(i / 2) * parent.height / 2;
+        width: parent.width / 2;
+        height: parent.height / 2;
+        background: Math.mod(i + Math.floor(i / 2), 2) == 0 ? #9a9a9a : #e6e6e6;
+    }
+    Rectangle {
+        border-radius: self.width / 2;
+        border-width: root.chosen ? 3px : 1px;
+        border-color: root.chosen ? Theme.accent : touch.has-hover ? Theme.text-primary : Theme.text-muted.transparentize(0.5);
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+/// A colour for the record: the swatches in a row, a field for any other
+/// ("#rrggbb"), and Reset back to the default.
+component VinylColorPicker inherits VerticalLayout {
+    in property <[VinylSwatch]> swatches-top;
+    in property <[VinylSwatch]> swatches-bottom;
+    /// The colour shown as chosen; `none-chosen`: none of the swatches is.
+    in property <color> color;
+    in property <bool> none-chosen: false;
+    in-out property <string> hex;
+    in property <bool> can-reset;
+    /// A "Clear" chip after the swatches (the label's), and whether it's
+    /// the one chosen.
+    in property <bool> show-clear: false;
+    in property <bool> clear-chosen: false;
+    callback clear-picked();
+    /// What Reset goes back to, for its tooltip-less label.
+    in property <string> reset-label: "Reset";
+    callback chosen(string);
+    callback hex-edited(string);
+    callback reset();
+
+    spacing: 8px;
+    alignment: start;
+    HorizontalLayout {
+        spacing: 6px;
+        alignment: start;
+        for swatch in root.swatches-top: SwatchChip {
+            swatch: swatch;
+            chosen: !root.none-chosen && swatch.color == root.color;
+            clicked => { root.chosen(swatch.hex); }
+        }
+        for swatch in root.swatches-bottom: SwatchChip {
+            swatch: swatch;
+            chosen: !root.none-chosen && swatch.color == root.color;
+            clicked => { root.chosen(swatch.hex); }
+        }
+        if root.show-clear: ClearChip {
+            chosen: root.clear-chosen;
+            clicked => { root.clear-picked(); }
+        }
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        alignment: start;
+        Text { text: "Custom"; vertical-alignment: center; color: Theme.text-primary; }
+        LineEdit {
+            width: 110px;
+            text <=> root.hex;
+            placeholder-text: "#rrggbb";
+            edited(text) => { root.hex-edited(text); }
+        }
+        Button {
+            text: root.reset-label;
+            enabled: root.can-reset;
+            clicked => { root.reset(); }
+        }
+    }
+}
 
 /// One editable tag field.
 export struct PropertyField {
@@ -62,6 +184,55 @@ export component PropertiesWindow inherits Window {
     /// Something was changed and isn't saved yet.
     in property <bool> dirty;
 
+    // The Vinyl tab (issue #40, see `app::vinyl_style`): the record's look
+    // on the VNL panel, for the album or just this song.
+    in-out property <bool> vinyl-synced: true;
+    /// The album's name, for the "whole album" choice.
+    in property <string> vinyl-album;
+    /// How many album taggings smart grouping put on the record (1: just
+    /// the album).
+    in property <int> vinyl-record-albums: 1;
+    in property <color> vinyl-color: #161616;
+    in property <color> vinyl-contrast: #eeece6;
+    /// The color as "#rrggbb": the custom color field.
+    in-out property <string> vinyl-hex;
+    in property <string> vinyl-design: "classic";
+    in-out property <int> vinyl-design-index: 0;
+    in property <[string]> vinyl-design-labels;
+    /// The swatches, in two rows.
+    in property <[VinylSwatch]> vinyl-swatches-top;
+    in property <[VinylSwatch]> vinyl-swatches-bottom;
+    in property <image> vinyl-art;
+    in property <bool> vinyl-has-art: false;
+    /// The vinyl colour isn't the default (black): Reset can undo it.
+    in property <bool> vinyl-color-changed: false;
+    callback vinyl-color-reset();
+    /// The label: "accent" (the theme's), "color" (`vinyl-label-color`),
+    /// "match" (the vinyl's) or "clear" -- and whether the cover art is
+    /// printed on it.
+    in property <string> vinyl-label-kind: "accent";
+    in property <color> vinyl-label-color;
+    in-out property <string> vinyl-label-hex;
+    in-out property <bool> vinyl-label-art: true;
+    callback vinyl-label-color-chosen(string);
+    callback vinyl-label-hex-edited(string);
+    callback vinyl-label-reset();
+    callback vinyl-label-art-toggled(bool);
+    callback vinyl-label-match-toggled(bool);
+    /// "Match the vinyl": two-way, as a CheckBox sets its own `checked`
+    /// when clicked, which would cut a one-way binding off for good.
+    in-out property <bool> vinyl-label-match: false;
+    /// Whether the renderer can turn things (see `MainWindow`): without,
+    /// the preview record stands still.
+    in property <bool> vinyl-can-turn: true;
+    callback vinyl-label-clear-chosen();
+    /// The tab shown (3: Vinyl, for "Customize Vinyl…").
+    in-out property <int> current-tab: 0;
+    callback vinyl-synced-toggled(bool);
+    callback vinyl-color-chosen(string);
+    callback vinyl-hex-edited(string);
+    callback vinyl-design-chosen(int);
+
     callback field-edited(int, string);
     callback artwork-add(int);
     callback artwork-remove(int);
@@ -73,8 +244,9 @@ export component PropertiesWindow inherits Window {
         padding: 10px;
         spacing: 8px;
 
-        TabWidget {
+        tabs := TabWidget {
             vertical-stretch: 1;
+            current-index <=> root.current-tab;
 
             Tab {
                 title: "Metadata";
@@ -210,6 +382,130 @@ export component PropertiesWindow inherits Window {
                                     }
                                 }
                             }
+                        }
+                    }
+                }
+            }
+
+            Tab {
+                title: "Vinyl";
+                HorizontalLayout {
+                    padding: 14px;
+                    spacing: 20px;
+                    alignment: start;
+
+                    // The record as the VNL panel will show it, turning while
+                    // this tab is open.
+                    VerticalLayout {
+                        alignment: start;
+                        Rectangle {
+                            width: 220px;
+                            height: 220px;
+                            Platter {
+                                disc: 200px;
+                                width: 207px;
+                                height: 207px;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                            }
+                            VinylDisc {
+                                x: 10px;
+                                y: 10px;
+                                width: 200px;
+                                height: 200px;
+                                art: root.vinyl-art;
+                                has-art: root.vinyl-has-art;
+                                vinyl: root.vinyl-color;
+                                contrast: root.vinyl-contrast;
+                                design: root.vinyl-design;
+                                label-kind: root.vinyl-label-kind;
+                                label-color: root.vinyl-label-color;
+                                label-art: root.vinyl-label-art;
+                                spin: tabs.current-index == 3 && root.vinyl-can-turn ? animation-tick() / 1ms * 0.2deg : 0deg;
+                                blur: tabs.current-index == 3 && root.vinyl-can-turn ? 1 : 0;
+                            }
+                        }
+                    }
+
+                    VerticalLayout {
+                        alignment: start;
+                        spacing: 10px;
+                        CheckBox {
+                            text: root.vinyl-album == "" ? "Same vinyl for the whole album" : "Same vinyl for the whole album \u{201c}" + root.vinyl-album + "\u{201d}";
+                            checked <=> root.vinyl-synced;
+                            toggled => { root.vinyl-synced-toggled(self.checked); }
+                        }
+                        Text {
+                            text: !root.vinyl-synced
+                                ? "Only this song gets this record; the rest of the album keeps its own."
+                                : root.vinyl-record-albums > 1
+                                ? "Every song of the album is on this record \u{2014} as smart grouping gathers it, from \{root.vinyl-record-albums} differently tagged albums."
+                                : "Every song of the album is on this record.";
+                            font-size: 11px;
+                            color: Theme.text-muted;
+                            wrap: word-wrap;
+                        }
+
+                        Text { text: "Color"; font-weight: 700; color: Theme.text-primary; }
+                        VinylColorPicker {
+                            swatches-top: root.vinyl-swatches-top;
+                            swatches-bottom: root.vinyl-swatches-bottom;
+                            color: root.vinyl-color;
+                            hex <=> root.vinyl-hex;
+                            can-reset: root.vinyl-color-changed;
+                            reset-label: "Reset to black";
+                            chosen(hex) => { root.vinyl-color-chosen(hex); }
+                            hex-edited(hex) => { root.vinyl-hex-edited(hex); }
+                            reset => { root.vinyl-color-reset(); }
+                        }
+
+                        Text { text: "Design"; font-weight: 700; color: Theme.text-primary; }
+                        ComboBox {
+                            width: 200px;
+                            model: root.vinyl-design-labels;
+                            current-index <=> root.vinyl-design-index;
+                            selected => { root.vinyl-design-chosen(self.current-index); }
+                        }
+
+                        Text { text: "Label"; font-weight: 700; color: Theme.text-primary; }
+                        HorizontalLayout {
+                            spacing: 16px;
+                            alignment: start;
+                            CheckBox {
+                                text: "Cover art on the label";
+                                checked <=> root.vinyl-label-art;
+                                toggled => { root.vinyl-label-art-toggled(self.checked); }
+                            }
+                            CheckBox {
+                                text: "Match the vinyl";
+                                checked <=> root.vinyl-label-match;
+                                toggled => { root.vinyl-label-match-toggled(self.checked); }
+                            }
+                        }
+                        VinylColorPicker {
+                            swatches-top: root.vinyl-swatches-top;
+                            swatches-bottom: root.vinyl-swatches-bottom;
+                            color: root.vinyl-label-color;
+                            none-chosen: root.vinyl-label-kind != "color";
+                            show-clear: true;
+                            clear-chosen: root.vinyl-label-kind == "clear";
+                            clear-picked => { root.vinyl-label-clear-chosen(); }
+                            hex <=> root.vinyl-label-hex;
+                            can-reset: root.vinyl-label-kind != "accent";
+                            reset-label: "Reset to accent";
+                            chosen(hex) => { root.vinyl-label-color-chosen(hex); }
+                            hex-edited(hex) => { root.vinyl-label-hex-edited(hex); }
+                            reset => { root.vinyl-label-reset(); }
+                        }
+                        Text {
+                            text: root.vinyl-label-kind == "match"
+                                ? (root.vinyl-label-art ? "The vinyl goes on to the middle where there's no cover." : "The vinyl goes on to the middle.")
+                                : root.vinyl-label-kind == "clear"
+                                ? (root.vinyl-label-art ? "Clear where there's no cover: the platter shows through." : "Clear: the platter shows through.")
+                                : root.vinyl-label-art ? "The color shows where there's no cover."
+                                : "A plain label in this color.";
+                            font-size: 11px;
+                            color: Theme.text-muted;
                         }
                     }
                 }

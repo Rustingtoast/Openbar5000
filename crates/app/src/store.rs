@@ -87,6 +87,22 @@ const MIGRATIONS: &[&str] = &[
         last_played  INTEGER NOT NULL
     );
     "#,
+    // v5: how records look on the VNL panel (issue #40, see
+    // `vinyl_style`): one row per album, or per song that has its own.
+    // `color` is "#rrggbb", `design` a `vinyl_style::Design` id.
+    r#"
+    CREATE TABLE vinyl_styles (
+        key    TEXT PRIMARY KEY,
+        color  TEXT NOT NULL,
+        design TEXT NOT NULL
+    );
+    "#,
+    // v6: the record's label (issue #40): its colour ("#rrggbb", or NULL
+    // for the theme's accent) and whether the cover art is printed on it.
+    r#"
+    ALTER TABLE vinyl_styles ADD COLUMN label TEXT;
+    ALTER TABLE vinyl_styles ADD COLUMN label_art INTEGER NOT NULL DEFAULT 1;
+    "#,
 ];
 
 /// The playlist every database starts with (migration v1).
@@ -344,6 +360,44 @@ impl Store {
             .unwrap_or(None)
     }
 
+    // --- record looks for the VNL panel (issue #40) ---------------------
+
+    /// The look stored under `key` (see `vinyl_style`).
+    pub fn vinyl_style(&self, key: &str) -> Option<StoredVinylStyle> {
+        self.conn
+            .query_row(
+                "SELECT color, design, label, label_art FROM vinyl_styles WHERE key = ?1",
+                params![key],
+                |row| {
+                    Ok(StoredVinylStyle {
+                        color: row.get(0)?,
+                        design: row.get(1)?,
+                        label: row.get(2)?,
+                        label_art: row.get(3)?,
+                    })
+                },
+            )
+            .optional()
+            .unwrap_or(None)
+    }
+
+    pub fn set_vinyl_style(&self, key: &str, style: &StoredVinylStyle) {
+        if let Err(e) = self.conn.execute(
+            "INSERT INTO vinyl_styles (key, color, design, label, label_art) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(key) DO UPDATE SET color = excluded.color, design = excluded.design,
+                 label = excluded.label, label_art = excluded.label_art",
+            params![key, style.color, style.design, style.label, style.label_art],
+        ) {
+            tracing::warn!("failed to save a vinyl style: {e}");
+        }
+    }
+
+    pub fn remove_vinyl_style(&self, key: &str) {
+        if let Err(e) = self.conn.execute("DELETE FROM vinyl_styles WHERE key = ?1", params![key]) {
+            tracing::warn!("failed to remove a vinyl style: {e}");
+        }
+    }
+
     // --- playlists: named, ordered lists of paths (issue #33) ----------
 
     /// Every playlist, oldest first, with how many tracks it holds.
@@ -449,6 +503,16 @@ pub struct PlayStats {
     pub count: u64,
     pub first_played: i64,
     pub last_played: i64,
+}
+
+/// A row of `vinyl_styles`, as stored (see `vinyl_style::VinylStyle`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredVinylStyle {
+    pub color: String,
+    pub design: String,
+    /// `None`: the theme's accent.
+    pub label: Option<String>,
+    pub label_art: bool,
 }
 
 /// A playlist as the Playlist Manager lists it.

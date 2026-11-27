@@ -35,8 +35,8 @@ pub struct Settings {
     pub playlist_sort: SortMode,
     /// Plain song list instead of album groups (Preferences > Appearance).
     pub playlist_list_view: bool,
-    /// How often the spectrum/seekbar redraw while playing: 60 or 30 (caps
-    /// the redraw rate; see `wiring::poll_interval`).
+    /// How often the spectrum/seekbar redraw while playing: one of
+    /// `FPS_CHOICES` (caps the redraw rate; see `wiring::poll_interval`).
     pub visualization_fps: u32,
     /// Off by default: it does nothing until the user supplies their own
     /// Discord Application client ID (see `discord_client_id`), which only
@@ -52,6 +52,16 @@ pub struct Settings {
     pub artist_wikipedia: bool,
     /// Wikipedia edition to read (falls back to English).
     pub artist_wikipedia_language: String,
+    /// The VNL panel's record on a 1980s deck, like the Vintage Equalizer
+    /// (issue #40); toggled on the panel.
+    pub vinyl_vintage: bool,
+    /// How often the VNL panel's record is drawn while it turns, apart
+    /// from the visualizations' rate: one of `VINYL_FPS_CHOICES`.
+    pub vinyl_fps: u32,
+    /// The frame rates' preset (Preferences > Visualizations), and the one
+    /// Custom pair (visualizations, vinyl) last set by hand.
+    pub performance_preset: PerformancePreset,
+    pub custom_fps: Option<(u32, u32)>,
     /// Playback volume, 0.0 to 1.0.
     pub volume: f32,
     /// The chosen output device's id; `None` follows the system default.
@@ -93,6 +103,10 @@ impl Default for Settings {
             now_playing_file_path: String::new(),
             artist_wikipedia: true,
             artist_wikipedia_language: "en".to_string(),
+            vinyl_vintage: false,
+            vinyl_fps: 45,
+            performance_preset: PerformancePreset::Normal,
+            custom_fps: None,
             volume: 1.0,
             output_device: None,
             output_device_name: String::new(),
@@ -155,6 +169,74 @@ pub fn note_from_name(name: &str) -> Option<u8> {
 /// The visualization frame rates Preferences offers, in its dropdown's
 /// order.
 pub const FPS_CHOICES: [u32; 4] = [120, 60, 30, 15];
+
+/// The vinyl's frame rates, in Preferences' order. 120 draws it at the
+/// display's own rate.
+pub const VINYL_FPS_CHOICES: [u32; 5] = [120, 60, 45, 30, 15];
+
+pub fn normalize_vinyl_fps(fps: u32) -> u32 {
+    if VINYL_FPS_CHOICES.contains(&fps) {
+        fps
+    } else {
+        45
+    }
+}
+
+/// Preferences > Visualizations > Performance: the frame rates of the
+/// visualizations (waveform, seekbar, spectrum) and of the vinyl together,
+/// or Custom -- the last pair set by hand under Advanced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PerformancePreset {
+    Potato,
+    Performance,
+    Normal,
+    Quality,
+    HighQuality,
+    Custom,
+}
+
+impl PerformancePreset {
+    /// In the Preferences list's order.
+    pub const ALL: [Self; 6] =
+        [Self::Potato, Self::Performance, Self::Normal, Self::Quality, Self::HighQuality, Self::Custom];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Potato => "potato",
+            Self::Performance => "performance",
+            Self::Normal => "normal",
+            Self::Quality => "quality",
+            Self::HighQuality => "high-quality",
+            Self::Custom => "custom",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|preset| preset.id() == id)
+    }
+
+    /// (visualizations, vinyl) frames per second; `None` for Custom.
+    pub fn rates(self) -> Option<(u32, u32)> {
+        match self {
+            Self::Potato => Some((15, 30)),
+            Self::Performance => Some((30, 30)),
+            Self::Normal => Some((60, 45)),
+            Self::Quality => Some((120, 60)),
+            Self::HighQuality => Some((120, 120)),
+            Self::Custom => None,
+        }
+    }
+
+    /// The preset a frame rate saved before presets stands for.
+    fn for_visualization_fps(fps: u32) -> Self {
+        match normalize_fps(fps) {
+            15 => Self::Potato,
+            30 => Self::Performance,
+            120 => Self::Quality,
+            _ => Self::Normal,
+        }
+    }
+}
 
 /// Anything not offered (hand-edited, or from another build) falls back to
 /// 60.
@@ -284,6 +366,29 @@ impl Settings {
         if let Some(v) = get("artist_wikipedia") {
             settings.artist_wikipedia = v == "true";
         }
+        if let Some(v) = get("vinyl_vintage") {
+            settings.vinyl_vintage = v == "true";
+        }
+        match get("performance_preset").and_then(|id| PerformancePreset::from_id(&id)) {
+            Some(preset) => {
+                settings.performance_preset = preset;
+                if let Some(v) = get("vinyl_fps").and_then(|v| v.parse().ok()) {
+                    settings.vinyl_fps = normalize_vinyl_fps(v);
+                }
+            }
+            // Saved before there were presets: the one for its frame rate.
+            None => {
+                let preset = PerformancePreset::for_visualization_fps(settings.visualization_fps);
+                settings.performance_preset = preset;
+                if let Some((_, vinyl)) = preset.rates() {
+                    settings.vinyl_fps = vinyl;
+                }
+            }
+        }
+        let custom = |key: &str| get(key).and_then(|v| v.parse::<u32>().ok());
+        if let (Some(visualizations), Some(vinyl)) = (custom("custom_visualization_fps"), custom("custom_vinyl_fps")) {
+            settings.custom_fps = Some((normalize_fps(visualizations), normalize_vinyl_fps(vinyl)));
+        }
         if let Some(v) = get("artist_wikipedia_language") {
             if WIKIPEDIA_LANGUAGES.iter().any(|(code, _)| *code == v) {
                 settings.artist_wikipedia_language = v;
@@ -382,6 +487,11 @@ impl Settings {
             ("now_playing_file_path", self.now_playing_file_path.clone()),
             ("artist_wikipedia", self.artist_wikipedia.to_string()),
             ("artist_wikipedia_language", self.artist_wikipedia_language.clone()),
+            ("vinyl_vintage", self.vinyl_vintage.to_string()),
+            ("vinyl_fps", self.vinyl_fps.to_string()),
+            ("performance_preset", self.performance_preset.id().to_string()),
+            ("custom_visualization_fps", self.custom_fps.map_or(String::new(), |(v, _)| v.to_string())),
+            ("custom_vinyl_fps", self.custom_fps.map_or(String::new(), |(_, v)| v.to_string())),
             ("volume", self.volume.to_string()),
             ("output_device", self.output_device.clone().unwrap_or_default()),
             ("output_device_name", self.output_device_name.clone()),
@@ -464,6 +574,48 @@ mod fps_tests {
         }
         store.set_settings(&[("visualization_fps", "144".to_string())]);
         assert_eq!(Settings::load(&store).visualization_fps, 60);
+    }
+
+    #[test]
+    fn performance_presets_custom_rates_and_older_settings() {
+        let store = Store::open_in_memory().unwrap();
+        let settings = Settings::load(&store);
+        assert_eq!(settings.performance_preset, PerformancePreset::Normal);
+        assert_eq!((settings.visualization_fps, settings.vinyl_fps), (60, 45));
+
+        // A custom pair is its own and remembered, with the preset.
+        let mut settings = settings;
+        settings.performance_preset = PerformancePreset::Custom;
+        settings.custom_fps = Some((120, 30));
+        settings.visualization_fps = 120;
+        settings.vinyl_fps = 30;
+        settings.save(&store);
+        let loaded = Settings::load(&store);
+        assert_eq!(loaded.performance_preset, PerformancePreset::Custom);
+        assert_eq!(loaded.custom_fps, Some((120, 30)));
+        assert_eq!((loaded.visualization_fps, loaded.vinyl_fps), (120, 30));
+        store.set_settings(&[("vinyl_fps", "144".to_string())]);
+        assert_eq!(Settings::load(&store).vinyl_fps, 45);
+
+        // Saved before presets, at 30 fps: Performance.
+        let older = Store::open_in_memory().unwrap();
+        older.set_settings(&[("visualization_fps", "30".to_string())]);
+        let loaded = Settings::load(&older);
+        assert_eq!(loaded.performance_preset, PerformancePreset::Performance);
+        assert_eq!((loaded.visualization_fps, loaded.vinyl_fps), (30, 30));
+        for preset in PerformancePreset::ALL {
+            assert_eq!(PerformancePreset::from_id(preset.id()), Some(preset));
+        }
+    }
+
+    #[test]
+    fn the_vintage_vinyl_deck_is_remembered() {
+        let store = Store::open_in_memory().unwrap();
+        let mut settings = Settings::load(&store);
+        assert!(!settings.vinyl_vintage);
+        settings.vinyl_vintage = true;
+        settings.save(&store);
+        assert!(Settings::load(&store).vinyl_vintage);
     }
 
     #[test]

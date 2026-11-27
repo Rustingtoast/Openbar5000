@@ -3,9 +3,12 @@
 //! and playback statistics. Fields the selected tracks disagree on show
 //! "‹multiple values›" and are only written if edited. Saving runs in the
 //! background (see `engine::edit_tags`), then the playlist re-reads its
-//! tags.
+//! tags. The Vinyl tab picks the look of the song's record on the VNL panel
+//! (see `crate::vinyl_style`), saved with the rest.
 
 use crate::store::Store;
+use crate::theme::parse_hex_color;
+use crate::vinyl_style::{self, Design, Label, VinylStyle, PRESETS};
 use crossbeam_channel::{Receiver, Sender};
 use engine::{EngineCommand, PictureKind, PlaybackEngine, TagEdit, TagField};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
@@ -14,7 +17,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
-use ui::{cover_image_from_rgba, format_duration, ArtworkRow, DetailRow, PropertiesWindow, PropertyField};
+use ui::{cover_image_from_rgba, format_duration, ArtworkRow, DetailRow, PropertiesWindow, PropertyField, VinylSwatch};
 
 /// "57.4 MB (60 283 134 bytes)".
 fn format_size(bytes: u64) -> String {
@@ -57,7 +60,11 @@ fn common_value(values: &[String]) -> Option<String> {
 }
 
 /// A finished save: per file, what went wrong (if anything).
-type SaveOutcome = Vec<(PathBuf, Result<(), String>)>;
+/// Per file: what went wrong (if anything), and -- when the album or its
+/// artist was edited -- the album its record's look is now kept for
+/// (`playlist_rows::album_key_from`, from the tags written), worked out
+/// with the save rather than by reading the files again on the UI thread.
+type SaveOutcome = Vec<(PathBuf, Result<(), String>, Option<String>)>;
 
 pub struct PropertiesEditor {
     window: PropertiesWindow,
@@ -73,6 +80,50 @@ pub struct PropertiesEditor {
     saves: (Sender<SaveOutcome>, Receiver<SaveOutcome>),
     close_after_save: std::cell::Cell<bool>,
     poll: Timer,
+    /// The tracks open (path, the albums on its record as `vinyl_style`
+    /// keeps them), and their record's look and whether it's the album's:
+    /// as opened, and now.
+    vinyl_tracks: RefCell<Vec<VinylTrack>>,
+    vinyl_original: RefCell<(VinylStyle, bool)>,
+    vinyl: RefCell<(VinylStyle, bool)>,
+    /// Called after a new look is saved, to show it on the VNL panel.
+    vinyl_saved: RefCell<Option<Box<dyn Fn()>>>,
+    /// The first track's own album, whose look "Same vinyl for the whole
+    /// album" shows.
+    vinyl_album: RefCell<String>,
+    /// The album's look, while a save renames the album (or its artist):
+    /// kept for the new name too once the tags are written, or the record
+    /// would lose it.
+    renamed_look: RefCell<Option<VinylStyle>>,
+}
+
+/// A track open in the window, for its record's look: its file, its own
+/// album and all the albums on its record (see `PropertiesTrack`).
+struct VinylTrack {
+    path: PathBuf,
+    album: String,
+    record_albums: Vec<String>,
+}
+
+/// The Vinyl tab's place among the window's tabs.
+const VINYL_TAB: i32 = 3;
+
+/// Which of the record's colours a swatch or field sets.
+#[derive(Clone, Copy)]
+enum Part {
+    Vinyl,
+    Label,
+}
+
+/// One track for the Properties window: its file and title, and for its
+/// record's look (`playlist_rows::vinyl_style_key`), its own album and all
+/// the albums on its record -- more than one when smart grouping gathered
+/// several taggings into one.
+pub struct PropertiesTrack {
+    pub path: PathBuf,
+    pub title: String,
+    pub vinyl_album: String,
+    pub vinyl_record_albums: Vec<String>,
 }
 
 impl PropertiesEditor {
@@ -89,8 +140,96 @@ impl PropertiesEditor {
             saves: crossbeam_channel::unbounded(),
             close_after_save: std::cell::Cell::new(false),
             poll: Timer::default(),
+            vinyl_tracks: RefCell::new(Vec::new()),
+            vinyl_original: RefCell::new((VinylStyle::default(), true)),
+            vinyl: RefCell::new((VinylStyle::default(), true)),
+            vinyl_saved: RefCell::new(None),
+            vinyl_album: RefCell::new(String::new()),
+            renamed_look: RefCell::new(None),
         });
         window.set_artwork(ModelRc::from(editor.artwork_model.clone()));
+
+        let swatches: Vec<VinylSwatch> = PRESETS
+            .iter()
+            .filter_map(|(name, hex)| {
+                Some(VinylSwatch { name: (*name).into(), hex: (*hex).into(), color: parse_hex_color(hex)? })
+            })
+            .collect();
+        let (top, bottom) = swatches.split_at(swatches.len().div_ceil(2));
+        window.set_vinyl_swatches_top(ModelRc::from(Rc::new(VecModel::from(top.to_vec()))));
+        window.set_vinyl_swatches_bottom(ModelRc::from(Rc::new(VecModel::from(bottom.to_vec()))));
+        window.set_vinyl_design_labels(ModelRc::from(Rc::new(VecModel::from(
+            Design::ALL.iter().map(|design| SharedString::from(design.label())).collect::<Vec<_>>(),
+        ))));
+
+        let weak = Rc::downgrade(&editor);
+        window.on_vinyl_synced_toggled(move |synced| {
+            if let Some(editor) = weak.upgrade() {
+                editor.vinyl_synced_toggled(synced);
+            }
+        });
+        let weak = Rc::downgrade(&editor);
+        window.on_vinyl_color_chosen(move |hex| {
+            if let Some(editor) = weak.upgrade() {
+                editor.vinyl_color_edited(Part::Vinyl, &hex, true);
+            }
+        });
+        let weak = Rc::downgrade(&editor);
+        window.on_vinyl_hex_edited(move |hex| {
+            if let Some(editor) = weak.upgrade() {
+                editor.vinyl_color_edited(Part::Vinyl, &hex, false);
+            }
+        });
+        let weak = Rc::downgrade(&editor);
+        window.on_vinyl_label_color_chosen(move |hex| {
+            if let Some(editor) = weak.upgrade() {
+                editor.vinyl_color_edited(Part::Label, &hex, true);
+            }
+        });
+        let weak = Rc::downgrade(&editor);
+        window.on_vinyl_label_hex_edited(move |hex| {
+            if let Some(editor) = weak.upgrade() {
+                editor.vinyl_color_edited(Part::Label, &hex, false);
+            }
+        });
+        let weak = Rc::downgrade(&editor);
+        window.on_vinyl_color_reset(move || {
+            if let Some(editor) = weak.upgrade() {
+                editor.edit_vinyl(|style| style.color = vinyl_style::default_color());
+            }
+        });
+        let weak = Rc::downgrade(&editor);
+        window.on_vinyl_label_reset(move || {
+            if let Some(editor) = weak.upgrade() {
+                editor.edit_vinyl(|style| style.label = Label::Accent);
+            }
+        });
+        let weak = Rc::downgrade(&editor);
+        window.on_vinyl_label_match_toggled(move |on| {
+            if let Some(editor) = weak.upgrade() {
+                editor.edit_vinyl(|style| style.label = if on { Label::Match } else { Label::Accent });
+            }
+        });
+        let weak = Rc::downgrade(&editor);
+        window.on_vinyl_label_clear_chosen(move || {
+            if let Some(editor) = weak.upgrade() {
+                editor.edit_vinyl(|style| style.label = Label::Clear);
+            }
+        });
+        let weak = Rc::downgrade(&editor);
+        window.on_vinyl_label_art_toggled(move |on| {
+            if let Some(editor) = weak.upgrade() {
+                editor.edit_vinyl(|style| style.label_art = on);
+            }
+        });
+        let weak = Rc::downgrade(&editor);
+        window.on_vinyl_design_chosen(move |index| {
+            if let Some(editor) = weak.upgrade() {
+                if let Some(&design) = usize::try_from(index).ok().and_then(|i| Design::ALL.get(i)) {
+                    editor.edit_vinyl(|style| style.design = design);
+                }
+            }
+        });
 
         let weak = Rc::downgrade(&editor);
         window.on_field_edited(move |index, text| {
@@ -131,10 +270,45 @@ impl PropertiesEditor {
         editor
     }
 
-    /// Opens the window for `tracks` (paths and titles).
-    pub fn open(&self, tracks: Vec<(PathBuf, String)>) {
-        let Some((first, first_title)) = tracks.first().cloned() else { return };
-        let paths: Vec<PathBuf> = tracks.into_iter().map(|(path, _)| path).collect();
+    /// `hook` runs after a new record look is saved.
+    pub fn on_vinyl_saved(&self, hook: impl Fn() + 'static) {
+        *self.vinyl_saved.borrow_mut() = Some(Box::new(hook));
+    }
+
+    /// Opens the window for `tracks` on its Vinyl tab ("Customize
+    /// Vinyl…").
+    pub fn open_vinyl(&self, tracks: Vec<PropertiesTrack>) {
+        self.open(tracks);
+        self.window.set_current_tab(VINYL_TAB);
+    }
+
+    /// Whether the renderer can turn things, for the Vinyl tab's preview.
+    pub fn set_vinyl_can_turn(&self, can_turn: bool) {
+        self.window.set_vinyl_can_turn(can_turn);
+    }
+
+    /// Opens the window for `tracks`, on its first tab.
+    pub fn open(&self, tracks: Vec<PropertiesTrack>) {
+        self.window.set_current_tab(0);
+        let Some(first) = tracks.first() else { return };
+        let (first, first_title) = (first.path.clone(), first.title.clone());
+        // The record's look as the first track has it.
+        let look = vinyl_style::style_for(&self.store, &first, &tracks[0].vinyl_album);
+        *self.vinyl_original.borrow_mut() = look.clone();
+        *self.vinyl.borrow_mut() = look;
+        *self.vinyl_tracks.borrow_mut() = tracks
+            .iter()
+            .map(|t| VinylTrack {
+                path: t.path.clone(),
+                album: t.vinyl_album.clone(),
+                record_albums: t.vinyl_record_albums.clone(),
+            })
+            .collect();
+        *self.vinyl_album.borrow_mut() = tracks[0].vinyl_album.clone();
+        self.window.set_vinyl_record_albums(tracks[0].vinyl_record_albums.len().max(1) as i32);
+        self.show_vinyl();
+        self.window.set_vinyl_synced(self.vinyl.borrow().1);
+        let paths: Vec<PathBuf> = tracks.into_iter().map(|t| t.path).collect();
         self.window.set_subject(
             if paths.len() == 1 { first_title } else { format!("{} tracks", paths.len()) }.into(),
         );
@@ -162,6 +336,14 @@ impl PropertiesEditor {
                 })
                 .collect::<Vec<_>>(),
         ))));
+        self.window.set_vinyl_album(
+            original
+                .iter()
+                .find(|(field, _)| *field == TagField::Album)
+                .and_then(|(_, value)| value.clone())
+                .unwrap_or_default()
+                .into(),
+        );
         *self.original.borrow_mut() = original;
         self.edits.borrow_mut().clear();
         self.picture_edits.borrow_mut().clear();
@@ -247,7 +429,79 @@ impl PropertiesEditor {
                 None => absent(kind),
             })
             .collect();
+        // The record's label in the Vinyl tab's preview.
+        let front = rows.first().filter(|row| row.present);
+        self.window.set_vinyl_has_art(front.is_some());
+        self.window.set_vinyl_art(front.map(|row| row.picture.clone()).unwrap_or_default());
         self.artwork_model.set_vec(rows);
+    }
+
+    /// Shows the record's look as chosen so far.
+    fn show_vinyl(&self) {
+        let (style, _) = self.vinyl.borrow().clone();
+        self.window.set_vinyl_color(style.color);
+        self.window.set_vinyl_contrast(style.contrast());
+        self.window.set_vinyl_design(style.design.id().into());
+        let index = Design::ALL.iter().position(|d| *d == style.design).unwrap_or_default();
+        self.window.set_vinyl_design_index(index as i32);
+        // Not while it's being typed: that would move the cursor.
+        if parse_hex_color(&self.window.get_vinyl_hex()) != Some(style.color) {
+            self.window.set_vinyl_hex(style.hex().into());
+        }
+        self.window.set_vinyl_color_changed(style.color != vinyl_style::default_color());
+        self.window.set_vinyl_label_kind(style.label.kind().into());
+        self.window.set_vinyl_label_match(style.label == Label::Match);
+        self.window.set_vinyl_label_color(style.label.color().unwrap_or_default());
+        match style.label.color() {
+            Some(label) if parse_hex_color(&self.window.get_vinyl_label_hex()) != Some(label) => {
+                self.window.set_vinyl_label_hex(crate::theme::color_to_hex(label).into());
+            }
+            Some(_) => {}
+            // The accent, the vinyl's or clear: no colour of its own.
+            None => self.window.set_vinyl_label_hex(SharedString::new()),
+        }
+        self.window.set_vinyl_label_art(style.label_art);
+    }
+
+    /// Changes the look being chosen, and shows it.
+    fn edit_vinyl(&self, change: impl FnOnce(&mut VinylStyle)) {
+        change(&mut self.vinyl.borrow_mut().0);
+        self.show_vinyl();
+        self.update_dirty();
+    }
+
+    /// "Same vinyl for the whole album" ticked: the album's look is shown,
+    /// so OK keeps it (unless it's changed here) rather than giving the
+    /// whole album this song's own. Unticked: the song's own look again, if
+    /// it had one -- otherwise the album's, to start from.
+    fn vinyl_synced_toggled(&self, synced: bool) {
+        let original = self.vinyl_original.borrow().clone();
+        let look = if synced {
+            vinyl_style::album_look(&self.store, &self.vinyl_album.borrow())
+        } else if !original.1 {
+            original.0
+        } else {
+            self.vinyl.borrow().0.clone()
+        };
+        *self.vinyl.borrow_mut() = (look, synced);
+        self.show_vinyl();
+        self.update_dirty();
+    }
+
+    /// A swatch picked (`swatch`), or the custom color typed: taken once
+    /// it's a whole "#rrggbb".
+    fn vinyl_color_edited(&self, part: Part, hex: &str, swatch: bool) {
+        let Some(color) = parse_hex_color(hex) else { return };
+        if swatch {
+            match part {
+                Part::Vinyl => self.window.set_vinyl_hex(hex.into()),
+                Part::Label => self.window.set_vinyl_label_hex(hex.into()),
+            }
+        }
+        self.edit_vinyl(|style| match part {
+            Part::Vinyl => style.color = color,
+            Part::Label => style.label = Label::Color(color),
+        });
     }
 
     fn field_edited(&self, index: i32, text: &str) {
@@ -268,8 +522,28 @@ impl PropertiesEditor {
     }
 
     fn update_dirty(&self) {
-        self.window
-            .set_dirty(!self.edits.borrow().is_empty() || !self.picture_edits.borrow().is_empty());
+        self.window.set_dirty(
+            !self.edits.borrow().is_empty() || !self.picture_edits.borrow().is_empty() || self.vinyl_changed(),
+        );
+    }
+
+    fn vinyl_changed(&self) -> bool {
+        *self.vinyl.borrow() != *self.vinyl_original.borrow()
+    }
+
+    /// Stores the record's new look (no files are written for it).
+    fn save_vinyl(&self) {
+        if !self.vinyl_changed() {
+            return;
+        }
+        let (style, synced) = self.vinyl.borrow().clone();
+        let tracks: Vec<(PathBuf, Vec<String>)> =
+            self.vinyl_tracks.borrow().iter().map(|t| (t.path.clone(), t.record_albums.clone())).collect();
+        vinyl_style::save(&self.store, &tracks, &style, synced);
+        *self.vinyl_original.borrow_mut() = (style, synced);
+        if let Some(hook) = self.vinyl_saved.borrow().as_ref() {
+            hook();
+        }
     }
 
     fn set_picture_edit(&self, kind: PictureKind, data: Option<Vec<u8>>) {
@@ -325,16 +599,28 @@ impl PropertiesEditor {
     }
 
     fn save(self: &Rc<Self>, close_after: bool) {
+        let vinyl_changed = self.vinyl_changed();
+        self.save_vinyl();
         let edit = TagEdit {
             fields: self.edits.borrow().iter().map(|(f, v)| (*f, v.clone())).collect(),
             pictures: self.picture_edits.borrow().clone(),
         };
         if edit.is_empty() {
+            self.update_dirty();
             if close_after {
                 let _ = self.window.hide();
+            } else if vinyl_changed {
+                self.window.set_status("Saved.".into());
             }
             return;
         }
+        // Renaming the album: its look goes along (see `poll_save`).
+        let renames_album = edit
+            .fields
+            .iter()
+            .any(|(field, _)| matches!(field, TagField::Album | TagField::AlbumArtist | TagField::Artist));
+        *self.renamed_look.borrow_mut() =
+            (renames_album && self.vinyl.borrow().1).then(|| self.vinyl.borrow().0.clone());
         let paths = self.paths.borrow().clone();
         let count = paths.len();
         self.window.set_busy(true);
@@ -348,7 +634,8 @@ impl PropertiesEditor {
             .spawn(move || {
                 let outcome = paths.into_iter().map(|path| {
                     let result = engine::edit_tags(&path, &edit);
-                    (path, result)
+                    let album = (renames_album && result.is_ok()).then(|| written_album(&path)).flatten();
+                    (path, result, album)
                 });
                 let _ = tx.send(outcome.collect());
             })
@@ -367,12 +654,38 @@ impl PropertiesEditor {
         self.window.set_busy(false);
         let failures: Vec<String> = outcome
             .iter()
-            .filter_map(|(path, result)| {
+            .filter_map(|(path, result, _)| {
                 result.as_ref().err().map(|e| {
                     format!("{}: {e}", path.file_name().unwrap_or_default().to_string_lossy())
                 })
             })
             .collect();
+        // The album renamed: its look kept for the new name too, and the
+        // window going on with the new name (a later look saved under it).
+        let renamed_look = self.renamed_look.borrow_mut().take();
+        let mut renamed = false;
+        for (path, _, album) in &outcome {
+            let Some(album) = album else { continue };
+            renamed = true;
+            if let Some(look) = &renamed_look {
+                vinyl_style::save_album_look(&self.store, album, look);
+            }
+            let mut tracks = self.vinyl_tracks.borrow_mut();
+            for (i, track) in tracks.iter_mut().enumerate().filter(|(_, t)| &t.path == path) {
+                for key in track.record_albums.iter_mut().filter(|key| **key == track.album) {
+                    key.clone_from(album);
+                }
+                track.album.clone_from(album);
+                if i == 0 {
+                    self.vinyl_album.borrow_mut().clone_from(album);
+                }
+            }
+        }
+        if renamed && renamed_look.is_some() {
+            if let Some(hook) = self.vinyl_saved.borrow().as_ref() {
+                hook();
+            }
+        }
         // Show the new tags and covers in the playlist.
         self.engine.send(EngineCommand::RefreshMetadata);
         if failures.is_empty() {
@@ -403,6 +716,14 @@ fn absent(kind: PictureKind) -> ArtworkRow {
         picture: slint::Image::default(),
         info: "\u{00ab}not present\u{00bb}".into(),
     }
+}
+
+/// The album `path`'s record look is kept for now, from its tags as just
+/// written (`playlist_rows::album_key_from`); `None` if they can't be read.
+fn written_album(path: &std::path::Path) -> Option<String> {
+    let fields = engine::read_tag_fields(path).ok()?;
+    let tag = |wanted: TagField| fields.iter().find(|(field, _)| *field == wanted).map_or("", |(_, value)| value.as_str());
+    Some(crate::playlist_rows::album_key_from(tag(TagField::AlbumArtist), tag(TagField::Artist), tag(TagField::Album), path))
 }
 
 /// "13.1 KB · 500×500 · JPEG".

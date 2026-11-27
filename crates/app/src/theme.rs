@@ -74,7 +74,9 @@ fn rgb(r: u8, g: u8, b: u8) -> slint::Color {
 
 pub fn parse_hex_color(input: &str) -> Option<slint::Color> {
     let hex = input.trim().trim_start_matches('#');
-    if hex.len() != 6 {
+    // Hex digits only: they're single bytes, so slicing by byte below can't
+    // land inside a character ("a€bc" is six bytes too).
+    if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
@@ -531,6 +533,15 @@ impl ThemedWindows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hex_colors_parse_and_anything_else_is_refused() {
+        assert_eq!(parse_hex_color("#b3202a"), Some(rgb(0xb3, 0x20, 0x2a)));
+        assert_eq!(parse_hex_color(" B3202A "), Some(rgb(0xb3, 0x20, 0x2a)));
+        for bad in ["#a\u{20ac}bc", "#\u{e9}\u{e9}\u{e9}", "#12345", "#1234567", "#12345g", "+12345", ""] {
+            assert_eq!(parse_hex_color(bad), None, "{bad:?}");
+        }
+    }
 
     #[test]
     fn builtin_themes_have_unique_ids_and_readable_text() {

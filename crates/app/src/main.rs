@@ -23,6 +23,7 @@ mod settings;
 mod spectrum_bars;
 mod store;
 mod theme;
+mod vinyl_style;
 mod window_placement;
 mod wiring;
 
@@ -179,6 +180,10 @@ fn init_logging(crash_reports: bool) {
             Targets::new()
                 .with_default(tracing::Level::INFO)
                 .with_target("lofty", tracing::Level::ERROR)
+                // Symphonia's tag reader warns about tags it skips, like a
+                // too-long MusicBrainz file ID ("ufid indentifier exceeds 64
+                // bytes"): the rest of the tags, and the audio, read fine.
+                .with_target("symphonia_metadata", tracing::Level::ERROR)
                 // MP3 decoders note "using xing header" on every open and
                 // "invalid main_data_begin" for the first frame or two after
                 // starting mid-file (waveform slices, seeks): those frames
