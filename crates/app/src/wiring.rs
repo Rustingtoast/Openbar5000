@@ -296,10 +296,9 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             if shown.borrow().as_ref() == Some(&key) {
                 return;
             }
-            match slint::Image::load_from_svg_data(crate::holiday::logo_svg(icon, &key.1).as_bytes()) {
-                Ok(logo) => logo_windows.set_logo(&logo),
-                Err(e) => tracing::warn!("couldn't draw the logo {} {}: {e:?}", key.0, key.1),
-            }
+            // Drawn once into a bitmap: see `logo_preview::raster`.
+            let logo = crate::logo_preview::raster(crate::holiday::logo_svg(icon, &key.1), crate::logo_preview::LOGO_SIZE);
+            logo_windows.set_logo(&logo);
             *shown.borrow_mut() = Some(key);
         })
     };
@@ -478,14 +477,22 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         let show_logo_choice = show_logo_choice.clone();
         let preview_weak = logo_preview_window.as_weak();
         settings_window.on_logo_icon_chosen(move |id| {
-            settings.borrow_mut().logo_icon = id.to_string();
+            {
+                let mut settings = settings.borrow_mut();
+                // A version pinned was the old icon's choice: another icon
+                // starts out following the calendar.
+                if settings.logo_icon != id.as_str() {
+                    settings.logo_pinned.clear();
+                }
+                settings.logo_icon = id.to_string();
+            }
             settings.borrow().save(&store);
             show_logo();
             show_logo_choice();
-            // An open preview follows the choice.
+            // An open preview follows the choice (where it is).
             if let Some(preview) = preview_weak.upgrade().filter(|p| p.window().is_visible()) {
                 let settings = settings.borrow();
-                crate::logo_preview::show(&preview, crate::holiday::icon(&settings.logo_icon), &settings.logo_pinned);
+                crate::logo_preview::fill(&preview, crate::holiday::icon(&settings.logo_icon), &settings.logo_pinned);
             }
         });
     }
@@ -1050,7 +1057,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     }
     // Backs the frame rates off while the system is at its limit (a game
     // running): see `load_guard`.
-    let load_guard = Rc::new(crate::load_guard::LoadGuard::default());
+    let load_guard = Rc::new(crate::load_guard::LoadGuard::new(crate::resources::start()));
     // The frame rates: a preset, or set by hand under Advanced (Custom).
     let apply_rates = {
         let settings = settings.clone();
@@ -1106,7 +1113,13 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         Rc::new(move |change: &dyn Fn(&mut Settings)| {
             {
                 let mut settings = settings.borrow_mut();
+                let before = (settings.visualization_fps, settings.vinyl_fps);
                 change(&mut settings);
+                // Picking the rate already set (a drop-down opened and
+                // closed) changes nothing: the preset stays as it is.
+                if (settings.visualization_fps, settings.vinyl_fps) == before {
+                    return;
+                }
                 settings.performance_preset = PerformancePreset::Custom;
                 settings.custom_fps = Some((settings.visualization_fps, settings.vinyl_fps));
                 settings.save(&store);
@@ -1508,6 +1521,13 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                 .or_else(|| path.file_stem().map(|s| crate::theme_css::clean_name(&s.to_string_lossy())))
                 .filter(|name| !name.is_empty())
                 .unwrap_or_else(|| "Imported theme".to_string());
+            // One theme to a name: an import never replaces one.
+            if theme_registry.borrow().name_taken(&name) {
+                status(format!(
+                    "Not imported: there's already a theme called \u{201c}{name}\u{201d}. Give it another name in the file (--theme-name), or delete the one there is first."
+                ));
+                return;
+            }
             let id = theme_registry.borrow_mut().add_custom(&store, &name, imported.colors);
             // Kept in the themes folder, written anew from what was read.
             let dir = crate::theme_css::themes_dir();
@@ -1556,6 +1576,23 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         });
     }
     settings_window.on_themes_folder_clicked(|| platform::open_folder(&crate::theme_css::themes_dir()));
+
+    {
+        let window_weak = window.as_weak();
+        let settings_window_weak = settings_window.as_weak();
+        settings_window.on_edit_layout_clicked(move || {
+            // Closed as by its Close button (what it opened goes too).
+            if let Some(settings_window) = settings_window_weak.upgrade() {
+                settings_window.invoke_close_clicked();
+            }
+            if let Some(window) = window_weak.upgrade() {
+                if !window.get_layout_editing() {
+                    window.invoke_layout_edit_toggled();
+                }
+                raise(&window);
+            }
+        });
+    }
 
     window.on_exit_clicked(|| {
         let _ = slint::quit_event_loop();
@@ -2163,7 +2200,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
 
     // Whether frames still reach the screen (see `FrameWatch`).
     let frames = Rc::new(FrameWatch::default());
-    report_renderer(window, &settings_window, &properties_editor, frames.clone(), load_guard.clone());
+    report_renderer(window, &settings_window, &properties_editor, frames.clone());
     // Playback statistics (issue #34): a play counts once the song reaches
     // half its length or four minutes, whichever is first -- the usual
     // scrobbling rule -- once per time it's started.
@@ -2209,13 +2246,11 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     let window_weak = window.as_weak();
     let settings_window_weak = settings_window.as_weak();
     let initial_poll_interval = poll_interval(settings.borrow().visualization_fps);
-    let was_hidden = Cell::new(false);
     let apply_rates = apply_rates.clone();
     event_poll_timer.start(TimerMode::Repeated, initial_poll_interval, move || {
         let Some(window) = window_weak.upgrade() else {
             return;
         };
-        load_guard.tick(std::time::Instant::now(), poll_timer.interval(), !was_hidden.get());
         if load_guard.evaluate(std::time::Instant::now()).is_some() {
             apply_rates();
         }
@@ -2359,8 +2394,6 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             window.window().request_redraw();
         }
         let hidden = unseen || frames.starved();
-        was_hidden.set(hidden);
-        load_guard.set_frame_rate(tick_fps);
         let spectrum_shown = window.get_panel_slots().iter().any(|slot| slot.kind == "spectrum");
         let want_spectrum = spectrum_shown && !hidden;
         if spectrum_requested.replace(Some(want_spectrum)) != Some(want_spectrum) {
@@ -3368,20 +3401,14 @@ fn report_renderer(
     settings_window: &SettingsWindow,
     properties: &Rc<PropertiesEditor>,
     frames: Rc<FrameWatch>,
-    load_guard: Rc<crate::load_guard::LoadGuard>,
 ) {
     let gpu_reported = Rc::new(Cell::new(false));
     let settings_window_weak = settings_window.as_weak();
     let reported = gpu_reported.clone();
     let drawn = frames.clone();
     let result = window.window().set_rendering_notifier(move |state, api| {
-        match state {
-            slint::RenderingState::BeforeRendering => load_guard.frame_started(),
-            slint::RenderingState::AfterRendering => {
-                drawn.drawn();
-                load_guard.frame_finished();
-            }
-            _ => {}
+        if matches!(state, slint::RenderingState::AfterRendering) {
+            drawn.drawn();
         }
         if !matches!(state, slint::RenderingState::RenderingSetup) {
             return;

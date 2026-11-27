@@ -231,4 +231,16 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn every_logo_draws_into_a_bitmap() {
+        for icon in ICONS {
+            let svg = logo_svg(icon, "regular");
+            let tree = resvg::usvg::Tree::from_data(svg.as_bytes(), &resvg::usvg::Options::default());
+            assert!(tree.is_ok(), "{}: not drawable", icon.id);
+        }
+        let image = crate::logo_preview::raster(ICONS[0].versions[0], 64);
+        assert_eq!((image.size().width, image.size().height), (64, 64));
+    }
+
 }

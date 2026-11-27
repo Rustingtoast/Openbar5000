@@ -158,6 +158,8 @@ component DiscPattern inherits Rectangle {
 export component Platter inherits Rectangle {
     /// The record's diameter: the mat's.
     in property <length> disc;
+    /// How far the platter has turned (its strobe dots stand still; see
+    /// below).
     in property <angle> spin;
 
     // Room round it in the cached layer below for the shadow, which a
@@ -204,9 +206,13 @@ export component Platter inherits Rectangle {
         }
     }
 
-    // Strobe dots round the rim's edge, drawn once and turned as one.
+    // Strobe dots round the rim's edge, drawn once. They stand still, as a
+    // real platter's do under the light they're made for at the right
+    // speed: turned, they turned almost a dot's spacing each frame, so the
+    // eye saw them creep one way or the other -- changing with the frame
+    // rate, as when scrolling elsewhere redraws the window faster (the
+    // wagon-wheel effect). The record and its label show the turning.
     Rectangle {
-        transform-rotation: root.spin;
         Rectangle {
             cache-rendering-hint: true;
             for i in 72: Rectangle {
@@ -472,7 +478,10 @@ export component VinylDisc inherits Rectangle {
         // The cover a few times over, each a little further back along the
         // turn: the n-th drawn at 1/n opacity, so all weigh the same, as a
         // camera's shutter would blur it. Stopped, only the first is drawn.
+        // A see-through label shows through the picture too, as much as
+        // through its colour.
         if root.has-art && root.label-art: Rectangle {
+            opacity: parent.see-through ? Math.max(0, 1 - Math.min(1, root.label-clarity)) : 1;
             for i in 5: Image {
                 width: parent.width;
                 height: parent.height;

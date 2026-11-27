@@ -357,11 +357,14 @@ export component TabStripView inherits Rectangle {
     callback tab-moved(length, length);
     callback tab-released();
 
-    // Tabs share the width -- down to this each; with less room the strip
-    // scrolls (the wheel, or the arrows at its ends), as an editor's tabs do.
+    // Tabs share the width, as an editor's do: no wider than `max-tab`
+    // (the rest of a wide strip stays empty), down to `min-tab` each; with
+    // less room than that the strip scrolls (the wheel, or the arrows at its
+    // ends).
     property <length> min-tab: 52px;
+    property <length> max-tab: 96px;
     property <int> count: Math.max(1, root.labels.length);
-    property <length> tab-width: Math.max(root.width / root.count, root.min-tab);
+    property <length> tab-width: Math.clamp(root.width / root.count, root.min-tab, root.max-tab);
     property <length> content-width: root.tab-width * root.count;
     property <bool> overflowing: root.content-width > root.width + 0.5px;
     property <length> min-offset: Math.min(0px, root.width - root.content-width);
@@ -371,9 +374,10 @@ export component TabStripView inherits Rectangle {
 
     background: Theme.bg-raised;
     clip: true;
-    // Drawn outside the panels, so not cached with them; it only changes
-    // on a hover or a switch, not with every frame drawn while playing.
-    cache-rendering-hint: true;
+    // Not cached (`cache-rendering-hint`): on the GPU renderer a cached
+    // strip could keep drawing at its old, wider size after its panel was
+    // made narrower -- over the panel beside it. It's a few tabs; drawing
+    // them is cheap.
 
     function scroll-to(offset: length) {
         root.offset = Math.clamp(offset, root.min-offset, 0px);
@@ -392,12 +396,13 @@ export component TabStripView inherits Rectangle {
         }
     }
     /// A point on the tabs (`x` along all of them) as the app takes it:
-    /// within the strip, as if the tabs shared its width (how it tells
-    /// where a dragged tab goes); outside it, where it is.
+    /// within the strip, as if the tabs shared all its width (how it tells
+    /// where a dragged tab goes -- past the last tab is after it); outside
+    /// it, where it is.
     function reported-x(x: length, y: length) -> length {
         let seen = x + root.offset;
-        if root.overflowing && seen >= 0 && seen < root.width && y >= 0 && y < root.height {
-            return x / root.content-width * root.width;
+        if seen >= 0 && seen < root.width && y >= 0 && y < root.height {
+            return Math.min(x / root.content-width * root.width, root.width - 1px);
         }
         return seen;
     }
@@ -441,6 +446,16 @@ export component TabStripView inherits Rectangle {
                 horizontal-alignment: center;
                 vertical-alignment: center;
                 overflow: elide;
+            }
+            // The tab showing: an accent bar under it, which every theme
+            // shows clearly (its background alone can be near the strip's).
+            if i == root.active: Rectangle {
+                x: 6px;
+                y: parent.height - self.height;
+                width: parent.width - 12px;
+                height: 2px;
+                border-radius: 1px;
+                background: Theme.accent;
             }
             // Separator to the next tab.
             if i + 1 < root.labels.length: Rectangle {

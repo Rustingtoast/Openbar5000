@@ -198,6 +198,22 @@ even on WiX's canonical examples). On Windows 11 with WiX 7, the MSI builds,
 passes `wix msi validate`, and its dialogs (welcome, license, install folder,
 ready to install) were walked through.
 
+## Pinned versions
+
+So a build months from now builds what one today does, every tool is
+pinned; move one on deliberately, after building and testing with it:
+
+- **Rust:** `rust-toolchain.toml` (local builds and the workflow).
+- **Crates:** `Cargo.lock`, built with `--locked` everywhere.
+- **Runner images:** in `.github/workflows/release.yml` (`ubuntu-24.04`,
+  `windows-2025`, `macos-15`), not `-latest`.
+- **WiX:** `WIX_VERSION` in the workflow.
+- **Flatpak:** the Freedesktop runtime branch (`runtime-version` in the
+  manifest). Its Rust extension follows that branch, so it can be newer
+  than `rust-toolchain.toml`; the crates are still `Cargo.lock`'s.
+- **macOS:** the oldest macOS supported, `MIN_MACOS` in `build-macos.sh`
+  (also the build's `MACOSX_DEPLOYMENT_TARGET`).
+
 ## App icons and logos
 
 Every icon to choose from in Preferences > Appearance > Icon, with its

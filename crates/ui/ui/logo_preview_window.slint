@@ -22,6 +22,7 @@ component VersionCell inherits Rectangle {
     border-color: Theme.accent;
     accessible-role: button;
     accessible-label: root.version.label;
+    accessible-description: root.pinned ? "Shown always" : "";
     accessible-action-default => { root.clicked(); }
 
     VerticalLayout {
@@ -37,7 +38,7 @@ component VersionCell inherits Rectangle {
             }
         }
         Text {
-            text: root.pinned ? root.version.label + " (always)" : root.version.label;
+            text: root.version.label;
             horizontal-alignment: center;
             wrap: word-wrap;
             font-size: 11px;
@@ -47,6 +48,21 @@ component VersionCell inherits Rectangle {
     touch := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
+    }
+    // Shown always: a badge in the corner, not more words under the name.
+    if root.pinned: Rectangle {
+        x: parent.width - self.width - 4px;
+        y: 4px;
+        width: badge.preferred-width + 10px;
+        height: 16px;
+        border-radius: 8px;
+        background: Theme.accent;
+        badge := Text {
+            text: "Always";
+            font-size: 9px;
+            font-weight: 700;
+            color: Theme.accent-text;
+        }
     }
 }
 
@@ -58,7 +74,7 @@ component VersionGrid inherits Rectangle {
     callback picked(LogoVersion);
 
     property <int> columns: 4;
-    property <length> cell-height: 104px;
+    property <length> cell-height: 116px;
     height: Math.ceil(root.versions.length / root.columns) * root.cell-height;
     for version[i] in root.versions: VersionCell {
         x: Math.mod(i, root.columns) * (root.width / root.columns);

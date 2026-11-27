@@ -35,6 +35,38 @@ pub fn spawn(name: &str, work: impl FnOnce() + Send + 'static) -> bool {
     }
 }
 
+/// Shows `window`, and -- if it was showing already, behind others --
+/// brings it to the front with the keyboard focus. Wayland compositors
+/// don't let a program raise its own window; a window shown anew does get
+/// the focus there, so it's hidden and shown again (keeping what's in it).
+pub fn show_in_front(window: &slint::Window) {
+    use slint::winit_030::WinitWindowAccessor;
+    if !window.is_visible() {
+        if let Err(e) = window.show() {
+            tracing::warn!("couldn't show a window: {e}");
+        }
+        return;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        use slint::winit_030::winit::platform::wayland::WindowExtWayland;
+        let wayland = window.with_winit_window(|winit| winit.xdg_toplevel().is_some()).unwrap_or(false);
+        if wayland {
+            let _ = window.hide();
+            if let Err(e) = window.show() {
+                tracing::warn!("couldn't show a window: {e}");
+            }
+            return;
+        }
+    }
+    window.with_winit_window(|winit| {
+        if winit.is_minimized() == Some(true) {
+            winit.set_minimized(false);
+        }
+        winit.focus_window();
+    });
+}
+
 /// Opens folder `dir` in the file manager (made first if need be).
 pub fn open_folder(dir: &Path) {
     let _ = std::fs::create_dir_all(dir);

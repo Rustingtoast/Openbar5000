@@ -1,0 +1,9 @@
+# The Rust release Openbar5000 is built and tested with -- locally and by the
+# release workflow -- so a new Rust release can't change a build by itself.
+# Moving to a newer one is a deliberate change here (run the tests and
+# clippy with it first). The Flatpak build uses the Freedesktop SDK's Rust
+# instead (see compile/flatpak/); Cargo.lock pins the crates for both.
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

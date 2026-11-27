@@ -66,9 +66,7 @@ impl ColorPicker {
         *self.on_pick.borrow_mut() = Some(Box::new(on_pick));
         self.window.set_subject(subject.into());
         self.window.invoke_open_with(color);
-        if let Err(e) = self.window.show() {
-            tracing::warn!("couldn't show the colour picker: {e}");
-        }
+        crate::platform::show_in_front(self.window.window());
     }
 
     /// Closes it, without picking, if it's open (its owner closing).

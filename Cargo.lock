@@ -260,6 +260,7 @@ dependencies = [
  "plugin-host",
  "rand 0.10.3",
  "raw-window-handle",
+ "resvg",
  "rfd",
  "rusqlite",
  "serde",

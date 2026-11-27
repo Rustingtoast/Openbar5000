@@ -1,28 +1,32 @@
 //! Backing off when the computer is at its limit -- a demanding game running,
 //! say: the visualizations and the turning record then draw at a lower frame
-//! rate for a while, so Openbar5000 asks for less of the CPU, the GPU and
-//! memory, and goes back up once things have calmed down.
+//! rate for a while, so Openbar5000 asks for less of the GPU and the CPU, and
+//! goes back up once things have calmed down.
 //!
-//! "At its limit" is told from three signs, any of which counts:
-//! - the UI's own timer ticking late, again and again: the CPU is too busy
-//!   to run it on time;
-//! - frames taking far longer to draw than they're due every: the GPU is;
-//! - little memory left on the system.
+//! "At its limit" is read from the system itself (see `resources`), over
+//! the last few seconds: the GPU at `GPU_BUSY` or more -- the one that
+//! matters most, as the GPU is what a game and the visualizations share --
+//! the CPU at `CPU_BUSY` or more, or little memory left.
 
+use crate::resources::{Sample, Usage};
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// The frame rates backed off to, step by step.
 const STEPS: [u32; 2] = [30, 15];
-/// How many recent ticks and frames are weighed.
-const WINDOW: usize = 90;
-/// A tick later than this share of its interval counts as late.
-const LATE: f32 = 0.6;
-/// Backing off takes this many signs among the recent ticks or frames.
-const STRAINED_SHARE: f32 = 0.35;
+/// GPU use (%) counting as at its limit.
+const GPU_BUSY: f32 = 80.0;
+/// CPU use (%) counting as at its limit.
+const CPU_BUSY: f32 = 90.0;
+/// Below this share of memory free (%), it's short of memory.
+const LOW_MEMORY: f32 = 6.0;
+/// How many samples (one every two seconds) are averaged: a moment's
+/// spike isn't strain.
+const WINDOW: usize = 3;
 /// Least time between two steps down.
-const STEP_DOWN_AFTER: Duration = Duration::from_secs(3);
+const STEP_DOWN_AFTER: Duration = Duration::from_secs(4);
 /// How long it has to stay calm to go a step back up -- at first: a step
 /// up that the strain soon undoes doubles it, up to `MAX_STEP_UP_AFTER`, so
 /// it doesn't keep trying while a game runs.
@@ -30,12 +34,12 @@ const STEP_UP_AFTER: Duration = Duration::from_secs(20);
 const MAX_STEP_UP_AFTER: Duration = Duration::from_secs(300);
 /// A step down this soon after a step up undoes it.
 const UNDONE_WITHIN: Duration = Duration::from_secs(30);
-/// How often the system's free memory is looked at.
-const MEMORY_CHECK_EVERY: Duration = Duration::from_secs(5);
-/// Below this share of the system's memory free, it's short of memory.
-const LOW_MEMORY: f64 = 0.06;
 
 pub struct LoadGuard {
+    usage: Option<Arc<Usage>>,
+    /// The last sample taken in.
+    seen: Cell<u64>,
+    samples: RefCell<VecDeque<Sample>>,
     /// 0: no limit; 1, 2: `STEPS[level - 1]`.
     level: Cell<usize>,
     last_change: Cell<Instant>,
@@ -44,113 +48,56 @@ pub struct LoadGuard {
     calm_since: Cell<Instant>,
     /// How long it now has to stay calm to step up.
     calm_needed: Cell<Duration>,
-    /// When the poll last ticked, and the interval it was set to then.
-    last_tick: Cell<Option<(Instant, Duration)>>,
-    /// Recent ticks: whether each was late.
-    ticks: RefCell<VecDeque<bool>>,
-    /// Recent frames: whether each was slow.
-    frames: RefCell<VecDeque<bool>>,
-    frame_started: Cell<Option<Instant>>,
-    /// The frame rate being drawn at, to tell a slow frame by.
-    frame_budget: Cell<Duration>,
-    memory_low: Cell<bool>,
-    memory_checked: Cell<Option<Instant>>,
 }
 
-impl Default for LoadGuard {
-    fn default() -> Self {
+impl LoadGuard {
+    /// Watching `usage` (sampled by `resources::start`); with none, it never
+    /// backs off.
+    pub fn new(usage: Option<Arc<Usage>>) -> Self {
         let now = Instant::now();
         Self {
+            usage,
+            seen: Cell::new(0),
+            samples: RefCell::new(VecDeque::with_capacity(WINDOW)),
             level: Cell::new(0),
             last_change: Cell::new(now),
             stepped_up: Cell::new(false),
             calm_since: Cell::new(now),
             calm_needed: Cell::new(STEP_UP_AFTER),
-            last_tick: Cell::new(None),
-            ticks: RefCell::new(VecDeque::with_capacity(WINDOW)),
-            frames: RefCell::new(VecDeque::with_capacity(WINDOW)),
-            frame_started: Cell::new(None),
-            frame_budget: Cell::new(Duration::from_millis(16)),
-            memory_low: Cell::new(false),
-            memory_checked: Cell::new(None),
-        }
-    }
-}
-
-fn push(recent: &RefCell<VecDeque<bool>>, sign: bool) {
-    let mut recent = recent.borrow_mut();
-    if recent.len() == WINDOW {
-        recent.pop_front();
-    }
-    recent.push_back(sign);
-}
-
-fn share(recent: &RefCell<VecDeque<bool>>) -> Option<f32> {
-    let recent = recent.borrow();
-    // Too few to tell yet.
-    (recent.len() >= WINDOW / 3).then(|| recent.iter().filter(|&&sign| sign).count() as f32 / recent.len() as f32)
-}
-
-impl LoadGuard {
-    /// The poll ticked, its timer set to `interval`. `seen`: whether the
-    /// window can be seen -- while it can't, the poll is slow on purpose,
-    /// and nothing is drawn to weigh.
-    pub fn tick(&self, now: Instant, interval: Duration, seen: bool) {
-        if !seen {
-            self.last_tick.set(None);
-            return;
-        }
-        if let Some((last, last_interval)) = self.last_tick.replace(Some((now, interval))) {
-            // Only between ticks at the same interval: a change of rate
-            // isn't lateness.
-            if last_interval == interval && !interval.is_zero() {
-                let took = now.saturating_duration_since(last);
-                let late = took.saturating_sub(interval).as_secs_f32() / interval.as_secs_f32();
-                push(&self.ticks, late > LATE);
-            }
         }
     }
 
-    /// The frame rate being drawn at, for telling a slow frame.
-    pub fn set_frame_rate(&self, fps: u32) {
-        self.frame_budget.set(Duration::from_micros(1_000_000 / u64::from(fps.max(1))));
-    }
-
-    pub fn frame_started(&self) {
-        self.frame_started.set(Some(Instant::now()));
-    }
-
-    pub fn frame_finished(&self) {
-        if let Some(started) = self.frame_started.take() {
-            // Slow: more than twice its share of time, and noticeably long.
-            let took = started.elapsed();
-            let budget = self.frame_budget.get();
-            push(&self.frames, took > budget * 2 && took > Duration::from_millis(12));
-        }
-    }
-
-    /// Weighs the signs; `Some(new limit)` when the frame rate limit
-    /// changes (`None` inside: no limit any more).
+    /// Takes in a new sample if there is one, and weighs them; `Some(new
+    /// limit)` when the frame rate limit changes (`None` inside: no limit
+    /// any more).
     pub fn evaluate(&self, now: Instant) -> Option<Option<u32>> {
-        if self.memory_checked.get().is_none_or(|at| now.saturating_duration_since(at) >= MEMORY_CHECK_EVERY) {
-            self.memory_checked.set(Some(now));
-            let low = free_memory_share().is_some_and(|free| free < LOW_MEMORY);
-            if low != self.memory_low.replace(low) {
-                tracing::info!("system memory {}", if low { "low" } else { "fine again" });
-            }
+        let usage = self.usage.as_ref()?;
+        let (count, sample) = usage.latest();
+        if count == 0 || count == self.seen.replace(count) {
+            return None;
         }
-        let strained = self.memory_low.get()
-            || share(&self.ticks).is_some_and(|late| late > STRAINED_SHARE)
-            || share(&self.frames).is_some_and(|slow| slow > STRAINED_SHARE);
+        self.take(sample, now)
+    }
+
+    fn take(&self, sample: Sample, now: Instant) -> Option<Option<u32>> {
+        {
+            let mut samples = self.samples.borrow_mut();
+            if samples.len() == WINDOW {
+                samples.pop_front();
+            }
+            samples.push_back(sample);
+        }
+        let reasons = self.strain();
         let level = self.level.get();
         let since_change = now.saturating_duration_since(self.last_change.get());
-        if strained {
+        if !reasons.is_empty() {
             self.calm_since.set(now);
             if level < STEPS.len() && since_change >= STEP_DOWN_AFTER {
                 if self.stepped_up.get() && since_change < UNDONE_WITHIN {
                     self.calm_needed.set((self.calm_needed.get() * 2).min(MAX_STEP_UP_AFTER));
                 }
                 self.stepped_up.set(false);
+                tracing::warn!("the system is busy: {}", reasons.join(", "));
                 return Some(self.set_level(level + 1, now));
             }
         } else if level > 0 && now.saturating_duration_since(self.calm_since.get()) >= self.calm_needed.get() {
@@ -164,15 +111,35 @@ impl LoadGuard {
         None
     }
 
+    /// What's at its limit, on average over the samples (none: nothing).
+    fn strain(&self) -> Vec<String> {
+        let samples = self.samples.borrow();
+        if samples.len() < WINDOW {
+            return Vec::new();
+        }
+        let average = |figure: fn(&Sample) -> Option<f32>| {
+            let known: Vec<f32> = samples.iter().filter_map(figure).collect();
+            (known.len() == samples.len()).then(|| known.iter().sum::<f32>() / known.len() as f32)
+        };
+        let mut reasons = Vec::new();
+        if let Some(gpu) = average(|s| s.gpu_busy).filter(|&gpu| gpu >= GPU_BUSY) {
+            reasons.push(format!("GPU {gpu:.0}% busy"));
+        }
+        if let Some(cpu) = average(|s| s.cpu_busy).filter(|&cpu| cpu >= CPU_BUSY) {
+            reasons.push(format!("CPU {cpu:.0}% busy"));
+        }
+        if let Some(free) = average(|s| s.memory_free).filter(|&free| free < LOW_MEMORY) {
+            reasons.push(format!("only {free:.0}% of memory free"));
+        }
+        reasons
+    }
+
     fn set_level(&self, level: usize, now: Instant) -> Option<u32> {
         self.level.set(level);
         self.last_change.set(now);
-        // The signs so far were at the old rate.
-        self.ticks.borrow_mut().clear();
-        self.frames.borrow_mut().clear();
         let limit = self.limit();
         match limit {
-            Some(fps) => tracing::warn!("the system is busy: drawing at {fps} fps for now"),
+            Some(fps) => tracing::warn!("drawing at {fps} fps for now"),
             None => tracing::info!("the system is fine again: drawing at the chosen frame rate"),
         }
         limit
@@ -189,138 +156,69 @@ impl LoadGuard {
     }
 }
 
-/// The share of the system's memory that's free (0 to 1), if it can be told.
-#[cfg(target_os = "linux")]
-fn free_memory_share() -> Option<f64> {
-    let info = std::fs::read_to_string("/proc/meminfo").ok()?;
-    let field = |name: &str| {
-        info.lines()
-            .find_map(|line| line.strip_prefix(name))
-            .and_then(|rest| rest.trim().trim_end_matches("kB").trim().parse::<f64>().ok())
-    };
-    let (total, available) = (field("MemTotal:")?, field("MemAvailable:")?);
-    (total > 0.0).then(|| available / total)
-}
-
-#[cfg(windows)]
-fn free_memory_share() -> Option<f64> {
-    use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
-    let mut status = MEMORYSTATUSEX { dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32, ..Default::default() };
-    // SAFETY: a plain call, given a struct with its size set.
-    unsafe { GlobalMemoryStatusEx(&mut status) }.ok()?;
-    (status.ullTotalPhys > 0).then(|| status.ullAvailPhys as f64 / status.ullTotalPhys as f64)
-}
-
-/// macOS keeps its own measure of memory pressure: the share left, 0-100.
-#[cfg(target_os = "macos")]
-fn free_memory_share() -> Option<f64> {
-    let mut level: libc::c_int = 0;
-    let mut size = std::mem::size_of::<libc::c_int>();
-    // SAFETY: a plain call, given a buffer of the size it's told.
-    let ok = unsafe {
-        libc::sysctlbyname(
-            c"kern.memorystatus_level".as_ptr(),
-            (&mut level as *mut libc::c_int).cast(),
-            &mut size,
-            std::ptr::null_mut(),
-            0,
-        )
-    } == 0;
-    ok.then(|| f64::from(level) / 100.0)
-}
-
-#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
-fn free_memory_share() -> Option<f64> {
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn late_ticks_step_down_and_calm_steps_back_up() {
-        let guard = LoadGuard::default();
-        let start = Instant::now() + STEP_DOWN_AFTER;
-        let interval = Duration::from_millis(16);
-        // Every tick twice as late as its interval.
-        let mut now = start;
-        for _ in 0..WINDOW {
-            guard.tick(now, interval, true);
-            now += interval * 3;
+    fn sample(gpu: f32, cpu: f32) -> Sample {
+        Sample { gpu_busy: Some(gpu), cpu_busy: Some(cpu), memory_free: Some(50.0) }
+    }
+
+    /// Feeds `samples`, two seconds apart, from `now`; the last result.
+    fn feed(guard: &LoadGuard, now: &mut Instant, samples: &[Sample]) -> Option<Option<u32>> {
+        let mut last = None;
+        for &s in samples {
+            *now += Duration::from_secs(2);
+            last = guard.take(s, *now);
         }
-        assert_eq!(guard.evaluate(now), Some(Some(30)));
+        last
+    }
+
+    #[test]
+    fn a_busy_gpu_steps_down_and_calm_steps_back_up() {
+        let guard = LoadGuard::new(None);
+        let mut now = Instant::now();
+        // A moment's spike isn't strain.
+        assert_eq!(feed(&guard, &mut now, &[sample(20.0, 10.0), sample(20.0, 10.0), sample(95.0, 10.0)]), None);
+        assert_eq!(feed(&guard, &mut now, &[sample(90.0, 10.0), sample(90.0, 10.0)]), Some(Some(30)));
         assert_eq!(guard.capped(60), 30);
         assert_eq!(guard.capped(15), 15);
-        // Still late: down again, but not at once.
-        for _ in 0..WINDOW {
-            guard.tick(now, interval, true);
-            now += interval * 3;
-        }
-        assert_eq!(guard.evaluate(now), Some(Some(15)));
-        // On time for long enough: back up a step at a time.
-        for _ in 0..WINDOW {
-            guard.tick(now, interval, true);
-            now += interval;
-        }
-        assert_eq!(guard.evaluate(now), None);
-        now += STEP_UP_AFTER;
-        assert_eq!(guard.evaluate(now), Some(Some(30)));
-        now += STEP_UP_AFTER;
-        assert_eq!(guard.evaluate(now + Duration::from_millis(1)), Some(None));
+        assert_eq!(feed(&guard, &mut now, &[sample(90.0, 10.0), sample(90.0, 10.0)]), Some(Some(15)));
+        // Calm for long enough: back up a step at a time.
+        let calm = [sample(30.0, 10.0); 10];
+        assert_eq!(feed(&guard, &mut now, &calm), Some(Some(30)));
+        assert_eq!(feed(&guard, &mut now, &calm), Some(None));
         assert_eq!(guard.capped(60), 60);
     }
 
     #[test]
-    fn a_step_up_undone_at_once_makes_the_next_wait_longer() {
-        let guard = LoadGuard::default();
-        let interval = Duration::from_millis(16);
-        let mut now = Instant::now() + STEP_DOWN_AFTER;
-        let strain = |now: &mut Instant| {
-            for _ in 0..WINDOW {
-                guard.tick(*now, interval, true);
-                *now += interval * 3;
-            }
-        };
-        let calm = |now: &mut Instant| {
-            for _ in 0..WINDOW {
-                guard.tick(*now, interval, true);
-                *now += interval;
-            }
-        };
-        strain(&mut now);
-        assert_eq!(guard.evaluate(now), Some(Some(30)));
-        calm(&mut now);
-        now += STEP_UP_AFTER;
-        assert_eq!(guard.evaluate(now), Some(None));
-        // Strained again right away: back down, and now it waits longer.
-        now += STEP_DOWN_AFTER;
-        strain(&mut now);
-        assert_eq!(guard.evaluate(now), Some(Some(30)));
-        calm(&mut now);
-        now += STEP_UP_AFTER;
-        assert_eq!(guard.evaluate(now), None);
-        now += STEP_UP_AFTER;
-        assert_eq!(guard.evaluate(now), Some(None));
-    }
-
-    #[test]
-    fn a_hidden_window_or_a_new_rate_isnt_lateness() {
-        let guard = LoadGuard::default();
+    fn a_busy_cpu_counts_from_ninety_percent() {
+        let guard = LoadGuard::new(None);
         let mut now = Instant::now();
-        for i in 0..WINDOW {
-            // Alternating rates, and hidden now and then.
-            let interval = Duration::from_millis(if i % 2 == 0 { 16 } else { 250 });
-            guard.tick(now, interval, i % 7 != 0);
-            now += Duration::from_millis(250);
-        }
-        assert!(share(&guard.ticks).is_none_or(|late| late == 0.0));
+        assert_eq!(feed(&guard, &mut now, &[sample(10.0, 85.0); 4]), None);
+        // The average (85, 95, 95) crosses ninety at the second.
+        assert_eq!(feed(&guard, &mut now, &[sample(10.0, 95.0); 2]), Some(Some(30)));
     }
 
     #[test]
-    fn free_memory_reads_where_it_can() {
-        if let Some(free) = free_memory_share() {
-            assert!((0.0..=1.0).contains(&free));
-        }
+    fn unknown_figures_never_count_as_busy() {
+        let guard = LoadGuard::new(None);
+        let mut now = Instant::now();
+        let unknown = Sample { gpu_busy: None, cpu_busy: None, memory_free: None };
+        assert_eq!(feed(&guard, &mut now, &[unknown; 6]), None);
+    }
+
+    #[test]
+    fn a_step_up_undone_at_once_makes_the_next_wait_longer() {
+        let guard = LoadGuard::new(None);
+        let mut now = Instant::now();
+        let busy = [sample(95.0, 10.0); 3];
+        let calm = [sample(10.0, 10.0); 10];
+        assert_eq!(feed(&guard, &mut now, &busy), Some(Some(30)));
+        assert_eq!(feed(&guard, &mut now, &calm), Some(None));
+        // Busy again right away: back down, and now it waits longer.
+        assert_eq!(feed(&guard, &mut now, &busy), Some(Some(30)));
+        assert_eq!(feed(&guard, &mut now, &calm), None);
+        assert_eq!(feed(&guard, &mut now, &calm), Some(None));
     }
 }

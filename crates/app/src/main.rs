@@ -24,6 +24,7 @@ mod playlist_rows;
 mod playlists;
 mod properties;
 mod release_notes;
+mod resources;
 mod settings;
 mod spectrum_bars;
 mod stats;

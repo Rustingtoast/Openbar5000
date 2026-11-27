@@ -121,9 +121,7 @@ fn facts(summary: &Summary) -> String {
 pub fn show(window: &StatsWindow, store: &Store) {
     let period = Period::ALL.get(window.get_period_index().max(0) as usize).copied().unwrap_or(Period::AllTime);
     fill(window, store, period);
-    if let Err(e) = window.show() {
-        tracing::warn!("couldn't show the statistics: {e}");
-    }
+    crate::platform::show_in_front(window.window());
     window.invoke_focus_keys();
 }
 

@@ -317,6 +317,9 @@ export component SettingsWindow inherits Window {
     callback themes-folder-clicked();
     in property <string> theme-status;
     callback close-clicked();
+    /// Panels > Edit Layout: closes Preferences, for the main window's
+    /// layout editing.
+    callback edit-layout-clicked();
 
     callback discord-presence-toggled(bool);
     callback discord-client-id-edited(string);
@@ -426,18 +429,37 @@ export component SettingsWindow inherits Window {
                             VerticalLayout {
                                 spacing: 4px;
                                 alignment: center;
-                                CheckBox {
-                                    text: "Holiday logos";
-                                    checked: root.holiday-logos;
-                                    toggled => { root.holiday-logos-toggled(self.checked); }
-                                }
-                                CheckBox {
-                                    text: "Pride flags (a different flag each month)";
-                                    checked: root.holiday-special-mode;
-                                    toggled => { root.holiday-special-mode-toggled(self.checked); }
+                                // With a version of the icon shown always,
+                                // the calendar doesn't pick one: these do
+                                // nothing, so they're greyed out, saying why
+                                // when pointed at.
+                                Rectangle {
+                                    height: calendar-boxes.preferred-height;
+                                    calendar-boxes := VerticalLayout {
+                                        spacing: 4px;
+                                        CheckBox {
+                                            text: "Holiday logos";
+                                            enabled: root.logo-pinned == "";
+                                            checked: root.holiday-logos;
+                                            toggled => { root.holiday-logos-toggled(self.checked); }
+                                        }
+                                        CheckBox {
+                                            text: "Pride flags (a different flag each month)";
+                                            enabled: root.logo-pinned == "";
+                                            checked: root.holiday-special-mode;
+                                            toggled => { root.holiday-special-mode-toggled(self.checked); }
+                                        }
+                                    }
+                                    pinned-touch := TouchArea {
+                                        visible: root.logo-pinned != "";
+                                    }
                                 }
                                 UnitText {
-                                    text: root.logo-occasion == "" ? "Today: the regular logo" : "Today: " + root.logo-occasion;
+                                    text: pinned-touch.has-hover
+                                        ? "One version of the icon is set to show always (" + root.logo-pinned + "), so these don't apply. Follow the calendar below to use them again."
+                                        : root.logo-occasion == "" ? "Today: the regular logo" : "Today: " + root.logo-occasion;
+                                    color: pinned-touch.has-hover ? Theme.accent : Theme.text-muted;
+                                    wrap: word-wrap;
                                 }
                             }
                         }
@@ -529,7 +551,14 @@ export component SettingsWindow inherits Window {
                         alignment: start;
 
                         SectionHeading { text: "Panels"; }
-                        HintText { text: "Arrange panels with View > Edit Layout. Panels not in the layout use no CPU."; }
+                        HintText { text: "Move, split, resize and swap the panels in the main window: the playlist, lyrics, vinyl, spectrum and the rest. Panels not in the layout use no CPU."; }
+                        HorizontalLayout {
+                            alignment: start;
+                            Button {
+                                text: "Edit Layout";
+                                clicked => { root.edit-layout-clicked(); }
+                            }
+                        }
 
                         Rectangle { height: 8px; }
                         SectionHeading { text: "Performance"; }

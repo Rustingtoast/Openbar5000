@@ -63,6 +63,18 @@ pub struct AudioOutput {
     store: Rc<Store>,
     settings: Rc<RefCell<Settings>>,
     choices: RefCell<Vec<Choice>>,
+    /// A listing of the devices under way (see `refresh`), and the timer
+    /// that waits for it.
+    listing: RefCell<Option<crossbeam_channel::Receiver<Listing>>>,
+    listing_timer: slint::Timer,
+    me: RefCell<std::rc::Weak<Self>>,
+}
+
+/// The devices, and the system default's name.
+type Listing = (Vec<OutputDeviceInfo>, Option<String>);
+
+fn list_devices() -> Listing {
+    (engine::output_devices(), engine::default_output_device().map(|d| d.name))
 }
 
 impl AudioOutput {
@@ -78,7 +90,11 @@ impl AudioOutput {
             store,
             settings,
             choices: RefCell::new(Vec::new()),
+            listing: RefCell::new(None),
+            listing_timer: slint::Timer::default(),
+            me: RefCell::new(std::rc::Weak::new()),
         });
+        *output.me.borrow_mut() = Rc::downgrade(&output);
         let saved = output.settings.borrow().output_device.clone();
         output.engine.send(EngineCommand::SetOutputDevice(saved));
         output.refresh();
@@ -99,15 +115,47 @@ impl AudioOutput {
     }
 
     /// Re-lists the devices (also done whenever Preferences opens, so
-    /// newly plugged-in ones show up).
+    /// newly plugged-in ones show up) -- in the background: asking the
+    /// system takes a while (20 ms here, more on some systems), which the
+    /// window would otherwise spend frozen, the record mid-turn.
     pub fn refresh(&self) {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let started = crate::platform::spawn("openbar5000-devices", move || {
+            let _ = tx.send(list_devices());
+        });
+        if !started {
+            let (devices, default_name) = list_devices();
+            self.show_devices(devices, default_name);
+            return;
+        }
+        *self.listing.borrow_mut() = Some(rx);
+        let me = self.me.borrow().clone();
+        self.listing_timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(10), move || {
+            let Some(output) = me.upgrade() else { return };
+            let received = output.listing.borrow().as_ref().map(|rx| rx.try_recv());
+            match received {
+                Some(Err(crossbeam_channel::TryRecvError::Empty)) => {}
+                Some(Ok((devices, default_name))) => {
+                    output.listing.borrow_mut().take();
+                    output.listing_timer.stop();
+                    output.show_devices(devices, default_name);
+                }
+                _ => {
+                    output.listing.borrow_mut().take();
+                    output.listing_timer.stop();
+                }
+            }
+        });
+    }
+
+    /// Shows `devices` in Preferences, the saved choice selected.
+    fn show_devices(&self, devices: Vec<OutputDeviceInfo>, default_name: Option<String>) {
         let settings = self.settings.borrow();
         let selected = settings
             .output_device
             .as_deref()
             .map(|id| (id, settings.output_device_name.as_str()));
-        let default_name = engine::default_output_device().map(|d| d.name);
-        let (choices, labels, index) = choices(engine::output_devices(), default_name.as_deref(), selected);
+        let (choices, labels, index) = choices(devices, default_name.as_deref(), selected);
         drop(settings);
         *self.choices.borrow_mut() = choices;
         if let Some(preferences) = self.preferences.upgrade() {

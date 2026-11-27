@@ -419,15 +419,23 @@ impl ThemeRegistry {
         entries.extend(store.load_custom_themes());
         // Themes dropped into the themes folder as CSS, besides those saved.
         let base = entries[0].colors;
-        let mut files = std::collections::HashMap::new();
+        let mut registry = Self { entries, files: std::collections::HashMap::new() };
         for (name, colors, path) in crate::theme_css::load_folder(&crate::theme_css::themes_dir(), &base) {
             let id = format!("custom:{}", slugify(&name));
-            if !entries.iter().any(|e| e.id == id) {
-                entries.push(ThemeEntry { id: id.clone(), label: name, colors, is_custom: true });
+            // Its own copy of a saved theme (an import keeps one): its file.
+            if registry.find(&id).is_some_and(|e| e.is_custom) {
+                registry.files.insert(id, path);
+                continue;
             }
-            files.insert(id, path);
+            // One theme to a name: a file named like another is left out.
+            if registry.name_taken(&name) {
+                tracing::warn!("skipping theme {}: a theme called {name:?} is there already", path.display());
+                continue;
+            }
+            registry.entries.push(ThemeEntry { id: id.clone(), label: name, colors, is_custom: true });
+            registry.files.insert(id, path);
         }
-        Self { entries, files }
+        registry
     }
 
     pub fn find(&self, id: &str) -> Option<&ThemeEntry> {
@@ -458,6 +466,16 @@ impl ThemeRegistry {
             });
         }
         id
+    }
+
+    /// Whether a theme -- built in or custom -- already goes by `name`
+    /// (ignoring case and spacing), or would be saved under the same id.
+    pub fn name_taken(&self, name: &str) -> bool {
+        let wanted = name.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+        let id = format!("custom:{}", slugify(name));
+        self.entries.iter().any(|entry| {
+            entry.id == id || entry.label.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase() == wanted
+        })
     }
 
     pub fn remove_custom(&mut self, store: &Store, id: &str) {
@@ -631,6 +649,19 @@ mod tests {
         assert!(parse_hex_color("1b1b1b").is_some());
         assert!(parse_hex_color("#zzzzzz").is_none());
         assert!(parse_hex_color("#abc").is_none());
+    }
+
+    #[test]
+    fn names_already_in_use_are_taken_whatever_their_case() {
+        let mut registry = ThemeRegistry { entries: builtin_entries(), files: Default::default() };
+        assert!(registry.name_taken("dark"));
+        assert!(registry.name_taken("  High   Contrast "));
+        assert!(!registry.name_taken("Midnight"));
+        registry.upsert_custom("Midnight", builtin_entries()[0].colors);
+        assert!(registry.name_taken("MIDNIGHT"));
+        // A name that would be saved under the same id is taken too.
+        registry.upsert_custom("My Theme", builtin_entries()[0].colors);
+        assert!(registry.name_taken("my-theme"));
     }
 
     #[test]
