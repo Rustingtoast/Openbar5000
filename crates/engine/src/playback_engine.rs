@@ -159,33 +159,66 @@ fn run(command_rx: Receiver<EngineCommand>, event_tx: Sender<EngineEvent>, clock
             PlaybackState::Paused | PlaybackState::Stopped => None,
         };
 
-        match wait(&command_rx, output_checks.due(), timeout) {
-            Wake::Command(command) => {
-                if !handle_command(&mut state, command, &event_tx) {
-                    break;
-                }
-            }
-            Wake::OutputCheck => {
-                if let Some(target) = output_target(&state) {
-                    if target != state.output_device {
-                        switch_output(&mut state, &event_tx);
+        let wake = wait(&command_rx, output_checks.due(), timeout);
+        if matches!(wake, Wake::Closed) {
+            break;
+        }
+        // Whatever goes wrong in a step -- a decoder tripping over a broken
+        // file, a driver misbehaving while a game has the machine at its
+        // limit -- stops playback rather than this thread: the app goes on,
+        // and plays again when asked.
+        let step = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            match wake {
+                Wake::Command(command) => {
+                    if !handle_command(&mut state, command, &event_tx) {
+                        return false;
                     }
                 }
+                Wake::OutputCheck => {
+                    if let Some(target) = output_target(&state) {
+                        if target != state.output_device {
+                            switch_output(&mut state, &event_tx);
+                        }
+                    }
+                }
+                Wake::Timeout | Wake::Closed => {}
             }
-            Wake::Timeout => {}
-            Wake::Closed => break,
-        }
 
-        if state.playback_state == PlaybackState::Playing {
-            // The spectrum first: it's due at a set moment, and a refill
-            // (a batch of decoding) would otherwise make it late.
-            if let Some((bars, peaks)) = state.pipeline.audible_spectrum() {
-                let _ = event_tx.send(EngineEvent::SpectrumUpdate { bars, peaks });
+            if state.playback_state == PlaybackState::Playing {
+                // The spectrum first: it's due at a set moment, and a refill
+                // (a batch of decoding) would otherwise make it late.
+                if let Some((bars, peaks)) = state.pipeline.audible_spectrum() {
+                    let _ = event_tx.send(EngineEvent::SpectrumUpdate { bars, peaks });
+                }
+                refill_output(&mut state, &command_rx, &event_tx);
             }
-            refill_output(&mut state, &command_rx, &event_tx);
+            true
+        }));
+        match step {
+            Ok(true) => {}
+            Ok(false) => break,
+            Err(_) => recover_from_panic(&mut state, &event_tx),
         }
         publish_clock(&state, &clock);
     }
+}
+
+/// After a panic in the playback loop (logged by the panic hook): stops,
+/// so the next command starts from a clean slate. Itself guarded -- if even
+/// stopping panics, the state is set by hand.
+fn recover_from_panic(state: &mut EngineState, event_tx: &Sender<EngineEvent>) {
+    tracing::error!("playback stopped after an internal error");
+    let stopped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        drop_queued_audio(state, false);
+    }));
+    if stopped.is_err() {
+        tracing::error!("couldn't clear the output after the error");
+    }
+    state.samples_played = 0;
+    set_playback_state(state, PlaybackState::Stopped, event_tx);
+    let _ = event_tx.send(EngineEvent::Error(
+        "Playback stopped after an internal error. Press Play to go on.".to_string(),
+    ));
 }
 
 /// What woke the playback thread.
@@ -733,7 +766,7 @@ fn spawn_waveform_computation(
     }
     let cancel = Arc::new(AtomicBool::new(false));
     state.waveform_cancel = Some(cancel.clone());
-    std::thread::Builder::new()
+    let spawned = std::thread::Builder::new()
         .name("openbar5000-waveform".into())
         .spawn(move || {
             crate::background::lower_thread_priority();
@@ -746,8 +779,12 @@ fn spawn_waveform_computation(
             {
                 let _ = event_tx.send(EngineEvent::WaveformReady { index, channels });
             }
-        })
-        .expect("failed to spawn waveform thread");
+        });
+    // Short of threads (as with a demanding game running): the track plays
+    // without its waveform.
+    if let Err(e) = spawned {
+        tracing::warn!("no waveform for this track: couldn't start its thread: {e}");
+    }
 }
 
 /// Called when a track reaches its end on its own (not via an explicit

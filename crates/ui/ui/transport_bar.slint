@@ -1,4 +1,5 @@
 import { Theme } from "theme.slint";
+import { ShinyCard } from "overlays.slint";
 
 // The reference UI's thin bar slider. Reports drags through `changed`
 // without ever assigning `value` itself -- assigning would break the
@@ -247,6 +248,10 @@ export component PlaybackButtons inherits Rectangle {
     callback random-clicked();
     callback open-files-clicked();
     callback open-folder-clicked();
+    /// The year in review's card, set apart from the buttons (it isn't
+    /// one of them): late December through January.
+    in property <bool> review-card;
+    callback review-card-clicked();
 
     height: 28px;
     background: Theme.bg-raised;
@@ -257,6 +262,21 @@ export component PlaybackButtons inherits Rectangle {
         alignment: end;
         padding-right: 6px;
         spacing: 0px;
+        if root.review-card: Rectangle {
+            width: 26px;
+            accessible-role: button;
+            accessible-label: "Your year in review";
+            accessible-action-default => { root.review-card-clicked(); }
+            ShinyCard {
+                hover: card-touch.has-hover;
+            }
+            card-touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.review-card-clicked(); }
+            }
+            Tooltip { text: @markdown("Your year in review"); }
+        }
+        if root.review-card: Rectangle { width: 12px; }
         IconButton {
             width: 22px;
             y: (parent.height - self.height) / 2;

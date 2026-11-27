@@ -21,6 +21,34 @@ pub fn file_dialog_over(window: &slint::Window) -> rfd::FileDialog {
     rfd::FileDialog::new().set_parent(&window.window_handle())
 }
 
+/// Starts `work` on a thread of its own named `name`. When the system won't
+/// give one -- short of memory or threads, as with a demanding game
+/// running -- says so in the log and returns `false`, for the caller to
+/// carry on without, instead of the app ending.
+pub fn spawn(name: &str, work: impl FnOnce() + Send + 'static) -> bool {
+    match std::thread::Builder::new().name(name.into()).spawn(work) {
+        Ok(_) => true,
+        Err(e) => {
+            tracing::warn!("couldn't start {name}: {e}");
+            false
+        }
+    }
+}
+
+/// Opens folder `dir` in the file manager (made first if need be).
+pub fn open_folder(dir: &Path) {
+    let _ = std::fs::create_dir_all(dir);
+    #[cfg(target_os = "macos")]
+    let result = Command::new("open").arg(dir).spawn();
+    #[cfg(target_os = "windows")]
+    let result = Command::new("explorer").arg(dir).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let result = Command::new("xdg-open").arg(dir).spawn();
+    if let Err(e) = result {
+        tracing::warn!("couldn't open {}: {e}", dir.display());
+    }
+}
+
 /// Opens `url` in the default browser.
 pub fn open_url(url: &str) {
     if !(url.starts_with("https://") || url.starts_with("http://")) {

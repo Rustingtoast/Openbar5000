@@ -143,6 +143,9 @@ pub enum Outcome {
 /// thread.
 pub fn look_up(artist: &str, title: &str, options: &LookupOptions) -> Result<Outcome, String> {
     let candidates = credit_candidates(artist);
+    if candidates.is_empty() {
+        return Ok(Outcome::NotFound);
+    }
 
     // The recording identifies *which* artist of that name made it.
     if !title.trim().is_empty() {
@@ -331,7 +334,10 @@ fn urlencode(text: &str) -> String {
 /// "Above"]; an `&` can be part of a name, so the full forms come first.
 fn credit_candidates(credit: &str) -> Vec<String> {
     let cut_at = |text: &str, separators: &[&str]| -> String {
-        let lower = text.to_lowercase();
+        // ASCII-only lowercasing keeps every byte where it was, so a place
+        // found in `lower` is one in `text` (full lowercasing changes some
+        // letters' lengths -- "İ" -- and the cut could land mid-letter).
+        let lower = text.to_ascii_lowercase();
         separators
             .iter()
             .filter_map(|sep| lower.find(sep))
@@ -653,4 +659,12 @@ mod tests {
         assert!(start.elapsed() >= MUSICBRAINZ_DELAY * 2, "{:?}", start.elapsed());
         assert_eq!(service_name("https://upload.wikimedia.org/x.jpg"), "Wikipedia");
     }
+
+    #[test]
+    fn credits_with_letters_that_change_length_when_lowercased_dont_panic() {
+        assert_eq!(credit_candidates("İlhan feat. Someone"), ["İlhan feat. Someone", "İlhan"]);
+        assert_eq!(credit_candidates("ẞtraße & İrem"), ["ẞtraße & İrem", "ẞtraße"]);
+        assert!(credit_candidates("   ").is_empty());
+    }
+
 }

@@ -70,7 +70,7 @@ pub enum PresenceEvent {
 pub struct PresenceClient {
     command_tx: Sender<PresenceCommand>,
     event_rx: Receiver<PresenceEvent>,
-    _thread: std::thread::JoinHandle<()>,
+    _thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl PresenceClient {
@@ -84,8 +84,9 @@ impl PresenceClient {
         let _ = command_tx.send(initial);
         let thread = std::thread::Builder::new()
             .name("openbar5000-discord-presence".into())
-            .spawn(move || run(command_rx, event_tx))
-            .expect("failed to spawn discord presence thread");
+            .spawn(move || run(command_rx, event_tx));
+        // Without its thread, presence is just off.
+        let thread = thread.map_err(|e| tracing::warn!("no Discord presence: couldn't start its thread: {e}")).ok();
         Self {
             command_tx,
             event_rx,

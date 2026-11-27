@@ -3,7 +3,7 @@ import { Vfd, HardwareKey } from "vintage_equalizer.slint";
 
 /// A small icon button in the panel's top-right corner. `enabled` false:
 /// dimmed, saying why (`hint`) while pointed at.
-component CornerButton inherits Rectangle {
+export component CornerButton inherits Rectangle {
     in property <image> icon;
     in property <string> label;
     in property <bool> active: false;

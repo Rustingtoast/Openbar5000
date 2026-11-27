@@ -594,7 +594,7 @@ impl PropertiesEditor {
         self.texture_request.set(request);
         self.window.set_status("Reading the image\u{2026}".into());
         let window = self.window.as_weak();
-        std::thread::spawn(move || {
+        crate::platform::spawn("openbar5000-texture", move || {
             let (name, error) = match vinyl_style::import_texture(&file) {
                 Ok(name) => (name, String::new()),
                 Err(e) => (String::new(), e),
@@ -819,17 +819,19 @@ impl PropertiesEditor {
         );
         self.close_after_save.set(close_after);
         let tx = self.saves.0.clone();
-        std::thread::Builder::new()
-            .name("openbar5000-properties".into())
-            .spawn(move || {
-                let outcome = paths.into_iter().map(|path| {
-                    let result = engine::edit_tags(&path, &edit);
-                    let album = (renames_album && result.is_ok()).then(|| written_album(&path)).flatten();
-                    (path, result, album)
-                });
-                let _ = tx.send(outcome.collect());
-            })
-            .expect("failed to spawn the tag writer");
+        let started = crate::platform::spawn("openbar5000-properties", move || {
+            let outcome = paths.into_iter().map(|path| {
+                let result = engine::edit_tags(&path, &edit);
+                let album = (renames_album && result.is_ok()).then(|| written_album(&path)).flatten();
+                (path, result, album)
+            });
+            let _ = tx.send(outcome.collect());
+        });
+        if !started {
+            self.close_after_save.set(false);
+            self.window.set_status("Couldn\u{2019}t save just now: the system is short of resources. Try again.".into());
+            return;
+        }
         let weak = Rc::downgrade(self);
         self.poll.start(TimerMode::Repeated, Duration::from_millis(100), move || {
             if let Some(editor) = weak.upgrade() {

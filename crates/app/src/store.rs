@@ -114,6 +114,23 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE vinyl_styles ADD COLUMN label_clarity REAL;
     UPDATE vinyl_styles SET label = NULL, label_clarity = 1.0 WHERE label = 'clear';
     "#,
+    // v8: every counted play, for the statistics and the year in review
+    // (see `stats`): when (Unix seconds), what -- its tags as they were then,
+    // so a later edit or a deleted file doesn't change the past -- and how
+    // long it was listened to.
+    r#"
+    CREATE TABLE play_log (
+        id        INTEGER PRIMARY KEY,
+        played_at INTEGER NOT NULL,
+        path      TEXT NOT NULL,
+        title     TEXT NOT NULL,
+        artist    TEXT NOT NULL,
+        album     TEXT NOT NULL,
+        genre     TEXT NOT NULL,
+        seconds   INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX play_log_played_at ON play_log (played_at);
+    "#,
 ];
 
 /// The playlist every database starts with (migration v1).
@@ -133,12 +150,16 @@ impl Store {
         Self::from_connection(conn)
     }
 
-    #[cfg(test)]
+    /// A database that lives only as long as the app: for tests, and to run
+    /// at all when the real one can't be opened.
     pub(crate) fn open_in_memory() -> rusqlite::Result<Self> {
         Self::from_connection(Connection::open_in_memory()?)
     }
 
     fn from_connection(conn: Connection) -> rusqlite::Result<Self> {
+        // Another instance (or a backup program) holding it a moment: wait
+        // for it rather than fail the write.
+        conn.busy_timeout(std::time::Duration::from_secs(3))?;
         conn.pragma_update(None, "foreign_keys", true)?;
         run_migrations(&conn)?;
         Ok(Self { conn })
@@ -259,6 +280,13 @@ impl Store {
     }
 
     /// Upserts every pair in one transaction.
+    /// Whether anything was ever saved: a database from an earlier start.
+    pub fn has_settings(&self) -> bool {
+        self.conn
+            .query_row("SELECT EXISTS (SELECT 1 FROM settings)", [], |row| row.get(0))
+            .unwrap_or(false)
+    }
+
     pub fn set_settings(&self, pairs: &[(&str, String)]) {
         let result = (|| -> rusqlite::Result<()> {
             let tx = self.conn.unchecked_transaction()?;
@@ -358,6 +386,70 @@ impl Store {
         ) {
             tracing::warn!("failed to record a play: {e}");
         }
+    }
+
+    /// Logs a play (see `stats`); its id, to add the time listened to it.
+    pub fn log_play(&self, play: &crate::stats::Play) -> Option<i64> {
+        let logged = self.conn.execute(
+            "INSERT INTO play_log (played_at, path, title, artist, album, genre, seconds)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![play.played_at, play.path, play.title, play.artist, play.album, play.genre, play.seconds],
+        );
+        match logged {
+            Ok(_) => Some(self.conn.last_insert_rowid()),
+            Err(e) => {
+                tracing::warn!("failed to log a play: {e}");
+                None
+            }
+        }
+    }
+
+    /// How long play `id` has been listened to so far.
+    pub fn set_play_seconds(&self, id: i64, seconds: i64) {
+        if let Err(e) = self.conn.execute("UPDATE play_log SET seconds = ?2 WHERE id = ?1", params![id, seconds]) {
+            tracing::warn!("failed to update a play: {e}");
+        }
+    }
+
+    /// The plays logged from `from` up to (not including) `to`, Unix
+    /// seconds, oldest first.
+    pub fn plays_between(&self, from: i64, to: i64) -> Vec<crate::stats::Play> {
+        let read = || -> rusqlite::Result<Vec<crate::stats::Play>> {
+            let mut statement = self.conn.prepare(
+                "SELECT played_at, path, title, artist, album, genre, seconds FROM play_log
+                 WHERE played_at >= ?1 AND played_at < ?2 ORDER BY played_at",
+            )?;
+            let rows = statement.query_map(params![from, to], |row| {
+                Ok(crate::stats::Play {
+                    played_at: row.get(0)?,
+                    path: row.get(1)?,
+                    title: row.get(2)?,
+                    artist: row.get(3)?,
+                    album: row.get(4)?,
+                    genre: row.get(5)?,
+                    seconds: row.get(6)?,
+                })
+            })?;
+            rows.collect()
+        };
+        read().unwrap_or_else(|e| {
+            tracing::warn!("failed to read the play log: {e}");
+            Vec::new()
+        })
+    }
+
+    /// When listening was first recorded at all (Unix seconds): the play
+    /// log's first, or the per-song counts' first from before it.
+    pub fn listening_since(&self) -> Option<i64> {
+        self.conn
+            .query_row(
+                "SELECT MIN(t) FROM (SELECT MIN(played_at) AS t FROM play_log
+                                     UNION ALL SELECT MIN(first_played) FROM play_stats)",
+                [],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .ok()
+            .flatten()
     }
 
     pub fn play_stats(&self, path: &Path) -> Option<PlayStats> {

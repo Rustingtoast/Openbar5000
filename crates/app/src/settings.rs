@@ -60,6 +60,15 @@ pub struct Settings {
     /// The VNL panel's record on a 1980s deck, like the Vintage Equalizer
     /// (issue #40); toggled on the panel.
     pub vinyl_vintage: bool,
+    /// The lyrics panel's scroll look.
+    pub lyrics_vintage: bool,
+    /// The welcome has been shown (once, on the first start; someone who
+    /// used the app before this version has had theirs).
+    pub welcome_seen: bool,
+    /// The version whose "what's new" was last shown ("" before any).
+    pub last_seen_version: String,
+    /// The last year whose year in review was announced (0: none).
+    pub review_announced: i32,
     /// How often the VNL panel's record is drawn while it turns, apart
     /// from the visualizations' rate: one of `VINYL_FPS_CHOICES`.
     pub vinyl_fps: u32,
@@ -111,6 +120,10 @@ impl Default for Settings {
             artist_wikipedia: true,
             artist_wikipedia_language: "en".to_string(),
             vinyl_vintage: false,
+            lyrics_vintage: false,
+            welcome_seen: false,
+            last_seen_version: String::new(),
+            review_announced: 0,
             vinyl_fps: 45,
             performance_preset: PerformancePreset::Normal,
             custom_fps: None,
@@ -284,6 +297,15 @@ impl Settings {
     pub fn load(store: &Store) -> Self {
         let mut settings = Self::default();
         let get = |key: &str| store.get_setting(key);
+        // Saved settings from before mean the app was used before: no
+        // first-start welcome, then.
+        settings.welcome_seen = get("welcome_seen").map_or_else(|| store.has_settings(), |v| v == "true");
+        if let Some(v) = get("last_seen_version") {
+            settings.last_seen_version = v;
+        }
+        if let Some(v) = get("review_announced").and_then(|v| v.parse().ok()) {
+            settings.review_announced = v;
+        }
 
         if let Some(v) = get("show_waveform") {
             settings.show_waveform = v == "true";
@@ -378,6 +400,9 @@ impl Settings {
         }
         if let Some(v) = get("artist_wikipedia") {
             settings.artist_wikipedia = v == "true";
+        }
+        if let Some(v) = get("lyrics_vintage") {
+            settings.lyrics_vintage = v == "true";
         }
         if let Some(v) = get("vinyl_vintage") {
             settings.vinyl_vintage = v == "true";
@@ -503,6 +528,10 @@ impl Settings {
             ("artist_wikipedia", self.artist_wikipedia.to_string()),
             ("artist_wikipedia_language", self.artist_wikipedia_language.clone()),
             ("vinyl_vintage", self.vinyl_vintage.to_string()),
+            ("lyrics_vintage", self.lyrics_vintage.to_string()),
+            ("welcome_seen", self.welcome_seen.to_string()),
+            ("last_seen_version", self.last_seen_version.clone()),
+            ("review_announced", self.review_announced.to_string()),
             ("vinyl_fps", self.vinyl_fps.to_string()),
             ("performance_preset", self.performance_preset.id().to_string()),
             ("custom_visualization_fps", self.custom_fps.map_or(String::new(), |(v, _)| v.to_string())),

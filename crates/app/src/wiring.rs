@@ -95,6 +95,8 @@ pub struct UiHandles {
     pub logo_timer: Timer,
     /// Preferences > Appearance > Icon > Preview.
     pub logo_preview_window: ui::LogoPreviewWindow,
+    /// View > Statistics.
+    pub stats_window: ui::StatsWindow,
     pub playlist_manager_window: PlaylistManagerWindow,
     pub playlists: Rc<Playlists>,
     pub media_keys_timer: Rc<Timer>,
@@ -174,6 +176,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     let properties_window = PropertiesWindow::new().expect("failed to create properties window");
     let color_picker = crate::color_picker::ColorPicker::new();
     let logo_preview_window = ui::LogoPreviewWindow::new().expect("failed to create the icon preview window");
+    let stats_window = ui::StatsWindow::new().expect("failed to create the statistics window");
     let properties_editor =
         PropertiesEditor::wire(&properties_window, engine.clone(), store.clone(), color_picker.clone());
 
@@ -244,6 +247,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         &playlist_manager_window,
         color_picker.window(),
         &logo_preview_window,
+        &stats_window,
     );
     themed_windows.apply(&initial_colors);
 
@@ -258,6 +262,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         &playlist_manager_window,
         color_picker.window(),
         &logo_preview_window,
+        &stats_window,
     ));
     let show_logo = {
         let settings = settings.clone();
@@ -299,11 +304,137 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         })
     };
     show_logo();
+
+    // --- Statistics and the year in review (see `stats`) ----------------
+    {
+        let store = store.clone();
+        let stats_weak = stats_window.as_weak();
+        window.on_statistics_clicked(move || {
+            if let Some(stats) = stats_weak.upgrade() {
+                crate::stats_view::show(&stats, &store);
+            }
+        });
+    }
+    {
+        let store = store.clone();
+        let stats_weak = stats_window.as_weak();
+        stats_window.on_period_changed(move |index| {
+            let period = crate::stats::Period::ALL.get(index.max(0) as usize).copied().unwrap_or(crate::stats::Period::AllTime);
+            if let Some(stats) = stats_weak.upgrade() {
+                crate::stats_view::fill(&stats, &store, period);
+            }
+        });
+    }
+    {
+        let stats_weak = stats_window.as_weak();
+        stats_window.on_close_clicked(move || {
+            if let Some(stats) = stats_weak.upgrade() {
+                let _ = stats.hide();
+            }
+        });
+    }
+    // The card by the playback buttons: in the review's season, with enough
+    // listened (checked again hourly, below).
+    let show_review_card = {
+        let store = store.clone();
+        let window_weak = window.as_weak();
+        Rc::new(move || {
+            if let Some(window) = window_weak.upgrade() {
+                window.set_review_card_visible(crate::stats_view::review_offered(&store).is_some());
+            }
+        })
+    };
+    show_review_card();
+
+    // --- Overlays: welcome, what's new, the year in review --------------
+    // One at a time, in this order; each shown once (see `Settings`).
+    let overlays: Rc<RefCell<std::collections::VecDeque<&'static str>>> = Rc::default();
+    {
+        let settings = settings.borrow();
+        let mut queue = overlays.borrow_mut();
+        if !settings.welcome_seen {
+            queue.push_back("welcome");
+        }
+        if settings.last_seen_version != crate::release_notes::VERSION {
+            queue.push_back("whats-new");
+        }
+        if let Some(year) = crate::stats_view::review_offered(&store) {
+            if settings.review_announced != year {
+                window.set_year_review(ui::YearReview { year, ..Default::default() });
+                queue.push_back("review-announce");
+            }
+        }
+    }
+    window.set_whats_new_version(crate::release_notes::VERSION.into());
+    window.set_whats_new_items(ModelRc::from(Rc::new(VecModel::from(
+        crate::release_notes::NOTES
+            .iter()
+            .map(|(title, text)| ui::WhatsNewItem { title: (*title).into(), text: (*text).into() })
+            .collect::<Vec<_>>(),
+    ))));
+    let next_overlay = {
+        let overlays = overlays.clone();
+        let window_weak = window.as_weak();
+        Rc::new(move || {
+            if let Some(window) = window_weak.upgrade() {
+                window.set_modal(overlays.borrow_mut().pop_front().unwrap_or("").into());
+            }
+        })
+    };
+    {
+        let settings = settings.clone();
+        let store = store.clone();
+        let next_overlay = next_overlay.clone();
+        window.on_modal_closed(move |name| {
+            {
+                let mut settings = settings.borrow_mut();
+                match name.as_str() {
+                    "welcome" => settings.welcome_seen = true,
+                    "whats-new" => settings.last_seen_version = crate::release_notes::VERSION.to_string(),
+                    "review-announce" => {
+                        if let Some(year) = crate::stats_view::review_offered(&store) {
+                            settings.review_announced = year;
+                        }
+                    }
+                    _ => {}
+                }
+                settings.save(&store);
+            }
+            next_overlay();
+        });
+    }
+    {
+        let store = store.clone();
+        let overlays = overlays.clone();
+        let window_weak = window.as_weak();
+        window.on_review_card_clicked(move || {
+            let Some(window) = window_weak.upgrade() else { return };
+            let Some(year) = crate::stats_view::review_offered(&store) else { return };
+            // Whatever was showing comes back after.
+            let showing = window.get_modal();
+            if !showing.is_empty() && showing != "year-review" {
+                if let Some(name) = ["welcome", "whats-new", "review-announce"].into_iter().find(|n| *n == showing.as_str()) {
+                    overlays.borrow_mut().push_front(name);
+                }
+            }
+            window.set_year_review(crate::stats_view::year_review(&store, year));
+            window.set_modal("year-review".into());
+        });
+    }
+    // Once the window is up.
+    {
+        let next_overlay = next_overlay.clone();
+        Timer::single_shot(Duration::from_millis(700), move || next_overlay());
+    }
+
     // Hourly is plenty to switch on the right day.
     let logo_timer = Timer::default();
     {
         let show_logo = show_logo.clone();
-        logo_timer.start(TimerMode::Repeated, Duration::from_secs(3600), move || show_logo());
+        logo_timer.start(TimerMode::Repeated, Duration::from_secs(3600), move || {
+            show_logo();
+            show_review_card();
+        });
     }
     settings_window.set_holiday_logos(settings.borrow().holiday_logos);
     settings_window.set_holiday_special_mode(settings.borrow().holiday_special_mode);
@@ -612,6 +743,26 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     }
     {
         let editor = lyrics_editor_window.as_weak();
+        lyrics_editor_window.on_shift_clicked(move |delta_ms| {
+            let Some(editor) = editor.upgrade() else {
+                return;
+            };
+            let old = editor.get_text();
+            // The cursor stays at the start of its line (its byte offset
+            // within the line may change with the timestamps).
+            let cursor = (editor.get_cursor().max(0) as usize).min(old.len());
+            let line = old.as_bytes()[..cursor].iter().filter(|&&b| b == b'\n').count();
+            let text = crate::lyrics::shift_timestamps(&old, i64::from(delta_ms));
+            let line_start = text.split('\n').take(line).map(|l| l.len() + 1).sum::<usize>().min(text.len());
+            editor.set_text(text.into());
+            editor.invoke_place_cursor(line_start as i32);
+            editor.set_status(
+                format!("Every timestamp moved {} 0.1 s.", if delta_ms < 0 { "earlier by" } else { "later by" }).into(),
+            );
+        });
+    }
+    {
+        let editor = lyrics_editor_window.as_weak();
         lyrics_editor_window.on_remove_timestamp_clicked(move || {
             let Some(editor) = editor.upgrade() else {
                 return;
@@ -813,7 +964,31 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
 
     {
         let settings_window_weak = settings_window.as_weak();
+        // What Preferences opened goes with it: the theme editor, the icon
+        // preview, a colour being picked.
+        let close_children = {
+            let theme_editor = theme_editor_window.as_weak();
+            let preview = logo_preview_window.as_weak();
+            let color_picker = color_picker.clone();
+            Rc::new(move || {
+                if let Some(editor) = theme_editor.upgrade() {
+                    let _ = editor.hide();
+                }
+                if let Some(preview) = preview.upgrade() {
+                    let _ = preview.hide();
+                }
+                color_picker.close();
+            })
+        };
+        {
+            let close_children = close_children.clone();
+            settings_window.window().on_close_requested(move || {
+                close_children();
+                slint::CloseRequestResponse::HideWindow
+            });
+        }
         settings_window.on_close_clicked(move || {
+            close_children();
             if let Some(window) = settings_window_weak.upgrade() {
                 if let Err(e) = window.hide() {
                     tracing::warn!("couldn't hide the settings window: {e}");
@@ -846,6 +1021,20 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             .unwrap_or(1) as i32,
     );
     window.set_vinyl_vintage(settings.borrow().vinyl_vintage);
+    window.set_lyrics_vintage(settings.borrow().lyrics_vintage);
+    {
+        let settings = settings.clone();
+        let store = store.clone();
+        let window_weak = window.as_weak();
+        window.on_lyrics_vintage_toggled(move || {
+            let vintage = !settings.borrow().lyrics_vintage;
+            settings.borrow_mut().lyrics_vintage = vintage;
+            settings.borrow().save(&store);
+            if let Some(window) = window_weak.upgrade() {
+                window.set_lyrics_vintage(vintage);
+            }
+        });
+    }
     {
         let settings = settings.clone();
         let store = store.clone();
@@ -859,19 +1048,30 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             }
         });
     }
+    // Backs the frame rates off while the system is at its limit (a game
+    // running): see `load_guard`.
+    let load_guard = Rc::new(crate::load_guard::LoadGuard::default());
     // The frame rates: a preset, or set by hand under Advanced (Custom).
     let apply_rates = {
         let settings = settings.clone();
+        let load_guard = load_guard.clone();
         let window_weak = window.as_weak();
         let settings_window_weak = settings_window.as_weak();
         Rc::new(move || {
             let settings = settings.borrow();
             // (The event poll picks its rate from these at its next tick.)
             if let Some(window) = window_weak.upgrade() {
-                window.set_vinyl_fps(settings.vinyl_fps as i32);
+                window.set_vinyl_fps(load_guard.capped(settings.vinyl_fps) as i32);
             }
             if let Some(settings_window) = settings_window_weak.upgrade() {
                 show_performance(&settings_window, &settings);
+                settings_window.set_performance_note(
+                    load_guard
+                        .limit()
+                        .map(|fps| format!("The system is busy, so drawing is held at {fps} fps for now."))
+                        .unwrap_or_default()
+                        .into(),
+                );
             }
         })
     };
@@ -1176,8 +1376,18 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         });
     }
     {
+        // A colour being picked for it goes when it does.
+        let color_picker = color_picker.clone();
+        theme_editor_window.window().on_close_requested(move || {
+            color_picker.close();
+            slint::CloseRequestResponse::HideWindow
+        });
+    }
+    {
+        let color_picker = color_picker.clone();
         let theme_editor_window_weak = theme_editor_window.as_weak();
         theme_editor_window.on_cancel_clicked(move || {
+            color_picker.close();
             if let Some(editor) = theme_editor_window_weak.upgrade() {
                 if let Err(e) = editor.hide() {
                     tracing::warn!("couldn't hide the theme editor window: {e}");
@@ -1255,6 +1465,97 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             refresh_theme_list(&settings_window, &theme_registry.borrow(), &fallback_id);
         });
     }
+
+    // Themes as CSS files (see `theme_css`).
+    {
+        let theme_registry = theme_registry.clone();
+        let settings = settings.clone();
+        let store = store.clone();
+        let themed_windows = themed_windows.clone();
+        let settings_window_weak = settings_window.as_weak();
+        settings_window.on_import_theme_clicked(move || {
+            let Some(settings_window) = settings_window_weak.upgrade() else { return };
+            let Some(path) = platform::file_dialog_over(settings_window.window())
+                .set_title("Import a theme")
+                .add_filter("CSS theme", &["css"])
+                .pick_file()
+            else {
+                return;
+            };
+            let status = |text: String| settings_window.set_theme_status(text.into());
+            let too_big = std::fs::metadata(&path).map_or(true, |m| m.len() > crate::theme_css::MAX_FILE_BYTES);
+            if too_big {
+                status("That file is too big to be a theme.".to_string());
+                return;
+            }
+            let text = match std::fs::read_to_string(&path) {
+                Ok(text) => text,
+                Err(e) => return status(format!("Couldn\u{2019}t read it: {e}")),
+            };
+            let current = settings.borrow().theme_id.clone();
+            // Colours the file doesn't set stay as the theme in use has them.
+            let base = {
+                let registry = theme_registry.borrow();
+                registry.find(&current).unwrap_or(&registry.entries[0]).colors
+            };
+            let imported = match crate::theme_css::from_css(&text, &base) {
+                Ok(imported) => imported,
+                Err(e) => return status(format!("Not imported: {e}.")),
+            };
+            let name = imported
+                .name
+                .clone()
+                .or_else(|| path.file_stem().map(|s| crate::theme_css::clean_name(&s.to_string_lossy())))
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| "Imported theme".to_string());
+            let id = theme_registry.borrow_mut().add_custom(&store, &name, imported.colors);
+            // Kept in the themes folder, written anew from what was read.
+            let dir = crate::theme_css::themes_dir();
+            let file = dir.join(crate::theme_css::file_name(&name));
+            let kept = std::fs::create_dir_all(&dir)
+                .and_then(|()| std::fs::write(&file, crate::theme_css::to_css(&name, &imported.colors)));
+            if let Err(e) = kept {
+                tracing::warn!("couldn't keep the theme in {}: {e}", dir.display());
+            }
+            settings.borrow_mut().theme_id = id.clone();
+            settings.borrow().save(&store);
+            themed_windows.apply(&imported.colors);
+            refresh_theme_list(&settings_window, &theme_registry.borrow(), &id);
+            status(if imported.missing.is_empty() {
+                format!("Imported \u{201c}{name}\u{201d}.")
+            } else {
+                format!(
+                    "Imported \u{201c}{name}\u{201d}; it doesn\u{2019}t set {}, so those are from the theme before.",
+                    imported.missing.join(", ").to_lowercase()
+                )
+            });
+        });
+    }
+    {
+        let theme_registry = theme_registry.clone();
+        let settings = settings.clone();
+        let settings_window_weak = settings_window.as_weak();
+        settings_window.on_export_theme_clicked(move || {
+            let Some(settings_window) = settings_window_weak.upgrade() else { return };
+            let current = settings.borrow().theme_id.clone();
+            let Some(entry) = theme_registry.borrow().find(&current).cloned() else { return };
+            let Some(path) = platform::file_dialog_over(settings_window.window())
+                .set_title("Export the theme")
+                .add_filter("CSS theme", &["css"])
+                .set_file_name(crate::theme_css::file_name(&entry.label))
+                .save_file()
+            else {
+                return;
+            };
+            let path = if path.extension().is_none() { path.with_extension("css") } else { path };
+            let text = match std::fs::write(&path, crate::theme_css::to_css(&entry.label, &entry.colors)) {
+                Ok(()) => format!("Exported \u{201c}{}\u{201d}.", entry.label),
+                Err(e) => format!("Couldn\u{2019}t export it: {e}"),
+            };
+            settings_window.set_theme_status(text.into());
+        });
+    }
+    settings_window.on_themes_folder_clicked(|| platform::open_folder(&crate::theme_css::themes_dir()));
 
     window.on_exit_clicked(|| {
         let _ = slint::quit_event_loop();
@@ -1862,11 +2163,12 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
 
     // Whether frames still reach the screen (see `FrameWatch`).
     let frames = Rc::new(FrameWatch::default());
-    report_renderer(window, &settings_window, &properties_editor, frames.clone());
+    report_renderer(window, &settings_window, &properties_editor, frames.clone(), load_guard.clone());
     // Playback statistics (issue #34): a play counts once the song reaches
     // half its length or four minutes, whichever is first -- the usual
     // scrobbling rule -- once per time it's started.
-    let play_count: RefCell<Option<(PathBuf, Duration, bool)>> = RefCell::new(None);
+    // The track being listened to, for the play counts and the statistics.
+    let listening: RefCell<Option<Listening>> = RefCell::new(None);
     let play_count_store = store.clone();
     let playlists_for_poll = playlists.clone();
     // Which files are in the playlist, to tell additions from reorders.
@@ -1907,10 +2209,16 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
     let window_weak = window.as_weak();
     let settings_window_weak = settings_window.as_weak();
     let initial_poll_interval = poll_interval(settings.borrow().visualization_fps);
+    let was_hidden = Cell::new(false);
+    let apply_rates = apply_rates.clone();
     event_poll_timer.start(TimerMode::Repeated, initial_poll_interval, move || {
         let Some(window) = window_weak.upgrade() else {
             return;
         };
+        load_guard.tick(std::time::Instant::now(), poll_timer.interval(), !was_hidden.get());
+        if load_guard.evaluate(std::time::Instant::now()).is_some() {
+            apply_rates();
+        }
         // Spectrum updates can arrive several per tick; only the newest is
         // worth drawing.
         let mut latest_spectrum = None;
@@ -1927,10 +2235,10 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
                         playback_state.set(state);
                     }
                     if let EngineEvent::TrackChanged { track, .. } = &event {
-                        let threshold = (track.metadata.duration / 2)
-                            .min(Duration::from_secs(240))
-                            .max(Duration::from_secs(1));
-                        *play_count.borrow_mut() = Some((track.path.clone(), threshold, false));
+                        if let Some(previous) = listening.borrow_mut().take() {
+                            previous.finish(&play_count_store);
+                        }
+                        *listening.borrow_mut() = Some(Listening::new(track));
                     }
                     if let Some(media) = media_keys.borrow_mut().as_mut() {
                         match &event {
@@ -2007,14 +2315,8 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             state: playback_state.get(),
             elapsed: position,
         });
-        if let Some((path, threshold, counted)) = play_count.borrow_mut().as_mut() {
-            if !*counted && position >= *threshold {
-                *counted = true;
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| d.as_secs() as i64);
-                play_count_store.record_play(path, now);
-            }
+        if let Some(listening) = listening.borrow_mut().as_mut() {
+            listening.tick(position, playback_state.get() == PlaybackState::Playing, &play_count_store);
         }
         // Not shown while the system says it can't be seen, and shown as
         // soon as it can. (A window starved of frames still is: that keeps a
@@ -2027,7 +2329,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         // one rhythm, so their frames and the record's are the same frames.
         let (visualization_fps, vinyl_fps) = {
             let settings = settings.borrow();
-            (settings.visualization_fps, settings.vinyl_fps)
+            (load_guard.capped(settings.visualization_fps), load_guard.capped(settings.vinyl_fps))
         };
         let vinyl_ticks = vinyl_fps < 120
             && playback_state.get() == PlaybackState::Playing
@@ -2057,6 +2359,8 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
             window.window().request_redraw();
         }
         let hidden = unseen || frames.starved();
+        was_hidden.set(hidden);
+        load_guard.set_frame_rate(tick_fps);
         let spectrum_shown = window.get_panel_slots().iter().any(|slot| slot.kind == "spectrum");
         let want_spectrum = spectrum_shown && !hidden;
         if spectrum_requested.replace(Some(want_spectrum)) != Some(want_spectrum) {
@@ -2114,6 +2418,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
         audio_output,
         logo_timer,
         logo_preview_window,
+        stats_window,
         playlist_manager_window,
         playlists,
         media_keys_timer,
@@ -2124,7 +2429,7 @@ pub fn wire(window: &MainWindow, engine: Rc<PlaybackEngine>, store: Rc<Store>) -
 /// Shows the playback position (and the length, which a refresh of the
 /// track's tags may have changed).
 fn apply_position(window: &MainWindow, track_panels: &TrackPanels, position: Duration, duration: Duration) {
-    track_panels.position_changed(window, position);
+    track_panels.position_changed(window, position, duration);
     window.set_position_seconds(position.as_secs_f32());
     window.set_position_text(format_duration(position).into());
     if duration > Duration::ZERO {
@@ -2366,13 +2671,11 @@ impl TrackPanels {
         window.set_lyrics_editable(true);
         let path = track.path.clone();
         let results = self.lyrics_results.0.clone();
-        std::thread::Builder::new()
-            .name("openbar5000-lyrics".into())
-            .spawn(move || {
-                let lyrics = engine::read_lyrics(&path);
-                let _ = results.send((path, lyrics));
-            })
-            .expect("failed to spawn lyrics thread");
+        // Without a thread to read them on, the panel just shows none.
+        platform::spawn("openbar5000-lyrics", move || {
+            let lyrics = std::panic::catch_unwind(|| engine::read_lyrics(&path)).unwrap_or_default();
+            let _ = results.send((path, lyrics));
+        });
     }
 
     /// Puts the track's record on the VNL panel's turntable. A new album
@@ -2597,19 +2900,22 @@ impl TrackPanels {
         let results = self.artist_results.0.clone();
         let generation = self.artist_generation.clone();
         let started_for = generation.load(Ordering::SeqCst);
-        std::thread::Builder::new()
-            .name("openbar5000-artist-info".into())
-            .spawn(move || {
-                if automatic {
-                    std::thread::sleep(AUTO_LOOKUP_DELAY);
-                    if generation.load(Ordering::SeqCst) != started_for {
-                        return;
-                    }
+        let started = platform::spawn("openbar5000-artist-info", move || {
+            if automatic {
+                std::thread::sleep(AUTO_LOOKUP_DELAY);
+                if generation.load(Ordering::SeqCst) != started_for {
+                    return;
                 }
-                let result = artist_info::look_up(&artist, &title, &options);
-                let _ = results.send((key, artist, result));
-            })
-            .expect("failed to spawn artist lookup thread");
+            }
+            // A panic still answers, so the panel doesn't wait forever.
+            let result = std::panic::catch_unwind(|| artist_info::look_up(&artist, &title, &options))
+                .unwrap_or_else(|_| Err("the lookup failed".to_string()));
+            let _ = results.send((key, artist, result));
+        });
+        if !started {
+            *self.lookup_in_flight.borrow_mut() = None;
+            window.set_artist_state("error".into());
+        }
     }
 
     /// The user picked namesake `index` from the BIO panel's list.
@@ -2626,13 +2932,15 @@ impl TrackPanels {
         *self.pending_choice.borrow_mut() = None;
         *self.lookup_in_flight.borrow_mut() = Some(key.clone());
         let results = self.artist_results.0.clone();
-        std::thread::Builder::new()
-            .name("openbar5000-artist-info".into())
-            .spawn(move || {
-                let result = artist_info::look_up_id(&candidate.id, &options);
-                let _ = results.send((key, artist, result));
-            })
-            .expect("failed to spawn artist lookup thread");
+        let started = platform::spawn("openbar5000-artist-info", move || {
+            let result = std::panic::catch_unwind(|| artist_info::look_up_id(&candidate.id, &options))
+                .unwrap_or_else(|_| Err("the lookup failed".to_string()));
+            let _ = results.send((key, artist, result));
+        });
+        if !started {
+            *self.lookup_in_flight.borrow_mut() = None;
+            window.set_artist_state("error".into());
+        }
     }
 
     /// "None of these": remember that this name has no known artist.
@@ -2710,15 +3018,20 @@ impl TrackPanels {
     }
 
     /// Moves the lyrics highlight to the line being sung.
-    fn position_changed(&self, window: &MainWindow, position: Duration) {
-        let line = self
-            .lyrics
-            .borrow()
-            .as_ref()
-            .and_then(|lyrics| lyrics.active_line(position))
-            .map_or(-1, |i| i as i32);
+    /// Also how far through the song and the sung line it is, for the
+    /// panel's scrolling and underline.
+    fn position_changed(&self, window: &MainWindow, position: Duration, duration: Duration) {
+        let lyrics = self.lyrics.borrow();
+        let Some(lyrics) = lyrics.as_ref() else { return };
+        let active = lyrics.active_line(position);
+        let line = active.map_or(-1, |i| i as i32);
         if self.lyric_line.replace(line) != line {
             window.set_lyric_active_line(line);
+        }
+        if let Some(index) = active {
+            window.set_lyric_line_progress(lyrics.line_progress(index, position, duration));
+        } else if !duration.is_zero() {
+            window.set_lyric_progress((position.as_secs_f32() / duration.as_secs_f32()).clamp(0.0, 1.0));
         }
     }
 }
@@ -2860,6 +3173,7 @@ impl LyricsEditor {
     fn open(&self, path: PathBuf, title: &str, text: &str) {
         *self.path.borrow_mut() = Some(path);
         *self.original.borrow_mut() = text.to_string();
+        self.window.set_original(text.into());
         self.window.set_track_title(title.into());
         self.window.set_text(text.into());
         self.window.set_status("".into());
@@ -2879,13 +3193,15 @@ impl LyricsEditor {
         self.window.set_busy(true);
         self.window.set_status("Saving\u{2026}".into());
         let saves = self.saves.0.clone();
-        std::thread::Builder::new()
-            .name("openbar5000-lyrics-save".into())
-            .spawn(move || {
-                let result = engine::write_lyrics(&path, &text);
-                let _ = saves.send((path, text, result));
-            })
-            .expect("failed to spawn lyrics save thread");
+        let started = platform::spawn("openbar5000-lyrics-save", move || {
+            let result = engine::write_lyrics(&path, &text);
+            let _ = saves.send((path, text, result));
+        });
+        if !started {
+            self.close_after_save.set(false);
+            self.window.set_busy(false);
+            self.window.set_status("Couldn\u{2019}t save just now: the system is short of resources. Try again.".into());
+        }
     }
 
     /// Finished saves, plus the live playback time (`position`) while it's
@@ -2895,12 +3211,25 @@ impl LyricsEditor {
         if self.window.window().is_visible() {
             self.window.set_playback_time(format_duration(position).into());
             self.window.set_is_playing(main.get_is_playing());
+            // The line of the text being edited that's sung now: checks a
+            // sync as it's made.
+            let text = self.window.get_text();
+            let lyrics = Lyrics::parse(&text);
+            let now = lyrics
+                .active_line(position)
+                .and_then(|i| lyrics.lines.get(i))
+                .map(|line| line.text.trim().to_string())
+                .unwrap_or_default();
+            if self.window.get_singing_now() != now.as_str() {
+                self.window.set_singing_now(now.into());
+            }
         }
         while let Ok((path, text, result)) = self.saves.1.try_recv() {
             self.window.set_busy(false);
             match result {
                 Ok(()) => {
                     *self.original.borrow_mut() = text.clone();
+                    self.window.set_original(text.clone().into());
                     self.window.set_status("Saved to the file.".into());
                     let saved = (!text.trim().is_empty()).then_some(text);
                     track_panels.lyrics_loaded(main, &path, saved);
@@ -2969,14 +3298,13 @@ impl AlbumArtLoader {
         }
         let window = self.window.clone();
         let latest = self.generation.clone();
-        std::thread::Builder::new()
-            .name("openbar5000-album-art".into())
-            .spawn(move || {
+        let started = platform::spawn("openbar5000-album-art", move || {
                 // Already outdated (skipping through tracks): don't decode.
                 if latest.load(Ordering::SeqCst) != generation {
                     return;
                 }
-                let art = engine::load_cover_art(&path, ALBUM_ART_MAX_SIZE);
+                // A broken picture that trips the decoder shows as none.
+                let art = std::panic::catch_unwind(|| engine::load_cover_art(&path, ALBUM_ART_MAX_SIZE)).ok().flatten();
                 let _ = window.upgrade_in_event_loop(move |window| {
                     if latest.load(Ordering::SeqCst) != generation {
                         return;
@@ -2990,8 +3318,14 @@ impl AlbumArtLoader {
                         None => window.set_has_album_art(false),
                     }
                 });
-            })
-            .expect("failed to spawn album art thread");
+            });
+        // No thread for it: no art, rather than a spinner forever.
+        if !started {
+            if let Some(window) = self.window.upgrade() {
+                window.set_album_art_loading(false);
+                window.set_has_album_art(false);
+            }
+        }
     }
 }
 
@@ -3034,14 +3368,20 @@ fn report_renderer(
     settings_window: &SettingsWindow,
     properties: &Rc<PropertiesEditor>,
     frames: Rc<FrameWatch>,
+    load_guard: Rc<crate::load_guard::LoadGuard>,
 ) {
     let gpu_reported = Rc::new(Cell::new(false));
     let settings_window_weak = settings_window.as_weak();
     let reported = gpu_reported.clone();
     let drawn = frames.clone();
     let result = window.window().set_rendering_notifier(move |state, api| {
-        if matches!(state, slint::RenderingState::AfterRendering) {
-            drawn.drawn();
+        match state {
+            slint::RenderingState::BeforeRendering => load_guard.frame_started(),
+            slint::RenderingState::AfterRendering => {
+                drawn.drawn();
+                load_guard.frame_finished();
+            }
+            _ => {}
         }
         if !matches!(state, slint::RenderingState::RenderingSetup) {
             return;
@@ -3829,6 +4169,86 @@ const PROBE_AFTER: Duration = Duration::from_millis(250);
 /// How long a change may wait for a frame before the window is taken to
 /// be out of sight -- a visible one draws the frame asked for at once.
 const STARVED_AFTER: Duration = Duration::from_secs(1);
+
+/// The track being listened to: how long it has really been listened to
+/// (not where it was skipped to), counted as a play once that's half the
+/// track (at most four minutes), and logged for the statistics -- its time
+/// kept up to date as it goes on.
+struct Listening {
+    play: crate::stats::Play,
+    path: PathBuf,
+    threshold: Duration,
+    listened: Duration,
+    last_position: Option<Duration>,
+    /// The play's row in the log, once counted.
+    log_id: Option<i64>,
+    saved_seconds: i64,
+}
+
+impl Listening {
+    /// Saving the time listened every this many seconds of it.
+    const SAVE_EVERY: i64 = 15;
+
+    fn new(track: &engine::Track) -> Self {
+        let m = &track.metadata;
+        Self {
+            play: crate::stats::Play {
+                played_at: 0,
+                path: track.path.to_string_lossy().into_owned(),
+                title: m.title.clone(),
+                artist: m.artist.clone(),
+                album: m.album.clone(),
+                genre: m.genre.clone(),
+                seconds: 0,
+            },
+            path: track.path.clone(),
+            threshold: (m.duration / 2).min(Duration::from_secs(240)).max(Duration::from_secs(1)),
+            listened: Duration::ZERO,
+            last_position: None,
+            log_id: None,
+            saved_seconds: 0,
+        }
+    }
+
+    /// The playback position now, and whether it's playing.
+    fn tick(&mut self, position: Duration, playing: bool, store: &Store) {
+        // Only time that passed while playing: not a seek, not a pause.
+        if let Some(last) = self.last_position.replace(position) {
+            let step = position.saturating_sub(last);
+            if playing && position > last && step <= Duration::from_secs(3) {
+                self.listened += step;
+            }
+        }
+        let seconds = self.listened.as_secs() as i64;
+        match self.log_id {
+            None if self.listened >= self.threshold => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs() as i64);
+                store.record_play(&self.path, now);
+                self.play.played_at = now;
+                self.play.seconds = seconds;
+                self.log_id = store.log_play(&self.play);
+                self.saved_seconds = seconds;
+            }
+            Some(id) if seconds - self.saved_seconds >= Self::SAVE_EVERY => {
+                store.set_play_seconds(id, seconds);
+                self.saved_seconds = seconds;
+            }
+            _ => {}
+        }
+    }
+
+    /// The track is over: its last listened time saved.
+    fn finish(self, store: &Store) {
+        if let Some(id) = self.log_id {
+            let seconds = self.listened.as_secs() as i64;
+            if seconds != self.saved_seconds {
+                store.set_play_seconds(id, seconds);
+            }
+        }
+    }
+}
 
 /// Notices a window that isn't being drawn although its contents changed:
 /// a Wayland compositor stops asking a minimized or covered window for

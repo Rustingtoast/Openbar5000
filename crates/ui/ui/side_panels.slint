@@ -1,5 +1,6 @@
 import { Button, ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
+import { CornerButton } from "vinyl_view.slint";
 
 /// One label/value pair in the Info panel.
 export struct InfoRow {
@@ -53,67 +54,269 @@ export component InfoView inherits Rectangle {
 /// middle of the panel (the reference UI's LYR tab). Fed by
 /// `app::lyrics::Lyrics`; `status` is shown instead when there are no
 /// lines (e.g. "No lyrics found").
+/// A button for the lyrics panel: the standard one, or -- on the scroll --
+/// one drawn in ink, which reads on parchment.
+component LyricsButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> ink;
+    callback clicked();
+    width: root.ink ? ink-label.preferred-width + 22px : plain.preferred-width;
+    height: root.ink ? 28px : plain.preferred-height;
+    plain := Button {
+        visible: !root.ink;
+        text: root.text;
+        clicked => { root.clicked(); }
+    }
+    Rectangle {
+        visible: root.ink;
+        border-radius: 4px;
+        border-width: 1.5px;
+        border-color: #6b4423;
+        background: ink-touch.has-hover ? #6b442322 : #f6ead0cc;
+        accessible-role: button;
+        accessible-label: root.text;
+        accessible-action-default => { root.clicked(); }
+        ink-label := Text {
+            text: root.text;
+            font-family: "serif";
+            font-italic: true;
+            color: #3b2614;
+        }
+        ink-touch := TouchArea {
+            enabled: root.ink;
+            mouse-cursor: pointer;
+            clicked => { root.clicked(); }
+        }
+    }
+}
+
 export component LyricsView inherits Rectangle {
     in property <[LyricLine]> lines: [];
     /// Index into `lines` of the line being sung; -1 for none/unsynced.
     in property <int> active-line: -1;
-    /// Synced lyrics keep the sung line in the middle; plain lyrics read
-    /// from the top.
+    /// Synced lyrics keep the sung line in the middle; plain lyrics scroll
+    /// along with the song.
     in property <bool> synced: false;
     in property <string> status: "";
     /// Shows "Add lyrics…" / "Edit lyrics…" (a track is playing).
     in property <bool> editable: false;
+    /// How far through the song (0 to 1): plain lyrics scroll with it.
+    in property <float> progress: 0;
+    /// How far through the line being sung (0 to 1), for its underline.
+    in property <float> line-progress: 0;
+    /// The scroll look: ink on parchment between two wooden rods.
+    in property <bool> vintage: false;
     callback edit-clicked();
+    callback vintage-toggled();
 
-    property <length> line-height: 22px;
+    property <length> line-height: root.vintage ? 30px : 28px;
+    property <length> rod: root.vintage ? 16px : 0px;
+    /// Follows the song; scrolling by hand stops that for a while.
+    property <bool> following: true;
+    property <length> view-height: root.height - 2 * root.rod;
+    property <length> top-pad: root.synced ? root.view-height / 2 - root.line-height / 2 : 28px;
+    property <length> content: root.lines.length * root.line-height + 2 * root.top-pad;
 
-    background: Theme.bg-base;
+    property <color> ink: root.vintage ? #3b2614 : Theme.text-primary;
+    property <color> faded: root.vintage ? #6b4f33 : Theme.text-muted;
+    property <color> mark: root.vintage ? #8b1a10 : Theme.accent;
+    property <color> paper: #f3e5c3;
+
+    background: root.vintage ? @linear-gradient(90deg, #cdb07a 0%, #ead7ac 7%, #f6ead0 50%, #ead7ac 93%, #cdb07a 100%) : Theme.bg-base;
     clip: true;
 
+    /// Where the view should be to follow the song.
+    function target() -> length {
+        if root.synced {
+            return root.active-line >= 0 ? -(root.active-line * root.line-height) : 0px;
+        }
+        return -(Math.max(0px, root.content - root.view-height) * Math.clamp(root.progress, 0, 1));
+    }
+    function follow() {
+        root.following = true;
+        flick.content-y = root.target();
+    }
+
+    changed active-line => {
+        if root.following && root.synced {
+            flick.content-y = root.target();
+        }
+    }
+    changed progress => {
+        if root.following && !root.synced && Math.abs(flick.content-y - root.target()) > 1px {
+            flick.content-y = root.target();
+        }
+    }
+    init => { root.follow(); }
+    changed lines => { root.follow(); }
+    changed synced => { root.follow(); }
+
+    resume := Timer {
+        interval: 6s;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.follow();
+        }
+    }
+
     if root.lines.length == 0: VerticalLayout {
+        y: root.rod;
+        height: root.view-height;
         alignment: center;
         spacing: 10px;
+        padding: 12px;
         Text {
             text: root.status;
-            color: Theme.text-muted;
+            color: root.faded;
+            font-italic: root.vintage;
+            font-family: root.vintage ? "serif" : "";
+            font-size: root.vintage ? 16px : 14px;
             horizontal-alignment: center;
             wrap: word-wrap;
         }
         if root.editable: HorizontalLayout {
             alignment: center;
-            Button { text: "Add lyrics…"; clicked => { root.edit-clicked(); } }
+            LyricsButton { text: "Add lyrics…"; ink: root.vintage; clicked => { root.edit-clicked(); } }
         }
     }
-    if root.lines.length > 0: flick := Flickable {
-        // Plain lyrics: the lines plus a margin, so scrolling stops at the
-        // last line. Synced: enough room above and below for the first and
-        // last line to sit in the middle -- no more.
-        content-height: root.synced
-            ? root.lines.length * root.line-height + self.height - root.line-height
-            : root.lines.length * root.line-height + 32px;
-        // Synced: keep the active line centered; unsynced: free scrolling
-        // starting at the top.
-        content-y: root.active-line >= 0
-            ? -(root.active-line * root.line-height)
-            : 0;
-        animate content-y { duration: 250ms; easing: ease-out; }
+
+    flick := Flickable {
+        y: root.rod;
+        height: root.view-height;
+        visible: root.lines.length > 0;
+        content-height: root.content;
+        animate content-y { duration: 320ms; easing: ease-out; }
+        flicked => {
+            root.following = false;
+            resume.running = false;
+            resume.running = true;
+        }
+
+        // The line being sung: a soft band behind it, and an underline
+        // filling as it's sung.
+        if root.synced && root.active-line >= 0: Rectangle {
+            x: (root.width - self.width) / 2;
+            y: root.top-pad + root.active-line * root.line-height;
+            width: Math.min(root.width - 16px, 420px);
+            height: root.line-height;
+            border-radius: root.vintage ? 0px : 8px;
+            background: root.vintage ? transparent : Theme.accent.transparentize(0.86);
+            animate y { duration: 320ms; easing: ease-out; }
+            Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: parent.height - 4px;
+                width: parent.width * 0.7;
+                height: 2px;
+                border-radius: 1px;
+                background: root.mark.transparentize(0.8);
+                Rectangle {
+                    x: 0;
+                    width: parent.width * Math.clamp(root.line-progress, 0, 1);
+                    border-radius: 1px;
+                    background: root.mark;
+                }
+            }
+        }
 
         for line[i] in root.lines: Text {
-            x: 0;
-            y: (root.synced ? root.height / 2 - root.line-height / 2 : 16px) + i * root.line-height;
-            width: root.width;
+            property <int> distance: Math.abs(i - root.active-line);
+            property <bool> sung: i == root.active-line;
+            x: 12px;
+            y: root.top-pad + i * root.line-height;
+            width: root.width - 24px;
             height: root.line-height;
             text: line.text;
             horizontal-alignment: center;
             vertical-alignment: center;
-            color: i == root.active-line ? Theme.text-primary : Theme.text-muted;
-            font-weight: i == root.active-line ? 700 : 400;
+            overflow: elide;
+            font-family: root.vintage ? "serif" : "";
+            font-italic: root.vintage && !self.sung;
+            font-size: self.sung ? (root.vintage ? 19px : 17px) : (root.vintage ? 16px : 14px);
+            font-weight: self.sung ? 700 : 400;
+            color: self.sung ? (root.vintage ? root.mark : root.ink) : root.faded;
+            // Synced: lines fade with their distance from the one sung.
+            opacity: root.synced && root.active-line >= 0 ? Math.max(0.3, 1 - self.distance * 0.17) : 1;
+            animate font-size, opacity, color { duration: 220ms; easing: ease-out; }
         }
     }
-    if root.editable && root.lines.length > 0: Button {
+
+    // Soft edges, top and bottom, so lines fade in and out of view.
+    Rectangle {
+        y: root.rod;
+        height: 28px;
+        background: @linear-gradient(180deg, (root.vintage ? root.paper : Theme.bg-base) 0%, (root.vintage ? root.paper : Theme.bg-base).transparentize(1) 100%);
+    }
+    Rectangle {
+        y: root.height - root.rod - self.height;
+        height: 28px;
+        background: @linear-gradient(0deg, (root.vintage ? root.paper : Theme.bg-base) 0%, (root.vintage ? root.paper : Theme.bg-base).transparentize(1) 100%);
+    }
+
+    // The scroll's wooden rods, a shadow cast on the paper by the top one.
+    if root.vintage: Rectangle {
+        y: root.rod;
+        height: 10px;
+        background: @linear-gradient(180deg, #00000040 0%, #00000000 100%);
+    }
+    if root.vintage: Rectangle {
+        y: root.height - root.rod - self.height;
+        height: 8px;
+        background: @linear-gradient(0deg, #00000030 0%, #00000000 100%);
+    }
+    for top[k] in (root.vintage ? [true, false] : []): Rectangle {
+        y: top ? 0px : root.height - root.rod;
+        height: root.rod;
+        Rectangle {
+            x: 10px;
+            width: parent.width - 20px;
+            border-radius: self.height / 2;
+            background: @linear-gradient(180deg, #4a2c14 0%, #a8743f 40%, #7a4f27 70%, #3b2210 100%);
+        }
+        for side in [0, 1]: Rectangle {
+            x: side == 0 ? 2px : parent.width - self.width - 2px;
+            width: 14px;
+            border-radius: 7px;
+            background: @radial-gradient(circle, #c99a5a 0%, #6b4423 70%, #3b2210 100%);
+        }
+    }
+
+    // Scrolled away by hand: back to following the song.
+    if !root.following && root.lines.length > 0: Rectangle {
+        x: (root.width - self.width) / 2;
+        y: root.height - root.rod - self.height - 10px;
+        width: follow-text.preferred-width + 24px;
+        height: 26px;
+        border-radius: 13px;
+        background: root.vintage ? #6b4423 : Theme.accent;
+        accessible-role: button;
+        accessible-label: "Follow the song";
+        accessible-action-default => { root.follow(); }
+        follow-text := Text {
+            text: "Follow the song";
+            font-size: 12px;
+            color: root.vintage ? #f6ead0 : Theme.accent-text;
+            vertical-alignment: center;
+        }
+        TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.follow(); }
+        }
+    }
+
+    CornerButton {
+        x: 6px;
+        y: root.rod + 4px;
+        icon: @image-url("assets/icons/scroll.svg");
+        label: "Scroll look";
+        active: root.vintage;
+        clicked => { root.vintage-toggled(); }
+    }
+    if root.editable && root.lines.length > 0: LyricsButton {
         x: parent.width - self.width - 10px;
-        y: 10px;
+        y: root.rod + 8px;
         text: "Edit lyrics…";
+        ink: root.vintage;
         clicked => { root.edit-clicked(); }
     }
 }
@@ -154,42 +357,124 @@ export component TabStripView inherits Rectangle {
     callback tab-moved(length, length);
     callback tab-released();
 
+    // Tabs share the width -- down to this each; with less room the strip
+    // scrolls (the wheel, or the arrows at its ends), as an editor's tabs do.
+    property <length> min-tab: 52px;
+    property <int> count: Math.max(1, root.labels.length);
+    property <length> tab-width: Math.max(root.width / root.count, root.min-tab);
+    property <length> content-width: root.tab-width * root.count;
+    property <bool> overflowing: root.content-width > root.width + 0.5px;
+    property <length> min-offset: Math.min(0px, root.width - root.content-width);
+    /// How far the tabs are scrolled (0 or less).
+    property <length> offset: 0px;
+    property <length> arrow: 18px;
+
     background: Theme.bg-raised;
+    clip: true;
     // Drawn outside the panels, so not cached with them; it only changes
     // on a hover or a switch, not with every frame drawn while playing.
     cache-rendering-hint: true;
 
-    for label[i] in root.labels: Rectangle {
-        x: i * root.width / Math.max(1, root.labels.length);
-        width: root.width / Math.max(1, root.labels.length);
-        background: i == root.active ? Theme.bg-sunken : touch.has-hover ? Theme.bg-base : transparent;
-        border-width: 0px;
-        touch := TouchArea {
-            mouse-cursor: pointer;
-            pointer-event(event) => {
-                if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
-                    root.tab-pressed(i, parent.x + self.mouse-x, self.mouse-y);
-                } else if event.button == PointerEventButton.left && event.kind == PointerEventKind.up {
-                    root.tab-released();
-                }
-            }
-            moved => { root.tab-moved(parent.x + self.mouse-x, self.mouse-y); }
+    function scroll-to(offset: length) {
+        root.offset = Math.clamp(offset, root.min-offset, 0px);
+    }
+    /// The active tab in view, clear of the arrows.
+    function show-active() {
+        if !root.overflowing {
+            root.offset = 0px;
+            return;
         }
+        let left = root.active * root.tab-width;
+        if left + root.offset < root.arrow {
+            root.scroll-to(root.arrow - left);
+        } else if left + root.tab-width + root.offset > root.width - root.arrow {
+            root.scroll-to(root.width - root.arrow - left - root.tab-width);
+        }
+    }
+    /// A point on the tabs (`x` along all of them) as the app takes it:
+    /// within the strip, as if the tabs shared its width (how it tells
+    /// where a dragged tab goes); outside it, where it is.
+    function reported-x(x: length, y: length) -> length {
+        let seen = x + root.offset;
+        if root.overflowing && seen >= 0 && seen < root.width && y >= 0 && y < root.height {
+            return x / root.content-width * root.width;
+        }
+        return seen;
+    }
+    init => { root.show-active(); }
+    changed active => { root.show-active(); }
+    changed width => { root.show-active(); }
+    changed labels => { root.show-active(); }
+
+    wheel := TouchArea {
+        scroll-event(event) => {
+            if !root.overflowing {
+                return reject;
+            }
+            root.scroll-to(root.offset + (Math.abs(event.delta-x) > Math.abs(event.delta-y) ? event.delta-x : event.delta-y));
+            return accept;
+        }
+
+        for label[i] in root.labels: Rectangle {
+            x: root.offset + i * root.tab-width;
+            width: root.tab-width;
+            background: i == root.active ? Theme.bg-sunken : touch.has-hover ? Theme.bg-base : transparent;
+            border-width: 0px;
+            touch := TouchArea {
+                mouse-cursor: pointer;
+                pointer-event(event) => {
+                    if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                        root.tab-pressed(i, root.reported-x(i * root.tab-width + self.mouse-x, self.mouse-y), self.mouse-y);
+                    } else if event.button == PointerEventButton.left && event.kind == PointerEventKind.up {
+                        root.tab-released();
+                    }
+                }
+                moved => { root.tab-moved(root.reported-x(i * root.tab-width + self.mouse-x, self.mouse-y), self.mouse-y); }
+            }
+            Text {
+                x: 4px;
+                width: parent.width - 8px;
+                text: label;
+                font-weight: 700;
+                font-size: 12px;
+                color: i == root.active ? Theme.text-primary : Theme.text-muted;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            // Separator to the next tab.
+            if i + 1 < root.labels.length: Rectangle {
+                x: parent.width - 1px;
+                y: 4px;
+                width: 1px;
+                height: parent.height - 8px;
+                background: Theme.text-muted.transparentize(0.75);
+            }
+        }
+    }
+
+    // More tabs to one side: an arrow there scrolls to them.
+    for side[k] in (root.overflowing ? [-1, 1] : []): Rectangle {
+        property <bool> more: side < 0 ? root.offset < 0px : root.offset > root.min-offset;
+        visible: self.more;
+        x: side < 0 ? 0px : root.width - self.width;
+        width: root.arrow;
+        background: side < 0
+            ? @linear-gradient(90deg, Theme.bg-raised 60%, Theme.bg-raised.transparentize(1) 100%)
+            : @linear-gradient(270deg, Theme.bg-raised 60%, Theme.bg-raised.transparentize(1) 100%);
+        accessible-role: button;
+        accessible-label: side < 0 ? "Earlier tabs" : "Later tabs";
+        accessible-action-default => { root.scroll-to(root.offset - side * root.tab-width); }
         Text {
-            text: label;
-            font-weight: 700;
-            font-size: 12px;
-            color: i == root.active ? Theme.text-primary : Theme.text-muted;
+            text: side < 0 ? "\u{2039}" : "\u{203a}";
+            font-size: 16px;
+            color: arrow-touch.has-hover ? Theme.text-primary : Theme.text-muted;
             horizontal-alignment: center;
             vertical-alignment: center;
         }
-        // Separator to the next tab.
-        if i + 1 < root.labels.length: Rectangle {
-            x: parent.width - 1px;
-            y: 4px;
-            width: 1px;
-            height: parent.height - 8px;
-            background: Theme.text-muted.transparentize(0.75);
+        arrow-touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.scroll-to(root.offset - side * root.tab-width); }
         }
     }
 }
@@ -251,21 +536,26 @@ export component ArtistView inherits Rectangle {
             horizontal-alignment: center;
             wrap: word-wrap;
         }
-        if root.state != "loading": HorizontalLayout {
+        // Looking it up, or -- only when that failed (no connection, the
+        // service down) -- trying again.
+        if root.state == "idle" || root.state == "error": HorizontalLayout {
             alignment: center;
             Button {
-                text: root.state == "idle" ? "Look up artist online" : "Look up again";
+                text: root.state == "idle" ? "Look up artist online" : "Reload";
                 clicked => { root.lookup-clicked(); }
             }
         }
     }
 
-    if root.state == "choose": ScrollView {
+    if root.state == "choose": choose-scroll := ScrollView {
         VerticalLayout {
+            // As wide as the panel, so the text wraps instead of running
+            // off its side.
+            width: choose-scroll.visible-width;
             padding: 16px;
             spacing: 6px;
             alignment: start;
-            Text { text: root.artist; font-size: 18px; font-weight: 700; color: Theme.text-primary; }
+            Text { text: root.artist; font-size: 18px; font-weight: 700; color: Theme.text-primary; wrap: word-wrap; }
             Text {
                 text: "Several artists have this name. Which one is it?";
                 color: Theme.text-muted;
@@ -284,7 +574,7 @@ export component ArtistView inherits Rectangle {
                     padding-left: 10px;
                     padding-right: 10px;
                     alignment: center;
-                    Text { text: candidate.name; font-weight: 700; color: Theme.text-primary; }
+                    Text { text: candidate.name; font-weight: 700; color: Theme.text-primary; overflow: elide; }
                     if candidate.detail != "": Text {
                         text: candidate.detail;
                         font-size: 11px;
@@ -305,16 +595,21 @@ export component ArtistView inherits Rectangle {
                 text: "Your choice is remembered for this artist name.";
                 font-size: 10px;
                 color: Theme.text-muted;
+                wrap: word-wrap;
             }
         }
     }
 
-    if root.state == "found": ScrollView {
+    if root.state == "found": found-scroll := ScrollView {
         VerticalLayout {
+            // As wide as the panel, so the text wraps instead of running
+            // off its side.
+            width: found-scroll.visible-width;
             padding: 16px;
             spacing: 12px;
             alignment: start;
-            HorizontalLayout {
+            // Wide: the photo beside the name. Narrow: above it, smaller.
+            if found-scroll.visible-width >= 320px: HorizontalLayout {
                 spacing: 14px;
                 if root.has-photo: Image {
                     source: root.photo;
@@ -326,29 +621,38 @@ export component ArtistView inherits Rectangle {
                     alignment: center;
                     spacing: 4px;
                     Text { text: root.artist; font-size: 20px; font-weight: 700; color: Theme.text-primary; wrap: word-wrap; }
-                    if root.meta != "": Text { text: root.meta; color: Theme.text-muted; }
+                    if root.meta != "": Text { text: root.meta; color: Theme.text-muted; wrap: word-wrap; }
                     if root.genres != "": Text { text: root.genres; color: Theme.accent; wrap: word-wrap; }
                 }
+            }
+            if found-scroll.visible-width < 320px: VerticalLayout {
+                spacing: 6px;
+                if root.has-photo: HorizontalLayout {
+                    alignment: center;
+                    Image {
+                        source: root.photo;
+                        width: Math.min(120px, found-scroll.visible-width - 32px);
+                        height: self.width;
+                        image-fit: cover;
+                    }
+                }
+                Text { text: root.artist; font-size: 18px; font-weight: 700; color: Theme.text-primary; wrap: word-wrap; horizontal-alignment: center; }
+                if root.meta != "": Text { text: root.meta; color: Theme.text-muted; wrap: word-wrap; horizontal-alignment: center; }
+                if root.genres != "": Text { text: root.genres; color: Theme.accent; wrap: word-wrap; horizontal-alignment: center; }
             }
             if root.summary != "": Text {
                 text: root.summary;
                 color: Theme.text-primary;
                 wrap: word-wrap;
             }
-            HorizontalLayout {
-                spacing: 12px;
-                link := TouchArea {
-                    mouse-cursor: pointer;
-                    clicked => { root.link-clicked(); }
-                    Text {
-                        text: root.link-label;
-                        color: link.has-hover ? Theme.text-primary : Theme.accent;
-                    }
-                }
-                Rectangle { horizontal-stretch: 1; }
-                Button {
-                    text: "Look up again";
-                    clicked => { root.lookup-clicked(); }
+            link := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.link-clicked(); }
+                Text {
+                    width: parent.width;
+                    text: root.link-label;
+                    color: link.has-hover ? Theme.text-primary : Theme.accent;
+                    wrap: word-wrap;
                 }
             }
             Text {

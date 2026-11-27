@@ -82,6 +82,66 @@ component TabPage inherits ScrollView {
     }
 }
 
+/// The head of a part that opens and closes: a full-width row, framed so
+/// it reads as something to click, with what's inside summed up beside its
+/// title and an arrow that turns as it opens.
+component ExpanderHeader inherits Rectangle {
+    in property <string> title;
+    /// What's set inside, shown while closed (and open).
+    in property <string> summary;
+    in-out property <bool> open;
+
+    height: 34px;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: touch.has-hover || root.open ? Theme.accent.transparentize(0.4) : Theme.text-muted.transparentize(0.65);
+    background: touch.has-hover ? Theme.bg-sunken : Theme.bg-base.transparentize(0.4);
+    accessible-role: button;
+    accessible-label: root.title;
+    accessible-description: root.summary;
+    accessible-expandable: true;
+    accessible-expanded: root.open;
+    accessible-action-default => { root.open = !root.open; }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 8px;
+        Text {
+            text: "\u{203a}";
+            font-size: 16px;
+            transform-rotation: root.open ? 90deg : 0deg;
+            animate transform-rotation { duration: 120ms; }
+            color: touch.has-hover || root.open ? Theme.accent : Theme.text-muted;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.title;
+            font-weight: 700;
+            color: Theme.text-primary;
+            vertical-alignment: center;
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: root.summary;
+            color: Theme.text-muted;
+            vertical-alignment: center;
+            horizontal-alignment: right;
+            overflow: elide;
+        }
+        Text {
+            text: root.open ? "Hide" : "Show";
+            font-size: 11px;
+            color: touch.has-hover ? Theme.text-primary : Theme.text-muted;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.open = !root.open; }
+    }
+}
+
 /// An icon to choose (Preferences > Appearance > Icon).
 export struct LogoOption {
     id: string,
@@ -206,6 +266,8 @@ export component SettingsWindow inherits Window {
     callback playlist-view-changed(int);
     /// How the window is drawn (see `app::wiring::report_renderer`).
     in property <string> renderer-info: "\u{2014}";
+    /// Set while the frame rate is held down because the system is busy.
+    in property <string> performance-note;
     in property <[ThemeListEntry]> themes: [];
     in property <bool> current-theme-is-custom: false;
 
@@ -248,6 +310,12 @@ export component SettingsWindow inherits Window {
     callback theme-row-clicked(string);
     callback new-theme-clicked();
     callback delete-theme-clicked();
+    /// Themes as CSS files: import one (it becomes a theme of its own),
+    /// export the one in use, open the folder they're kept in.
+    callback import-theme-clicked();
+    callback export-theme-clicked();
+    callback themes-folder-clicked();
+    in property <string> theme-status;
     callback close-clicked();
 
     callback discord-presence-toggled(bool);
@@ -373,40 +441,15 @@ export component SettingsWindow inherits Window {
                                 }
                             }
                         }
+                        HintText { text: "Holidays: Workers' Day, Christmas, New Year and Chinese New Year; on those days the holiday's logo replaces the pride flag. The rainbow shows all of June."; }
                         // Which icon: opens to a grid of them.
                         HorizontalLayout {
                             spacing: 8px;
-                            icon-header := Rectangle {
+                            ExpanderHeader {
                                 horizontal-stretch: 1;
-                                height: 30px;
-                                border-radius: 6px;
-                                background: icon-touch.has-hover ? Theme.text-muted.transparentize(0.85) : transparent;
-                                accessible-role: button;
-                                accessible-label: "Icon: " + root.logo-icon-name;
-                                accessible-expanded: root.logo-icons-open;
-                                accessible-action-default => { root.logo-icons-open = !root.logo-icons-open; }
-                                HorizontalLayout {
-                                    padding-left: 4px;
-                                    spacing: 6px;
-                                    Text {
-                                        text: "\u{203a}";
-                                        font-size: 16px;
-                                        transform-rotation: root.logo-icons-open ? 90deg : 0deg;
-                                        animate transform-rotation { duration: 120ms; }
-                                        color: icon-touch.has-hover ? Theme.text-primary : Theme.text-muted;
-                                        vertical-alignment: center;
-                                    }
-                                    Text {
-                                        text: "Icon: " + root.logo-icon-name;
-                                        vertical-alignment: center;
-                                        color: Theme.text-primary;
-                                    }
-                                    Rectangle { horizontal-stretch: 1; }
-                                }
-                                icon-touch := TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => { root.logo-icons-open = !root.logo-icons-open; }
-                                }
+                                title: "Icon";
+                                summary: root.logo-icon-name;
+                                open <=> root.logo-icons-open;
                             }
                             Button {
                                 text: "Preview\u{2026}";
@@ -430,7 +473,6 @@ export component SettingsWindow inherits Window {
                             }
                             Rectangle { horizontal-stretch: 1; }
                         }
-                        HintText { text: "Holidays: Workers' Day, Christmas, New Year and Chinese New Year; on those days the holiday's logo replaces the pride flag. The rainbow shows all of June."; }
 
                         Rectangle { height: 8px; }
                         SectionHeading { text: "Theme"; }
@@ -459,13 +501,21 @@ export component SettingsWindow inherits Window {
                         HorizontalLayout {
                             spacing: 8px;
                             alignment: start;
-                            Button { text: "New Theme..."; clicked => { root.new-theme-clicked(); } }
+                            Button { text: "New Theme\u{2026}"; clicked => { root.new-theme-clicked(); } }
                             Button {
                                 text: "Delete Theme";
                                 enabled: root.current-theme-is-custom;
                                 clicked => { root.delete-theme-clicked(); }
                             }
                         }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: start;
+                            Button { text: "Import CSS\u{2026}"; clicked => { root.import-theme-clicked(); } }
+                            Button { text: "Export CSS\u{2026}"; clicked => { root.export-theme-clicked(); } }
+                            Button { text: "Themes Folder"; clicked => { root.themes-folder-clicked(); } }
+                        }
+                        if root.theme-status != "": HintText { text: root.theme-status; }
                     }
                 }
             }
@@ -503,32 +553,18 @@ export component SettingsWindow inherits Window {
                                 FieldLabel { text: "Renderer:"; }
                                 UnitText { text: root.renderer-info; colspan: 2; wrap: word-wrap; }
                             }
+                            if root.performance-note != "": Row {
+                                Rectangle {}
+                                UnitText { text: root.performance-note; colspan: 2; wrap: word-wrap; color: Theme.accent; }
+                            }
                         }
                         // Advanced: each frame rate by itself. Closed until
                         // opened on purpose; set here, the preset becomes
                         // Custom.
-                        HorizontalLayout {
-                            alignment: start;
-                            advanced-touch := TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => { root.performance-advanced-open = !root.performance-advanced-open; }
-                                HorizontalLayout {
-                                    spacing: 6px;
-                                    Text {
-                                        text: "\u{203a}";
-                                        font-size: 16px;
-                                        transform-rotation: root.performance-advanced-open ? 90deg : 0deg;
-                                        animate transform-rotation { duration: 120ms; }
-                                        color: advanced-touch.has-hover ? Theme.text-primary : Theme.text-muted;
-                                        vertical-alignment: center;
-                                    }
-                                    Text {
-                                        text: "Advanced";
-                                        color: advanced-touch.has-hover ? Theme.text-primary : Theme.text-muted;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
+                        ExpanderHeader {
+                            title: "Advanced";
+                            summary: "Each frame rate by itself";
+                            open <=> root.performance-advanced-open;
                         }
                         if root.performance-advanced-open: GridLayout {
                             spacing: 8px;

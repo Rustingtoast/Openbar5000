@@ -20,6 +20,8 @@ import { LoadingOverlay } from "loading_overlay.slint";
 import { PlaylistManagerWindow, PlaylistManagerRow } from "playlist_manager_window.slint";
 import { CrashReportWindow } from "crash_report_window.slint";
 import { ColorPickerWindow } from "color_picker_window.slint";
+import { StatsWindow, StatRow, StatBar } from "stats_window.slint";
+import { YearReviewOverlay, ReviewAnnounceOverlay, WhatsNewOverlay, WelcomeOverlay, YearReview, WhatsNewItem } from "overlays.slint";
 
 /// One placed panel (see `app::layout`): which panel to draw and where,
 /// relative to the panel area below the menu bar.
@@ -94,7 +96,7 @@ export struct PanelChoice {
     label: string,
 }
 
-export { Vfd, PropertyField, DetailRow, ArtworkRow, LibraryRow, PlaylistManagerWindow, PlaylistManagerRow, PlaylistRow, PropertiesWindow, AboutWindow, SettingsWindow, ThemeListEntry, ThemeEditorWindow, LyricsEditorWindow, CrashReportWindow, ColorPickerWindow, LogoPreviewWindow, LogoVersion, LogoOption, Theme }
+export { Vfd, PropertyField, DetailRow, ArtworkRow, LibraryRow, PlaylistManagerWindow, PlaylistManagerRow, PlaylistRow, PropertiesWindow, AboutWindow, SettingsWindow, ThemeListEntry, ThemeEditorWindow, LyricsEditorWindow, CrashReportWindow, ColorPickerWindow, LogoPreviewWindow, LogoVersion, LogoOption, StatsWindow, StatRow, StatBar, YearReview, WhatsNewItem, Theme }
 
 export component MainWindow inherits Window {
     // Set from Cargo.toml's version at startup (see `app::wiring`).
@@ -159,6 +161,24 @@ export component MainWindow inherits Window {
     in property <[LyricLine]> lyric-lines: [];
     in property <int> lyric-active-line: -1;
     in property <bool> lyrics-synced: false;
+    /// How far through the song and through the line being sung (0-1),
+    /// and the scroll look: see `LyricsView`.
+    in property <float> lyric-progress: 0;
+    in property <float> lyric-line-progress: 0;
+    in property <bool> lyrics-vintage: false;
+    callback lyrics-vintage-toggled();
+    /// The overlay showing ("" for none): "welcome", "whats-new",
+    /// "review-announce" or "year-review"; closing one says which.
+    in property <string> modal;
+    callback modal-closed(string);
+    in property <YearReview> year-review;
+    in property <string> whats-new-version;
+    in property <[WhatsNewItem]> whats-new-items;
+    /// The year in review's card by the playback buttons (its season, with
+    /// enough listened).
+    in property <bool> review-card-visible;
+    callback review-card-clicked();
+    callback statistics-clicked();
     in property <string> lyric-status: "Nothing playing";
     // "Add lyrics…" / "Edit lyrics…" in the LYR panel (needs a track).
     in property <bool> lyrics-editable: false;
@@ -474,6 +494,9 @@ export component MainWindow inherits Window {
             }
             MenuItem { title: "Reset Layout"; activated => { root.layout-reset-clicked(); } }
             MenuSeparator {}
+            MenuItem { title: "Statistics\u{2026}"; activated => { root.statistics-clicked(); } }
+            if root.review-card-visible: MenuItem { title: "Year in Review\u{2026}"; activated => { root.review-card-clicked(); } }
+            MenuSeparator {}
             MenuItem { title: "Preferences..."; activated => { root.settings-clicked(); } }
         }
         Menu {
@@ -655,6 +678,8 @@ export component MainWindow inherits Window {
                 random-clicked => { root.random-clicked(); }
                 open-files-clicked => { root.open-files-clicked(); }
                 open-folder-clicked => { root.open-folder-clicked(); }
+                review-card: root.review-card-visible;
+                review-card-clicked => { root.review-card-clicked(); }
             }
             if slot.kind == "seek-bar": SeekBar {
                 width: parent.width;
@@ -709,6 +734,10 @@ export component MainWindow inherits Window {
                 synced: root.lyrics-synced;
                 status: root.lyric-status;
                 editable: root.lyrics-editable;
+                progress: root.lyric-progress;
+                line-progress: root.lyric-line-progress;
+                vintage: root.lyrics-vintage;
+                vintage-toggled => { root.lyrics-vintage-toggled(); }
                 edit-clicked => { root.edit-lyrics-clicked(); }
             }
             if slot.kind == "biography": ArtistView {
@@ -1000,6 +1029,10 @@ export component MainWindow inherits Window {
                     synced: root.lyrics-synced;
                     status: root.lyric-status;
                     editable: root.lyrics-editable;
+                    progress: root.lyric-progress;
+                    line-progress: root.lyric-line-progress;
+                    vintage: root.lyrics-vintage;
+                    vintage-toggled => { root.lyrics-vintage-toggled(); }
                     edit-clicked => { root.edit-lyrics-clicked(); }
                 }
             }
@@ -1034,5 +1067,32 @@ export component MainWindow inherits Window {
         title: root.loading-title;
         done: root.loading-done;
         total: root.loading-total;
+    }
+
+    // Over everything, one at a time (see `app::wiring`, "Overlays").
+    if root.modal == "welcome": WelcomeOverlay {
+        width: root.width;
+        height: root.height;
+        closed => { root.modal-closed("welcome"); }
+    }
+    if root.modal == "whats-new": WhatsNewOverlay {
+        width: root.width;
+        height: root.height;
+        version: root.whats-new-version;
+        items: root.whats-new-items;
+        closed => { root.modal-closed("whats-new"); }
+    }
+    if root.modal == "review-announce": ReviewAnnounceOverlay {
+        width: root.width;
+        height: root.height;
+        year: root.year-review.year;
+        closed => { root.modal-closed("review-announce"); }
+        see-it => { root.modal-closed("review-announce"); root.review-card-clicked(); }
+    }
+    if root.modal == "year-review": YearReviewOverlay {
+        width: root.width;
+        height: root.height;
+        review: root.year-review;
+        closed => { root.modal-closed("year-review"); }
     }
 }

@@ -14,6 +14,7 @@ mod holiday;
 mod logo_files;
 mod logo_preview;
 mod layout;
+mod load_guard;
 mod lyrics;
 mod media_keys;
 mod media_library;
@@ -22,10 +23,14 @@ mod platform;
 mod playlist_rows;
 mod playlists;
 mod properties;
+mod release_notes;
 mod settings;
 mod spectrum_bars;
+mod stats;
+mod stats_view;
 mod store;
 mod theme;
+mod theme_css;
 mod vinyl_style;
 mod window_placement;
 mod wiring;
@@ -59,7 +64,7 @@ fn main() {
         tracing::info!("crash reports are off: OPENBAR5000_NO_CRASH_REPORTS is set");
     }
 
-    let store = Rc::new(Store::open().expect("failed to open app database"));
+    let store = Rc::new(open_store());
     let placement = WindowPlacement::load(&store);
     select_backend(
         &placement,
@@ -76,9 +81,35 @@ fn main() {
 
     // Kept alive for the duration of `run()` below -- see wiring::wire.
     let _ui_handles = wiring::wire(&window, engine, store.clone());
+    // For trying the layout at a given size: `OPENBAR5000_WINDOW_SIZE=760x500`.
+    if let Some((width, height)) = std::env::var("OPENBAR5000_WINDOW_SIZE")
+        .ok()
+        .and_then(|size| size.split_once('x').map(|(w, h)| (w.parse::<f32>(), h.parse::<f32>())))
+        .and_then(|(w, h)| Some((w.ok()?, h.ok()?)))
+    {
+        window.window().set_size(slint::LogicalSize::new(width, height));
+    }
 
     window.run().expect("UI event loop failed");
     placement.save();
+}
+
+/// The app's database. Should it not open (another program holding it, the
+/// disk full), it's tried again a moment later; failing that, the app runs
+/// on one in memory -- nothing saved this time, but running.
+fn open_store() -> Store {
+    match Store::open() {
+        Ok(store) => return store,
+        Err(e) => tracing::warn!("couldn't open the database, trying again: {e}"),
+    }
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    match Store::open() {
+        Ok(store) => store,
+        Err(e) => {
+            tracing::error!("couldn't open the database, so nothing is saved this time: {e}");
+            Store::open_in_memory().expect("an in-memory database always opens")
+        }
+    }
 }
 
 /// The token a launcher (the app menu, the task bar) started the app with,
